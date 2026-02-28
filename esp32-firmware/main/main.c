@@ -184,10 +184,14 @@ static bool is_safe_scan_gpio_int(int pin) {
     return false;
 }
 
+static bool valid_relay_gpio_int(int pin) {
+    return valid_output_gpio_int(pin) && is_safe_scan_gpio_int(pin);
+}
+
 static void sanitize_relay_gpio_map(void) {
     sanitize_relay_count();
     for (int i = 0; i < MAX_RELAYS; i++) {
-        if (valid_output_gpio_int(g_cfg.relay_gpio[i])) continue;
+        if (valid_relay_gpio_int(g_cfg.relay_gpio[i])) continue;
         if (i < 4) {
             g_cfg.relay_gpio[i] = DEFAULT_RELAY_GPIOS[i];
         } else {
@@ -199,7 +203,7 @@ static void sanitize_relay_gpio_map(void) {
 static void configure_relay_gpio_outputs(void) {
     sanitize_relay_gpio_map();
     for (int i = 0; i < MAX_RELAYS; i++) {
-        if (!valid_output_gpio_int(g_cfg.relay_gpio[i])) continue;
+        if (!valid_relay_gpio_int(g_cfg.relay_gpio[i])) continue;
         gpio_num_t pin = (gpio_num_t)g_cfg.relay_gpio[i];
         gpio_reset_pin(pin);
         gpio_set_direction(pin, GPIO_MODE_OUTPUT);
@@ -304,7 +308,7 @@ static void apply_relay(int idx, bool on) {
     if (idx >= g_cfg.relay_count) return;
     sanitize_relay_gpio_map();
     int pin = g_cfg.relay_gpio[idx];
-    if (!valid_output_gpio_int(pin)) return;
+    if (!valid_relay_gpio_int(pin)) return;
     gpio_set_level((gpio_num_t)pin, on ? 1 : 0);
     g_state.relay[idx] = on;
 }
@@ -735,6 +739,7 @@ static esp_err_t web_root_handler(httpd_req_t *req) {
         "<script>"
         "const $=id=>document.getElementById(id);"
         "const MAX_RELAYS=8;"
+        "const SAFE_GPIO=[2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];"
         "let S={};"
         "let scanner={running:false,paused:false,pins:[],idx:0,currentPin:null,timer:null};"
         "const log=m=>{const line=(new Date().toISOString()+' '+m);$('logOut').textContent=(line+'\\n'+$('logOut').textContent).slice(0,6000);$('actionOut').textContent=line;};"
@@ -746,7 +751,7 @@ static esp_err_t web_root_handler(httpd_req_t *req) {
         "const o=payload?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}:{};"
         "const r=await fetch(path,o);const t=await r.text();let j={};try{j=t?JSON.parse(t):{}}catch(_){j={raw:t}}"
         "if(!r.ok){throw new Error((j&&j.detail)||t||('HTTP '+r.status));}return j;}"
-        "function buildRelayConfigRows(){const c=Math.min(MAX_RELAYS,Math.max(1,parseInt($('cfgRelayCount').value||'4',10)));const rg=Array.isArray(S.relay_gpio)?S.relay_gpio:[];const out=(S&&S.outputs)?S.outputs:{};let h='';for(let i=0;i<c;i++){const idx=i+1;const relayKey='relay'+idx;const v=(Number.isInteger(rg[i])?rg[i]:(i<4?[16,17,18,19][i]:-1));const st=out[relayKey]?'on':'off';h+='<div><label>Relay '+idx+' GPIO</label><input id=\\'cfgRelay'+idx+'\\' type=\\'number\\' min=\\'-1\\' max=\\'39\\' value=\\''+v+'\\'/></div>';h+='<div><label>Relay '+idx+' Toggle</label><button type=\\'button\\' class=\\'cfgRelayToggle\\' data-relay-index=\\''+idx+'\\'>Toggle</button></div>';h+='<div><label>Current State</label><input id=\\'cfgRelayState'+idx+'\\' readonly value=\\''+st+'\\'/></div>';}$('relayConfigRows').innerHTML=h;document.querySelectorAll('.cfgRelayToggle').forEach(b=>b.onclick=()=>{const idx=b.getAttribute('data-relay-index');doControl('relay'+idx,'toggle');});}"
+        "function buildRelayConfigRows(){const c=Math.min(MAX_RELAYS,Math.max(1,parseInt($('cfgRelayCount').value||'4',10)));const rg=Array.isArray(S.relay_gpio)?S.relay_gpio:[];const out=(S&&S.outputs)?S.outputs:{};let h='';for(let i=0;i<c;i++){const idx=i+1;const relayKey='relay'+idx;const v=(Number.isInteger(rg[i])?rg[i]:(i<4?[16,17,18,19][i]:-1));const st=out[relayKey]?'on':'off';h+='<div><label>Relay '+idx+' GPIO (safe only)</label><input id=\\'cfgRelay'+idx+'\\' type=\\'number\\' min=\\'-1\\' max=\\'33\\' value=\\''+v+'\\'/></div>';h+='<div><label>Relay '+idx+' Toggle</label><button type=\\'button\\' class=\\'cfgRelayToggle\\' data-relay-index=\\''+idx+'\\'>Toggle</button></div>';h+='<div><label>Current State</label><input id=\\'cfgRelayState'+idx+'\\' readonly value=\\''+st+'\\'/></div>';}$('relayConfigRows').innerHTML=h;document.querySelectorAll('.cfgRelayToggle').forEach(b=>b.onclick=()=>{const idx=b.getAttribute('data-relay-index');doControl('relay'+idx,'toggle');});}"
         "function buildRelayButtons(){const c=Math.min(MAX_RELAYS,Math.max(1,parseInt(S.relay_count||'4',10)));let h='';for(let i=1;i<=c;i++){h+='<button type=\\'button\\' class=\\'relayBtn\\' data-relay=\\'relay'+i+'\\'>Toggle Relay '+i+'</button>';}$('relayButtons').innerHTML=h;document.querySelectorAll('.relayBtn').forEach(b=>b.onclick=()=>doControl(b.getAttribute('data-relay'),'toggle'));}"
         "function setOverview(s){const n=s.network||{};$('netMode').value=n.mode||'';$('netSsid').value=n.connected_ssid||'';$('netStaIp').value=n.sta_ip||'';$('netApIp').value=n.ap_ip||'';$('netCfgSsid').value=n.configured_ssid||'';$('netApSsid').value=n.fallback_ap_ssid||'';$('netReason').value=((n.last_disconnect_reason==null)?'':n.last_disconnect_reason).toString();$('relayCountView').value=((s.relay_count==null)?'':s.relay_count).toString();}"
         "function setCfgFromStatus(s){const n=s.network||{};$('cfgName').value=s.name||$('cfgName').value;$('cfgType').value=s.type||$('cfgType').value;$('cfgStaticUse').value=s.static_ip_enabled?'1':'0';$('cfgStaticIp').value=s.static_ip||'';$('cfgGateway').value=s.gateway||'';$('cfgMask').value=s.subnet_mask||'';$('cfgWifiSsid').value=n.configured_ssid||$('cfgWifiSsid').value;$('cfgApSsid').value=n.fallback_ap_ssid||$('cfgApSsid').value;$('cfgRelayCount').value=(s.relay_count||4);buildRelayConfigRows();setOverview(s);buildRelayButtons();}"
@@ -765,7 +770,7 @@ static esp_err_t web_root_handler(httpd_req_t *req) {
         "function scannerUpdateState(t){$('scanState').value=t;}"
         "function scannerClearTimer(){if(scanner.timer){clearTimeout(scanner.timer);scanner.timer=null;}}"
         "async function scannerStep(){if(!scanner.running||scanner.paused)return;if(!scanner.pins.length){scannerUpdateState('error');log('scanner error: no safe GPIO candidates');scanner.running=false;return;}if(scanner.currentPin!==null){try{await scannerSet(scanner.currentPin,0);}catch(e){log('scanner clear gpio '+scanner.currentPin+' failed: '+e.message);}}let attempts=0;scanner.currentPin=null;while(attempts<scanner.pins.length&&scanner.currentPin===null){if(scanner.idx>=scanner.pins.length)scanner.idx=0;const pin=scanner.pins[scanner.idx++];attempts+=1;$('scanCurrentPin').value=String(pin);$('gpioPin').value=String(pin);try{await scannerSet(pin,1);scanner.currentPin=pin;scannerUpdateState('running');log('scanner gpio '+pin+' ON');}catch(e){log('scanner skip gpio '+pin+': '+e.message);}}if(scanner.currentPin===null){scannerUpdateState('error');log('scanner error: all GPIO candidates failed');scanner.running=false;return;}if(!scanner.running||scanner.paused){scannerUpdateState(scanner.paused?'paused':'stopped');return;}scanner.timer=setTimeout(()=>{scannerStep().catch(e=>log('scanner error: '+e.message));},1500);}"
-        "function scannerPins(){const safe=[2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];const fromStatus=Array.isArray(S.gpio_candidates)?S.gpio_candidates:[];const base=fromStatus.length?fromStatus:safe;const pins=base.map(x=>parseInt(x,10)).filter(v=>Number.isInteger(v)&&safe.includes(v));return Array.from(new Set(pins));}"
+        "function scannerPins(){const fromStatus=Array.isArray(S.gpio_candidates)?S.gpio_candidates:[];const base=fromStatus.length?fromStatus:SAFE_GPIO;const pins=base.map(x=>parseInt(x,10)).filter(v=>Number.isInteger(v)&&SAFE_GPIO.includes(v));return Array.from(new Set(pins));}"
         "$('scanStartBtn').onclick=async()=>{try{scanner.running=true;scanner.paused=false;scanner.pins=scannerPins();scannerClearTimer();if(scanner.currentPin!==null){try{await scannerSet(scanner.currentPin,0);}catch(_){}}scanner.currentPin=null;const startRaw=parseInt($('scanStartPin').value||'',10);if(Number.isInteger(startRaw)){const exact=scanner.pins.indexOf(startRaw);if(exact>=0){scanner.idx=exact;}else{const next=scanner.pins.findIndex(v=>v>=startRaw);scanner.idx=(next>=0?next:0);}}else{scanner.idx=0;}if(scanner.pins.length){$('scanStartPin').value=String(scanner.pins[scanner.idx]);}scannerUpdateState('starting');await scannerStep();}catch(e){log('scan start error: '+e.message);}};"
         "$('scanPauseBtn').onclick=()=>{scanner.paused=true;scannerClearTimer();scannerUpdateState('paused');log('scanner paused at gpio '+((scanner.currentPin==null)?'none':scanner.currentPin));};"
         "$('scanContinueBtn').onclick=()=>{if(!scanner.running)return;scanner.paused=false;scannerUpdateState('running');scannerStep().catch(e=>log('scanner continue error: '+e.message));};"
@@ -778,7 +783,7 @@ static esp_err_t web_root_handler(httpd_req_t *req) {
         "const setIf=(k,v)=>{if(v!==undefined&&v!==null&&String(v).length>0)p[k]=v;};"
         "setIf('name',$('cfgName').value.trim());setIf('type',$('cfgType').value.trim());setIf('new_passcode',$('cfgNewPass').value);"
         "setIf('wifi_ssid',$('cfgWifiSsid').value);setIf('wifi_pass',$('cfgWifiPass').value);"
-        "const c=Math.min(MAX_RELAYS,Math.max(1,parseInt($('cfgRelayCount').value||'4',10)));p.relay_count=c;const rg=[];for(let i=1;i<=MAX_RELAYS;i++){const el=$('cfgRelay'+i);if(el){rg.push(parseInt(el.value||'-1',10));}else{rg.push(-1);}}if(rg.every(v=>Number.isInteger(v)&&v>=-1&&v<=39)){p.relay_gpio=rg;}"
+        "const c=Math.min(MAX_RELAYS,Math.max(1,parseInt($('cfgRelayCount').value||'4',10)));p.relay_count=c;const rg=[];for(let i=1;i<=MAX_RELAYS;i++){const el=$('cfgRelay'+i);if(!el){rg.push(-1);continue;}const raw=parseInt(el.value||'-1',10);if(raw===-1){rg.push(-1);}else if(Number.isInteger(raw)&&SAFE_GPIO.includes(raw)){rg.push(raw);}else{rg.push(-1);log('relay '+i+' gpio '+el.value+' not safe, set to -1');}}p.relay_gpio=rg;"
         "setIf('ap_ssid',$('cfgApSsid').value);setIf('ap_pass',$('cfgApPass').value);"
         "setIf('static_ip',$('cfgStaticIp').value.trim());setIf('gateway',$('cfgGateway').value.trim());setIf('subnet_mask',$('cfgMask').value.trim());"
         "setIf('ota_key',$('cfgOtaKey').value);"
@@ -846,7 +851,12 @@ static esp_err_t config_handler(httpd_req_t *req) {
     if (cJSON_IsArray(relay_gpio)) {
         for (int i = 0; i < MAX_RELAYS; i++) {
             cJSON *it = cJSON_GetArrayItem(relay_gpio, i);
-            if (cJSON_IsNumber(it)) g_cfg.relay_gpio[i] = it->valueint;
+            if (cJSON_IsNumber(it)) {
+                int pin = it->valueint;
+                if (pin == -1 || valid_relay_gpio_int(pin)) {
+                    g_cfg.relay_gpio[i] = pin;
+                }
+            }
         }
     }
     if (cJSON_IsString(ota_key)) safe_strcpy(g_cfg.ota_key, ota_key->valuestring, sizeof(g_cfg.ota_key));
