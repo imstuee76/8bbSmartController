@@ -63,7 +63,60 @@ def _to_bool_flag(value: object) -> int:
     return 0
 
 
+def _to_int(value: object, fallback: int) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except Exception:
+        return fallback
+
+
+def _clamp_int(value: int, min_val: int, max_val: int) -> int:
+    if value < min_val:
+        return min_val
+    if value > max_val:
+        return max_val
+    return value
+
+
+def _extract_relay_defaults(defaults: dict[str, object]) -> tuple[int, list[int]]:
+    default_gpio = [16, 17, 18, 19, -1, -1, -1, -1]
+    source: object = defaults
+    if isinstance(defaults.get("type_settings"), dict):
+        source = defaults.get("type_settings")
+
+    relay_count = 4
+    relay_gpio: list[int] = default_gpio.copy()
+
+    if isinstance(source, dict):
+        relay_count = _clamp_int(_to_int(source.get("relay_count"), relay_count), 1, 8)
+
+        raw_gpio = source.get("relay_gpio")
+        if not isinstance(raw_gpio, list):
+            relays = source.get("relays")
+            if isinstance(relays, list):
+                raw_gpio = []
+                for item in relays:
+                    if isinstance(item, dict):
+                        raw_gpio.append(item.get("gpio", -1))
+                    else:
+                        raw_gpio.append(-1)
+
+        if isinstance(raw_gpio, list):
+            parsed: list[int] = []
+            for idx in range(8):
+                raw = raw_gpio[idx] if idx < len(raw_gpio) else -1
+                pin = _to_int(raw, -1)
+                if pin == -1:
+                    parsed.append(-1)
+                else:
+                    parsed.append(_clamp_int(pin, 0, 39))
+            relay_gpio = parsed
+
+    return relay_count, relay_gpio
+
+
 def _write_generated_defaults(defaults: dict[str, object], log_file: Path) -> None:
+    relay_count, relay_gpio = _extract_relay_defaults(defaults)
     merged = {
         "name": str(defaults.get("name", "8bb-esp32") or "8bb-esp32"),
         "type": str(defaults.get("type", "relay_switch") or "relay_switch"),
@@ -77,6 +130,8 @@ def _write_generated_defaults(defaults: dict[str, object], log_file: Path) -> No
         "gateway": str(defaults.get("gateway", "") or ""),
         "subnet_mask": str(defaults.get("subnet_mask", "") or ""),
         "ota_key": str(defaults.get("ota_key", "8bb-change-this-ota-key") or "8bb-change-this-ota-key"),
+        "relay_count": relay_count,
+        "relay_gpio": relay_gpio,
     }
 
     content = "\n".join(
@@ -96,6 +151,15 @@ def _write_generated_defaults(defaults: dict[str, object], log_file: Path) -> No
             f'#define FW_DEFAULT_GATEWAY "{_c_escape(merged["gateway"])}"',
             f'#define FW_DEFAULT_SUBNET_MASK "{_c_escape(merged["subnet_mask"])}"',
             f'#define FW_DEFAULT_OTA_KEY "{_c_escape(merged["ota_key"])}"',
+            f'#define FW_DEFAULT_RELAY_COUNT {int(merged["relay_count"])}',
+            f'#define FW_DEFAULT_RELAY_GPIO_1 {int(merged["relay_gpio"][0])}',
+            f'#define FW_DEFAULT_RELAY_GPIO_2 {int(merged["relay_gpio"][1])}',
+            f'#define FW_DEFAULT_RELAY_GPIO_3 {int(merged["relay_gpio"][2])}',
+            f'#define FW_DEFAULT_RELAY_GPIO_4 {int(merged["relay_gpio"][3])}',
+            f'#define FW_DEFAULT_RELAY_GPIO_5 {int(merged["relay_gpio"][4])}',
+            f'#define FW_DEFAULT_RELAY_GPIO_6 {int(merged["relay_gpio"][5])}',
+            f'#define FW_DEFAULT_RELAY_GPIO_7 {int(merged["relay_gpio"][6])}',
+            f'#define FW_DEFAULT_RELAY_GPIO_8 {int(merged["relay_gpio"][7])}',
             "",
         ]
     )
@@ -112,6 +176,8 @@ def _write_generated_defaults(defaults: dict[str, object], log_file: Path) -> No
                 "ap_ssid": merged["ap_ssid"],
                 "use_static_ip": int(merged["use_static_ip"]),
                 "static_ip": merged["static_ip"],
+                "relay_count": int(merged["relay_count"]),
+                "relay_gpio": merged["relay_gpio"],
             }
         ),
     )

@@ -20,6 +20,7 @@ const diagOut = document.getElementById("diagOut");
 const flasherVersionLabel = document.getElementById("flasherVersionLabel");
 
 const DEFAULT_BAUDS = [115200, 230400, 460800, 921600, 1000000, 1500000, 2000000];
+const DEFAULT_RELAY_GPIOS = [16, 17, 18, 19, -1, -1, -1, -1];
 let flashPollTimer = null;
 let monitorPollTimer = null;
 let monitorSessionId = "";
@@ -115,6 +116,29 @@ function clampInt(value, min, max, fallback) {
   const num = parseInt(String(value || ""), 10);
   if (Number.isNaN(num)) return fallback;
   return Math.max(min, Math.min(max, num));
+}
+
+function defaultRelayGpioForIndex(idx) {
+  if (idx < 1 || idx > 8) {
+    return -1;
+  }
+  return DEFAULT_RELAY_GPIOS[idx - 1];
+}
+
+function parseRelayGpioValue(rawValue, idx) {
+  const fallback = defaultRelayGpioForIndex(idx);
+  const text = String(rawValue == null ? "" : rawValue).trim();
+  if (!text) {
+    return fallback;
+  }
+  const num = parseInt(text, 10);
+  if (Number.isNaN(num)) {
+    return fallback;
+  }
+  if (num === -1) {
+    return -1;
+  }
+  return Math.max(0, Math.min(39, num));
 }
 
 function requireLoggedIn() {
@@ -239,11 +263,14 @@ function renderRelayRows(state = {}) {
     const gpioId = `relayGpio${idx}`;
     const invertId = `relayInvert${idx}`;
     const nameValue = state[nameId] || `Relay ${idx}`;
-    const gpioValue = state[gpioId] || "";
+    const gpioValue =
+      state[gpioId] == null || String(state[gpioId]).trim() === ""
+        ? String(defaultRelayGpioForIndex(idx))
+        : String(state[gpioId]);
     const invertChecked = state[invertId] ? "checked" : "";
 
     rows.push(`<input id="${nameId}" value="${escapeAttr(nameValue)}" />`);
-    rows.push(`<input id="${gpioId}" type="number" min="0" max="39" value="${escapeAttr(gpioValue)}" />`);
+    rows.push(`<input id="${gpioId}" type="number" min="-1" max="39" value="${escapeAttr(gpioValue)}" />`);
     rows.push(`<input id="${invertId}" type="checkbox" ${invertChecked} />`);
   }
   matrix.innerHTML = rows.join("");
@@ -444,19 +471,26 @@ function renderDeviceTypeOptions() {
 function collectRelaySettings() {
   const count = clampInt(getEl("relayCount")?.value, 1, 8, 1);
   const relays = [];
+  const relayGpio = [];
   for (let idx = 1; idx <= count; idx += 1) {
+    const gpio = parseRelayGpioValue(getEl(`relayGpio${idx}`)?.value, idx);
+    relayGpio.push(gpio);
     relays.push({
       index: idx,
       name: getEl(`relayName${idx}`)?.value?.trim() || `Relay ${idx}`,
-      gpio: clampInt(getEl(`relayGpio${idx}`)?.value, 0, 39, idx),
+      gpio,
       invert: Boolean(getEl(`relayInvert${idx}`)?.checked),
     });
+  }
+  for (let idx = count + 1; idx <= 8; idx += 1) {
+    relayGpio.push(-1);
   }
   return {
     relay_count: count,
     button_count: clampInt(getEl("buttonCount")?.value, 0, 8, 0),
     boot_state: getEl("relayBootState")?.value || "off",
     relays,
+    relay_gpio: relayGpio,
   };
 }
 
@@ -677,6 +711,7 @@ async function buildFirmwareFromSource() {
   const profileName = getEl("profileName").value.trim() || "profile";
   const version = getEl("profileVersion").value.trim() || "1.0.0";
   const deviceType = getEl("profileDeviceType").value;
+  const typeSettings = collectTypeSettings(deviceType);
   const ipModeVal = getEl("ipMode").value;
   const defaults = {
     name: getEl("deviceName").value.trim() || profileName,
@@ -690,7 +725,12 @@ async function buildFirmwareFromSource() {
     static_ip: getEl("staticIp").value.trim(),
     gateway: getEl("gatewayIp").value.trim(),
     subnet_mask: getEl("subnetMask").value.trim(),
+    type_settings: typeSettings,
   };
+  if (deviceType === "relay_switch" && typeSettings && typeof typeSettings === "object") {
+    defaults.relay_count = clampInt(typeSettings.relay_count, 1, 8, 1);
+    defaults.relay_gpio = Array.isArray(typeSettings.relay_gpio) ? typeSettings.relay_gpio.slice(0, 8) : [];
+  }
   const startedAt = Date.now();
   print(actionOut, "Build Firmware", "Compiling firmware from esp32-firmware...\nThis can take a few minutes.");
   const timer = setInterval(() => {

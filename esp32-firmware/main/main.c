@@ -48,6 +48,34 @@
 #define RGB_W_PIN GPIO_NUM_14
 #define FAN_SPEED_PIN GPIO_NUM_33
 
+#ifndef FW_DEFAULT_RELAY_COUNT
+#define FW_DEFAULT_RELAY_COUNT 4
+#endif
+#ifndef FW_DEFAULT_RELAY_GPIO_1
+#define FW_DEFAULT_RELAY_GPIO_1 RELAY1_PIN
+#endif
+#ifndef FW_DEFAULT_RELAY_GPIO_2
+#define FW_DEFAULT_RELAY_GPIO_2 RELAY2_PIN
+#endif
+#ifndef FW_DEFAULT_RELAY_GPIO_3
+#define FW_DEFAULT_RELAY_GPIO_3 RELAY3_PIN
+#endif
+#ifndef FW_DEFAULT_RELAY_GPIO_4
+#define FW_DEFAULT_RELAY_GPIO_4 RELAY4_PIN
+#endif
+#ifndef FW_DEFAULT_RELAY_GPIO_5
+#define FW_DEFAULT_RELAY_GPIO_5 -1
+#endif
+#ifndef FW_DEFAULT_RELAY_GPIO_6
+#define FW_DEFAULT_RELAY_GPIO_6 -1
+#endif
+#ifndef FW_DEFAULT_RELAY_GPIO_7
+#define FW_DEFAULT_RELAY_GPIO_7 -1
+#endif
+#ifndef FW_DEFAULT_RELAY_GPIO_8
+#define FW_DEFAULT_RELAY_GPIO_8 -1
+#endif
+
 typedef struct {
     char name[MAX_STR];
     char type[MAX_STR];
@@ -94,8 +122,17 @@ static device_config_t g_cfg = {
     .name = FW_DEFAULT_NAME,
     .type = FW_DEFAULT_TYPE,
     .passcode = FW_DEFAULT_PASSCODE,
-    .relay_count = 4,
-    .relay_gpio = {RELAY1_PIN, RELAY2_PIN, RELAY3_PIN, RELAY4_PIN, -1, -1, -1, -1},
+    .relay_count = FW_DEFAULT_RELAY_COUNT,
+    .relay_gpio = {
+        FW_DEFAULT_RELAY_GPIO_1,
+        FW_DEFAULT_RELAY_GPIO_2,
+        FW_DEFAULT_RELAY_GPIO_3,
+        FW_DEFAULT_RELAY_GPIO_4,
+        FW_DEFAULT_RELAY_GPIO_5,
+        FW_DEFAULT_RELAY_GPIO_6,
+        FW_DEFAULT_RELAY_GPIO_7,
+        FW_DEFAULT_RELAY_GPIO_8,
+    },
     .wifi_ssid = FW_DEFAULT_WIFI_SSID,
     .wifi_pass = FW_DEFAULT_WIFI_PASS,
     .ap_ssid = FW_DEFAULT_AP_SSID,
@@ -123,7 +160,6 @@ static const ledc_channel_t CH_RGB_G = LEDC_CHANNEL_2;
 static const ledc_channel_t CH_RGB_B = LEDC_CHANNEL_3;
 static const ledc_channel_t CH_RGB_W = LEDC_CHANNEL_4;
 static const ledc_channel_t CH_FAN = LEDC_CHANNEL_5;
-static const int DEFAULT_RELAY_GPIOS[4] = {RELAY1_PIN, RELAY2_PIN, RELAY3_PIN, RELAY4_PIN};
 static const int SAFE_SCAN_GPIOS[] = {2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33};
 
 static void safe_strcpy(char *dst, const char *src, size_t dst_size) {
@@ -226,11 +262,17 @@ static void setup_web_status_led(void) {
 static void sanitize_relay_gpio_map(void) {
     sanitize_relay_count();
     for (int i = 0; i < MAX_RELAYS; i++) {
-        if (valid_relay_gpio_int(g_cfg.relay_gpio[i])) continue;
-        if (i < 4) {
-            g_cfg.relay_gpio[i] = DEFAULT_RELAY_GPIOS[i];
-        } else {
+        int pin = g_cfg.relay_gpio[i];
+        if (pin == -1) continue;
+        if (!valid_relay_gpio_int(pin)) {
             g_cfg.relay_gpio[i] = -1;
+            continue;
+        }
+        for (int j = 0; j < i; j++) {
+            if (g_cfg.relay_gpio[j] == pin) {
+                g_cfg.relay_gpio[i] = -1;
+                break;
+            }
         }
     }
 }
@@ -866,7 +908,7 @@ static esp_err_t web_root_handler(httpd_req_t *req) {
         "setIf('ap_ssid',$('cfgApSsid').value);setIf('ap_pass',$('cfgApPass').value);"
         "setIf('static_ip',$('cfgStaticIp').value.trim());setIf('gateway',$('cfgGateway').value.trim());setIf('subnet_mask',$('cfgMask').value.trim());"
         "setIf('ota_key',$('cfgOtaKey').value);"
-        "await api('/api/config',p);log('config saved, reboot device for Wi-Fi mode changes if needed');await refresh();"
+        "const cfgRes=await api('/api/config',p);log('config saved '+JSON.stringify(cfgRes)+', reboot device for Wi-Fi mode changes if needed');await refresh();"
         "}catch(e){log('config error: '+e.message);}};"
         "loadPassFromStorage();"
         "scannerUpdateState('stopped');"
@@ -966,7 +1008,18 @@ static esp_err_t config_handler(httpd_req_t *req) {
 
     save_config_to_nvs();
     cJSON_Delete(root);
-    return httpd_resp_sendstr(req, "{\"saved\":true}");
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "saved", true);
+    cJSON_AddNumberToObject(resp, "relay_count", g_cfg.relay_count);
+    cJSON *relay_gpio_out = cJSON_CreateArray();
+    for (int i = 0; i < MAX_RELAYS; i++) {
+        cJSON_AddItemToArray(relay_gpio_out, cJSON_CreateNumber(g_cfg.relay_gpio[i]));
+    }
+    cJSON_AddItemToObject(resp, "relay_gpio", relay_gpio_out);
+    esp_err_t resp_err = send_json(req, resp);
+    cJSON_Delete(resp);
+    return resp_err;
 }
 
 static esp_err_t control_handler(httpd_req_t *req) {
