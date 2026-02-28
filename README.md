@@ -122,7 +122,8 @@ Run controller app:
 Behavior:
 - Never deletes `/data`.
 - Loads `.env` from `/data/.env` first.
-- Pulls latest git changes (`git fetch` + `git pull --ff-only`).
+- Does not require `.git`; downloads latest GitHub archive and syncs controller-only files.
+- Overwrites controller app files each update, but preserves `.env` and `/data` storage.
 - Installs missing controller deps (`flutter pub get`).
 - Writes updater logs to `/data/logs/updater/sessions/<session>/`.
 - Writes controller run logs to `/data/logs/controller/sessions/<session>/`.
