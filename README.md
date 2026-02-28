@@ -124,7 +124,8 @@ Behavior:
 - Loads `.env` from `/data/.env` first.
 - Does not require `.git`; downloads latest GitHub archive and syncs controller-only files.
 - Overwrites controller app files each update, but preserves `.env` and `/data` storage.
-- Installs missing controller deps (`flutter pub get`).
+- Installs missing controller deps, including local Flutter SDK bootstrap to `.tools/flutter` if Flutter is not in PATH.
+- `linux-controller-run.sh` auto-runs updater once when Flutter is missing, then starts controller.
 - Writes updater logs to `/data/logs/updater/sessions/<session>/`.
 - Writes controller run logs to `/data/logs/controller/sessions/<session>/`.
 

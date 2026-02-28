@@ -10,6 +10,8 @@ SESSION_DIR="$LOG_BASE/$SESSION_ID"
 ACTIVITY_LOG="$SESSION_DIR/activity-$DAY_UTC.log"
 ERROR_LOG="$SESSION_DIR/errors-$DAY_UTC.log"
 TMP_ROOT="$(mktemp -d)"
+FLUTTER_HOME_DEFAULT="$APP_ROOT/.tools/flutter"
+FLUTTER_BIN=""
 
 CONTROLLER_SYNC_PATHS=(
   "controller-app"
@@ -161,15 +163,79 @@ install_deps() {
   ensure_cmd curl curl
   ensure_cmd tar tar
   ensure_cmd rsync rsync
-  if ! command -v flutter >/dev/null 2>&1; then
-    log "ERROR: Flutter is required but not found in PATH."
-    log "Install Flutter SDK and add it to PATH, then rerun updater."
-    return 1
+  if command -v apt-get >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
+    local -a pkgs=(clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-12-dev)
+    local -a missing=()
+    for p in "${pkgs[@]}"; do
+      if ! dpkg -s "$p" >/dev/null 2>&1; then
+        missing+=("$p")
+      fi
+    done
+    if ((${#missing[@]} > 0)); then
+      log "Installing missing Linux build packages: ${missing[*]}"
+      run sudo apt-get update
+      run sudo apt-get install -y "${missing[@]}"
+    fi
   fi
-  run flutter config --enable-linux-desktop
+
+  ensure_flutter
+  run "$FLUTTER_BIN" config --enable-linux-desktop
   pushd "$APP_ROOT/controller-app" >/dev/null
-  run flutter pub get
+  run "$FLUTTER_BIN" pub get
   popd >/dev/null
+}
+
+ensure_flutter() {
+  local flutter_home="${FLUTTER_HOME:-$FLUTTER_HOME_DEFAULT}"
+  local flutter_bin="$flutter_home/bin/flutter"
+
+  if command -v flutter >/dev/null 2>&1; then
+    FLUTTER_BIN="$(command -v flutter)"
+    log "Using Flutter from PATH: $FLUTTER_BIN"
+  elif [[ -x "$flutter_bin" ]]; then
+    FLUTTER_BIN="$flutter_bin"
+    log "Using local Flutter SDK: $FLUTTER_BIN"
+  else
+    log "Flutter not found. Downloading local Flutter SDK..."
+    local releases_json="$TMP_ROOT/flutter_releases_linux.json"
+    local sdk_archive="$TMP_ROOT/flutter_linux_stable.tar.xz"
+    run curl -fL -o "$releases_json" "https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json"
+
+    local release_info
+    release_info="$(python3 - "$releases_json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fp:
+    data = json.load(fp)
+base_url = data.get("base_url", "").rstrip("/")
+current_hash = data.get("current_release", {}).get("stable", "")
+archive = ""
+for item in data.get("releases", []):
+    if item.get("hash") == current_hash:
+        archive = item.get("archive", "")
+        break
+if not base_url or not archive:
+    raise SystemExit("Could not resolve Flutter stable archive URL")
+print(base_url + "/" + archive)
+PY
+)"
+    if [[ -z "$release_info" ]]; then
+      log "ERROR: Could not resolve Flutter stable release URL."
+      return 1
+    fi
+    run curl -fL -o "$sdk_archive" "$release_info"
+    mkdir -p "$APP_ROOT/.tools"
+    run tar -xJf "$sdk_archive" -C "$APP_ROOT/.tools"
+    FLUTTER_BIN="$flutter_bin"
+    if [[ ! -x "$FLUTTER_BIN" ]]; then
+      log "ERROR: Flutter install failed at $FLUTTER_BIN"
+      return 1
+    fi
+    log "Installed local Flutter SDK at $flutter_home"
+  fi
+
+  export PATH="$(dirname "$FLUTTER_BIN"):$PATH"
+  run "$FLUTTER_BIN" --version
 }
 
 show_version() {
