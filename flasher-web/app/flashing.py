@@ -227,6 +227,18 @@ def _run_job(job_id: str) -> None:
             append_event("flash_job_failed", {"job_id": job_id, "reason": output, "details": tool_source})
             return
 
+        erase_cmd = [
+            *tool_cmd,
+            "--chip",
+            "esp32",
+            "--port",
+            row["port"],
+            "--baud",
+            str(row["baud"]),
+            "erase_region",
+            "0x9000",
+            "0x6000",
+        ]
         cmd = [
             *tool_cmd,
             "--chip",
@@ -240,19 +252,23 @@ def _run_job(job_id: str) -> None:
             row["firmware_path"],
         ]
 
-        lines: list[str] = [f"$ {' '.join(cmd)}", f"[flash] esptool source: {tool_source}", "[flash] writing firmware to serial port..."]
+        lines: list[str] = [
+            f"[flash] esptool source: {tool_source}",
+            "[flash] clearing NVS config partition (0x9000 size 0x6000) so fresh build defaults apply...",
+            f"$ {' '.join(erase_cmd)}",
+        ]
         status = "failed"
         try:
-            proc = subprocess.Popen(
-                cmd,
+            last_flush = time.monotonic()
+            erase_proc = subprocess.Popen(
+                erase_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
             )
-            last_flush = time.monotonic()
-            if proc.stdout:
-                for raw in proc.stdout:
+            if erase_proc.stdout:
+                for raw in erase_proc.stdout:
                     line = (raw or "").rstrip("\r\n")
                     if line:
                         lines.append(line)
@@ -264,14 +280,41 @@ def _run_job(job_id: str) -> None:
                         )
                         conn.commit()
                         last_flush = now
-
-            code = proc.wait()
-            status = "success" if code == 0 else "failed"
-            lines.append(f"[flash] process exit code: {code}")
-            if status == "success":
-                lines.append("[flash] completed successfully")
+            erase_code = erase_proc.wait()
+            lines.append(f"[flash] erase_region exit code: {erase_code}")
+            if erase_code != 0:
+                lines.append("[flash] failed while clearing NVS; aborting flash.")
             else:
-                lines.append("[flash] failed")
+                lines.append("[flash] writing firmware to serial port...")
+                lines.append(f"$ {' '.join(cmd)}")
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                if proc.stdout:
+                    for raw in proc.stdout:
+                        line = (raw or "").rstrip("\r\n")
+                        if line:
+                            lines.append(line)
+                        now = time.monotonic()
+                        if now - last_flush > 0.5:
+                            conn.execute(
+                                "UPDATE flash_jobs SET output=? WHERE id=?",
+                                ("\n".join(lines)[-MAX_FLASH_OUTPUT:], job_id),
+                            )
+                            conn.commit()
+                            last_flush = now
+
+                code = proc.wait()
+                status = "success" if code == 0 else "failed"
+                lines.append(f"[flash] process exit code: {code}")
+                if status == "success":
+                    lines.append("[flash] completed successfully")
+                else:
+                    lines.append("[flash] failed")
         except Exception as exc:
             lines.append(f"[flash] exception: {exc}")
             status = "failed"
