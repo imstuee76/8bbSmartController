@@ -1,0 +1,8 @@
+services:
+  flasher-web:
+    build:
+      context: ./flasher-web
+    ports:
+      - "8088:8088"
+    volumes:
+      - ./data:/app/data

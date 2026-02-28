@@ -1,0 +1,27 @@
+menu "8bb Device Settings"
+
+config EIGHTBB_WIFI_SSID
+    string "Default Wi-Fi SSID"
+    default ""
+
+config EIGHTBB_WIFI_PASS
+    string "Default Wi-Fi Password"
+    default ""
+
+config EIGHTBB_AP_SSID
+    string "Fallback AP SSID"
+    default "8bb-device-setup"
+
+config EIGHTBB_AP_PASS
+    string "Fallback AP Password"
+    default "12345678"
+
+config EIGHTBB_DEVICE_NAME
+    string "Default device name"
+    default "8bb-esp32"
+
+config EIGHTBB_DEVICE_TYPE
+    string "Default device type"
+    default "relay_switch"
+
+endmenu

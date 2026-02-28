@@ -1,0 +1,30 @@
+# Runtime / build
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.venv/
+.env
+/data/.env
+
+# Flutter
+.dart_tool/
+.packages
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# ESP-IDF
+esp32-firmware/build/
+esp32-firmware/sdkconfig
+
+# Keep data dir structure, ignore data contents
+/data/*
+!/data/.gitkeep
+!/data/logs/.gitkeep
+!/data/firmware/.gitkeep
+!/data/ota/.gitkeep
+!/data/backups/.gitkeep

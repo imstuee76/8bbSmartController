@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://8bb.local/schemas/device-profile.schema.json",
+  "title": "8bb Device Profile",
+  "type": "object",
+  "required": ["id", "name", "type", "network", "channels"],
+  "properties": {
+    "id": {"type": "string"},
+    "name": {"type": "string"},
+    "type": {
+      "type": "string",
+      "enum": ["relay_switch", "light_single", "light_dimmer", "light_rgb", "light_rgbw", "fan"]
+    },
+    "network": {
+      "type": "object",
+      "required": ["ip_mode"],
+      "properties": {
+        "ip_mode": {"type": "string", "enum": ["dhcp", "static"]},
+        "static_ip": {"type": "string"},
+        "gateway": {"type": "string"},
+        "subnet_mask": {"type": "string"}
+      }
+    },
+    "channels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["channel_key", "channel_name", "channel_kind"],
+        "properties": {
+          "channel_key": {"type": "string"},
+          "channel_name": {"type": "string"},
+          "channel_kind": {"type": "string"},
+          "payload": {"type": "object"}
+        }
+      }
+    }
+  }
+}

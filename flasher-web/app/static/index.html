@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>8bb Device Flasher</title>
+  <link rel="stylesheet" href="/ui/styles.css" />
+</head>
+<body>
+  <main class="layout">
+    <section class="panel header-panel">
+      <h1>8bb Device Flasher</h1>
+      <p>Profile-first ESP32 flashing workflow for LAN devices.</p>
+      <p id="flasherVersionLabel" class="small-note">Version: loading...</p>
+    </section>
+
+    <section id="authSetup" class="panel hidden">
+      <h2>Initial Admin Setup</h2>
+      <div class="grid two-col">
+        <label>Username <input id="setupUser" autocomplete="username" /></label>
+        <label>Password <input id="setupPass" type="password" autocomplete="new-password" /></label>
+      </div>
+      <button id="setupBtn">Create Admin</button>
+    </section>
+
+    <section id="authLogin" class="panel hidden">
+      <h2>Login</h2>
+      <div class="grid two-col">
+        <label>Username <input id="loginUser" autocomplete="username" /></label>
+        <label>Password <input id="loginPass" type="password" autocomplete="current-password" /></label>
+      </div>
+      <button id="loginBtn">Login</button>
+    </section>
+
+    <section id="appPanel" class="panel hidden">
+      <div class="workflow-header">
+        <h2>Firmware Profile Workflow</h2>
+        <div class="toolbar wrap">
+          <button id="scanBtn" class="secondary">Scan Network</button>
+          <button id="firmwareBtn" class="secondary">Refresh Firmware</button>
+          <button id="portsBtn" class="secondary">Refresh Ports</button>
+          <button id="profilesBtn" class="secondary">Refresh Profiles</button>
+          <button id="devicesBtn" class="secondary">Refresh Devices</button>
+        </div>
+      </div>
+
+      <div class="workflow-grid">
+        <section class="step-card">
+          <h3>Step 1. New Profile</h3>
+          <div class="grid two-col">
+            <label>Profile Name
+              <input id="profileName" value="Default Profile" />
+            </label>
+            <label>Version
+              <input id="profileVersion" value="1.0.0" />
+            </label>
+            <label>Device Type
+              <select id="profileDeviceType">
+                <option value="relay_switch">Relay Switch</option>
+                <option value="fan">Fan</option>
+                <option value="light_single">Single Light</option>
+                <option value="light_dimmer">Dimmer Light</option>
+                <option value="light_rgb">RGB Light</option>
+                <option value="light_rgbw">RGBW Light</option>
+              </select>
+            </label>
+            <label>Firmware
+              <select id="firmwareSelect"></select>
+            </label>
+          </div>
+
+          <div class="inline-actions">
+            <input id="firmwareFile" type="file" accept=".bin" />
+            <button id="uploadFirmwareBtn">Upload Firmware</button>
+          </div>
+
+          <label>Notes
+            <textarea id="profileNotes" rows="2" placeholder="Optional profile notes"></textarea>
+          </label>
+        </section>
+
+        <section class="step-card">
+          <h3>Step 2. Device Options</h3>
+          <div class="grid two-col">
+            <label>Device Name
+              <input id="deviceName" placeholder="Kitchen Relay" />
+            </label>
+            <label>Device Passcode
+              <input id="devicePasscode" type="password" placeholder="required on device" />
+            </label>
+            <label>mDNS Hostname
+              <input id="deviceHostname" placeholder="8bb-kitchen-relay" />
+            </label>
+            <label>OTA Channel
+              <select id="otaChannel">
+                <option value="stable">Stable</option>
+                <option value="beta">Beta</option>
+              </select>
+            </label>
+          </div>
+
+          <div id="deviceTypeOptions" class="dynamic-options"></div>
+        </section>
+
+        <section class="step-card">
+          <h3>Step 3. Network Setup</h3>
+          <div class="grid two-col">
+            <label>Wi-Fi SSID
+              <input id="wifiSsid" placeholder="HomeNetwork" />
+            </label>
+            <label>Wi-Fi Password
+              <input id="wifiPassword" type="password" />
+            </label>
+            <label>Fallback AP SSID
+              <input id="fallbackApSsid" value="8bb-setup" />
+            </label>
+            <label>Fallback AP Password
+              <input id="fallbackApPassword" type="password" placeholder="min 8 chars" />
+            </label>
+            <label>Fallback AP Timeout (sec)
+              <input id="fallbackApTimeout" type="number" min="30" value="300" />
+            </label>
+            <label>IP Mode
+              <select id="ipMode">
+                <option value="dhcp">DHCP</option>
+                <option value="static">Static IP</option>
+              </select>
+            </label>
+          </div>
+
+          <div id="staticIpFields" class="grid three-col hidden">
+            <label>Static IP
+              <input id="staticIp" placeholder="192.168.1.55" />
+            </label>
+            <label>Gateway
+              <input id="gatewayIp" placeholder="192.168.1.1" />
+            </label>
+            <label>Subnet Mask
+              <input id="subnetMask" placeholder="255.255.255.0" />
+            </label>
+            <label>DNS 1
+              <input id="dns1" placeholder="192.168.1.1" />
+            </label>
+            <label>DNS 2
+              <input id="dns2" placeholder="1.1.1.1" />
+            </label>
+          </div>
+        </section>
+
+        <section class="step-card">
+          <h3>Step 4. Build / Flash</h3>
+
+          <div class="action-box">
+            <h4>Build Firmware From Source</h4>
+            <p class="small-note">Compiles firmware from <code>esp32-firmware</code> using ESP-IDF, then saves output to <code>data/firmware</code>.</p>
+            <button id="buildFirmwareBtn">Build Firmware</button>
+          </div>
+
+          <div class="action-box">
+            <h4>Flash To Serial Port</h4>
+            <p class="small-note">Shows live esptool write output while flashing.</p>
+            <div class="grid three-col">
+              <label>Serial Port
+                <select id="portSelect"></select>
+              </label>
+              <label>Baud
+                <select id="baudSelect"></select>
+              </label>
+            </div>
+            <button id="flashBtn">Flash To Port</button>
+            <pre id="flashOut"></pre>
+          </div>
+
+          <div class="action-box">
+            <h4>Live Serial Monitor</h4>
+            <div class="grid three-col">
+              <label>Monitor Port
+                <select id="monitorPortSelect"></select>
+              </label>
+              <label>Monitor Baud
+                <select id="monitorBaudSelect"></select>
+              </label>
+            </div>
+            <div class="inline-actions">
+              <button id="monitorStartBtn">Start Monitor</button>
+              <button id="monitorStopBtn" class="secondary">Stop Monitor</button>
+              <button id="monitorProbeBtn" class="secondary">Probe Port</button>
+            </div>
+            <pre id="monitorOut"></pre>
+          </div>
+
+          <div class="action-box">
+            <h4>Device Bring-Up Tests</h4>
+            <p class="small-note">Use these checks after flash/reboot. If Host/IP is empty, tests auto-discover from serial output + LAN scan.</p>
+            <div class="grid two-col">
+              <label>Device Host/IP
+                <input id="diagHost" placeholder="192.168.1.55 or 8bb-device.local" />
+              </label>
+              <label>Device Passcode
+                <input id="diagPasscode" type="password" placeholder="same passcode set on firmware" />
+              </label>
+              <label>Expected Hostname
+                <input id="diagExpectedHostname" placeholder="optional: 8bb-kitchen-relay" />
+              </label>
+            </div>
+            <label>External Serial Log (optional)
+              <textarea id="diagSerialText" rows="4" placeholder="Paste miniterm output here if serial was captured outside this app"></textarea>
+            </label>
+            <div class="toolbar wrap">
+              <button id="diagParseSerialBtn" class="secondary">Parse Serial Log</button>
+              <button id="diagDetectIpBtn" class="secondary">Detect IP From Serial</button>
+              <button id="diagAutoDiscoverBtn" class="secondary">Auto Discover Device</button>
+              <button id="diagPingBtn" class="secondary">Ping Test</button>
+              <button id="diagStatusBtn" class="secondary">Web API Test</button>
+              <button id="diagPairBtn" class="secondary">Pair Test</button>
+              <button id="diagAllBtn">Run All Tests</button>
+            </div>
+            <pre id="diagOut"></pre>
+          </div>
+
+          <div class="action-box">
+            <h4>Build OTA File (Profile Package)</h4>
+            <p class="small-note">Creates signed OTA manifest + firmware copy under <code>data/firmware_profiles/&lt;profile-folder&gt;</code>.</p>
+            <button id="buildProfileBtn">Build OTA File</button>
+          </div>
+
+          <div class="action-box">
+            <h4>Flash OTA</h4>
+            <div class="grid two-col">
+              <label>Saved Profile
+                <select id="profileSelect"></select>
+              </label>
+              <label>Target Device
+                <select id="otaDeviceSelect"></select>
+              </label>
+            </div>
+            <button id="flashOtaBtn">Flash OTA</button>
+          </div>
+        </section>
+
+        <section class="step-card">
+          <h3>Discovery</h3>
+          <pre id="scanOut"></pre>
+        </section>
+
+        <section class="step-card">
+          <h3>Output</h3>
+          <pre id="actionOut"></pre>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <script src="/ui/app.js"></script>
+</body>
+</html>
