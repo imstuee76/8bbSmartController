@@ -31,6 +31,7 @@
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT BIT1
 #define MAX_RELAYS 8
+#define WEB_STATUS_LED_PIN GPIO_NUM_2
 
 /* GPIO and PWM mapping for default reference board. */
 #define RELAY1_PIN GPIO_NUM_16
@@ -111,6 +112,7 @@ static httpd_handle_t g_server = NULL;
 static EventGroupHandle_t g_wifi_events;
 static int g_sta_fail_count = 0;
 static int g_last_wifi_disc_reason = 0;
+static bool g_web_led_enabled = false;
 static esp_netif_t *g_sta_netif = NULL;
 static esp_netif_t *g_ap_netif = NULL;
 
@@ -186,6 +188,39 @@ static bool is_safe_scan_gpio_int(int pin) {
 
 static bool valid_relay_gpio_int(int pin) {
     return valid_output_gpio_int(pin) && is_safe_scan_gpio_int(pin);
+}
+
+static bool relay_pin_in_use(int pin) {
+    sanitize_relay_count();
+    for (int i = 0; i < g_cfg.relay_count; i++) {
+        if (g_cfg.relay_gpio[i] == pin) return true;
+    }
+    return false;
+}
+
+static bool aux_pin_available(int pin) {
+    return valid_output_gpio_int(pin) && !relay_pin_in_use(pin);
+}
+
+static void set_web_status_led(bool on) {
+    if (!g_web_led_enabled) return;
+    gpio_set_level(WEB_STATUS_LED_PIN, on ? 1 : 0);
+}
+
+static void setup_web_status_led(void) {
+    if (!valid_output_gpio_int(WEB_STATUS_LED_PIN)) {
+        g_web_led_enabled = false;
+        return;
+    }
+    if (relay_pin_in_use(WEB_STATUS_LED_PIN)) {
+        ESP_LOGW(TAG, "Web status LED disabled, pin %d is assigned to relay", WEB_STATUS_LED_PIN);
+        g_web_led_enabled = false;
+        return;
+    }
+    gpio_reset_pin(WEB_STATUS_LED_PIN);
+    gpio_set_direction(WEB_STATUS_LED_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_level(WEB_STATUS_LED_PIN, 0);
+    g_web_led_enabled = true;
 }
 
 static void sanitize_relay_gpio_map(void) {
@@ -314,7 +349,9 @@ static void apply_relay(int idx, bool on) {
 }
 
 static void apply_light_single(bool on) {
-    gpio_set_level(LIGHT_SINGLE_PIN, on ? 1 : 0);
+    if (aux_pin_available(LIGHT_SINGLE_PIN)) {
+        gpio_set_level(LIGHT_SINGLE_PIN, on ? 1 : 0);
+    }
     g_state.light_single = on;
 }
 
@@ -337,7 +374,9 @@ static void apply_rgb(int r, int g, int b, int w) {
 static void apply_fan(bool power, int speed_pct) {
     g_state.fan_power = power;
     g_state.fan_speed_pct = clamp_int(speed_pct, 0, 100);
-    gpio_set_level(FAN_POWER_PIN, g_state.fan_power ? 1 : 0);
+    if (aux_pin_available(FAN_POWER_PIN)) {
+        gpio_set_level(FAN_POWER_PIN, g_state.fan_power ? 1 : 0);
+    }
     ledc_set_percent(CH_FAN, g_state.fan_power ? g_state.fan_speed_pct : 0);
 }
 
@@ -420,16 +459,20 @@ static bool handle_control(cJSON *root) {
     return false;
 }
 
-static void init_outputs(void) {
-    gpio_config_t io_conf = {
-        .intr_type = GPIO_INTR_DISABLE,
-        .mode = GPIO_MODE_OUTPUT,
-        .pin_bit_mask = (1ULL << LIGHT_SINGLE_PIN) | (1ULL << FAN_POWER_PIN),
-        .pull_down_en = 0,
-        .pull_up_en = 0,
-    };
-    gpio_config(&io_conf);
+static void configure_output_pins_only(void) {
     configure_relay_gpio_outputs();
+    if (aux_pin_available(LIGHT_SINGLE_PIN)) {
+        gpio_reset_pin(LIGHT_SINGLE_PIN);
+        gpio_set_direction(LIGHT_SINGLE_PIN, GPIO_MODE_OUTPUT);
+    } else {
+        ESP_LOGW(TAG, "LIGHT_SINGLE pin %d conflicts with relay mapping; feature disabled", LIGHT_SINGLE_PIN);
+    }
+    if (aux_pin_available(FAN_POWER_PIN)) {
+        gpio_reset_pin(FAN_POWER_PIN);
+        gpio_set_direction(FAN_POWER_PIN, GPIO_MODE_OUTPUT);
+    } else {
+        ESP_LOGW(TAG, "FAN_POWER pin %d conflicts with relay mapping; feature disabled", FAN_POWER_PIN);
+    }
 
     ledc_timer_config_t timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
@@ -440,17 +483,38 @@ static void init_outputs(void) {
     };
     ledc_timer_config(&timer);
 
-    ledc_channel_config_t channels[] = {
-        {.gpio_num = DIMMER_PIN, .speed_mode = LEDC_LOW_SPEED_MODE, .channel = CH_DIMMER, .timer_sel = LEDC_TIMER_0, .duty = 0},
-        {.gpio_num = RGB_R_PIN, .speed_mode = LEDC_LOW_SPEED_MODE, .channel = CH_RGB_R, .timer_sel = LEDC_TIMER_0, .duty = 0},
-        {.gpio_num = RGB_G_PIN, .speed_mode = LEDC_LOW_SPEED_MODE, .channel = CH_RGB_G, .timer_sel = LEDC_TIMER_0, .duty = 0},
-        {.gpio_num = RGB_B_PIN, .speed_mode = LEDC_LOW_SPEED_MODE, .channel = CH_RGB_B, .timer_sel = LEDC_TIMER_0, .duty = 0},
-        {.gpio_num = RGB_W_PIN, .speed_mode = LEDC_LOW_SPEED_MODE, .channel = CH_RGB_W, .timer_sel = LEDC_TIMER_0, .duty = 0},
-        {.gpio_num = FAN_SPEED_PIN, .speed_mode = LEDC_LOW_SPEED_MODE, .channel = CH_FAN, .timer_sel = LEDC_TIMER_0, .duty = 0},
+    typedef struct {
+        int gpio;
+        ledc_channel_t channel;
+        const char *name;
+    } pwm_chan_t;
+    pwm_chan_t chans[] = {
+        {.gpio = DIMMER_PIN, .channel = CH_DIMMER, .name = "DIMMER"},
+        {.gpio = RGB_R_PIN, .channel = CH_RGB_R, .name = "RGB_R"},
+        {.gpio = RGB_G_PIN, .channel = CH_RGB_G, .name = "RGB_G"},
+        {.gpio = RGB_B_PIN, .channel = CH_RGB_B, .name = "RGB_B"},
+        {.gpio = RGB_W_PIN, .channel = CH_RGB_W, .name = "RGB_W"},
+        {.gpio = FAN_SPEED_PIN, .channel = CH_FAN, .name = "FAN_SPEED"},
     };
-    for (size_t i = 0; i < sizeof(channels) / sizeof(channels[0]); i++) {
-        ledc_channel_config(&channels[i]);
+    for (size_t i = 0; i < sizeof(chans) / sizeof(chans[0]); i++) {
+        ledc_stop(LEDC_LOW_SPEED_MODE, chans[i].channel, 0);
+        if (!aux_pin_available(chans[i].gpio)) {
+            ESP_LOGW(TAG, "%s PWM pin %d conflicts with relay mapping; channel disabled", chans[i].name, chans[i].gpio);
+            continue;
+        }
+        ledc_channel_config_t cfg = {
+            .gpio_num = chans[i].gpio,
+            .speed_mode = LEDC_LOW_SPEED_MODE,
+            .channel = chans[i].channel,
+            .timer_sel = LEDC_TIMER_0,
+            .duty = 0,
+        };
+        ledc_channel_config(&cfg);
     }
+}
+
+static void init_outputs(void) {
+    configure_output_pins_only();
 
     for (int i = 0; i < MAX_RELAYS; i++) apply_relay(i, false);
     for (int i = g_cfg.relay_count; i < MAX_RELAYS; i++) {
@@ -563,11 +627,15 @@ static esp_err_t status_handler(httpd_req_t *req) {
     cJSON *gpio_candidates = cJSON_CreateArray();
     for (size_t i = 0; i < sizeof(SAFE_SCAN_GPIOS) / sizeof(SAFE_SCAN_GPIOS[0]); i++) {
         int pin = SAFE_SCAN_GPIOS[i];
+        if (g_web_led_enabled && pin == WEB_STATUS_LED_PIN) continue;
         if (GPIO_IS_VALID_OUTPUT_GPIO(pin) && is_safe_scan_gpio_int(pin)) {
             cJSON_AddItemToArray(gpio_candidates, cJSON_CreateNumber(pin));
         }
     }
     cJSON_AddItemToObject(root, "gpio_candidates", gpio_candidates);
+    cJSON_AddBoolToObject(root, "web_ui_running", g_server != NULL);
+    cJSON_AddBoolToObject(root, "web_led_enabled", g_web_led_enabled);
+    cJSON_AddNumberToObject(root, "web_led_pin", WEB_STATUS_LED_PIN);
     add_network_status(root);
 
     esp_err_t err = send_json(req, root);
@@ -882,12 +950,14 @@ static esp_err_t config_handler(httpd_req_t *req) {
     sanitize_wifi_field(g_cfg.ap_pass);
     sanitize_relay_count();
     sanitize_relay_gpio_map();
-    configure_relay_gpio_outputs();
+    configure_output_pins_only();
+    setup_web_status_led();
+    set_web_status_led(g_server != NULL);
     for (int i = 0; i < MAX_RELAYS; i++) {
         if (i < g_cfg.relay_count) {
             apply_relay(i, g_state.relay[i]);
         } else {
-            if (valid_output_gpio_int(g_cfg.relay_gpio[i])) {
+            if (valid_relay_gpio_int(g_cfg.relay_gpio[i])) {
                 gpio_set_level((gpio_num_t)g_cfg.relay_gpio[i], 0);
             }
             g_state.relay[i] = false;
@@ -1259,6 +1329,7 @@ static void start_http_server(void) {
     config.server_port = 80;
     if (httpd_start(&g_server, &config) != ESP_OK) {
         ESP_LOGE(TAG, "HTTP server start failed");
+        set_web_status_led(false);
         return;
     }
 
@@ -1279,6 +1350,8 @@ static void start_http_server(void) {
     httpd_register_uri_handler(g_server, &control_uri);
     httpd_register_uri_handler(g_server, &gpio_test_uri);
     httpd_register_uri_handler(g_server, &ota_uri);
+    setup_web_status_led();
+    set_web_status_led(true);
     ESP_LOGI(TAG, "HTTP API ready");
 }
 
