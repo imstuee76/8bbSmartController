@@ -30,6 +30,7 @@
 #define OTA_BUFFER_MAX 8192
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT BIT1
+#define MAX_RELAYS 8
 
 /* GPIO and PWM mapping for default reference board. */
 #define RELAY1_PIN GPIO_NUM_16
@@ -50,7 +51,8 @@ typedef struct {
     char name[MAX_STR];
     char type[MAX_STR];
     char passcode[MAX_STR];
-    int relay_gpio[4];
+    int relay_count;
+    int relay_gpio[MAX_RELAYS];
     char wifi_ssid[MAX_STR];
     char wifi_pass[MAX_STR];
     char ap_ssid[MAX_STR];
@@ -63,7 +65,7 @@ typedef struct {
 } device_config_t;
 
 typedef struct {
-    bool relay[4];
+    bool relay[MAX_RELAYS];
     bool light_single;
     int dimmer_pct;
     int rgb[4];
@@ -71,11 +73,28 @@ typedef struct {
     int fan_speed_pct;
 } output_state_t;
 
+typedef struct {
+    char name[MAX_STR];
+    char type[MAX_STR];
+    char passcode[MAX_STR];
+    int relay_gpio[4];
+    char wifi_ssid[MAX_STR];
+    char wifi_pass[MAX_STR];
+    char ap_ssid[MAX_STR];
+    char ap_pass[MAX_STR];
+    bool use_static_ip;
+    char static_ip[MAX_STR];
+    char gateway[MAX_STR];
+    char subnet_mask[MAX_STR];
+    char ota_key[MAX_STR];
+} legacy_device_config_v1_t;
+
 static device_config_t g_cfg = {
     .name = FW_DEFAULT_NAME,
     .type = FW_DEFAULT_TYPE,
     .passcode = FW_DEFAULT_PASSCODE,
-    .relay_gpio = {RELAY1_PIN, RELAY2_PIN, RELAY3_PIN, RELAY4_PIN},
+    .relay_count = 4,
+    .relay_gpio = {RELAY1_PIN, RELAY2_PIN, RELAY3_PIN, RELAY4_PIN, -1, -1, -1, -1},
     .wifi_ssid = FW_DEFAULT_WIFI_SSID,
     .wifi_pass = FW_DEFAULT_WIFI_PASS,
     .ap_ssid = FW_DEFAULT_AP_SSID,
@@ -91,6 +110,7 @@ static output_state_t g_state = {0};
 static httpd_handle_t g_server = NULL;
 static EventGroupHandle_t g_wifi_events;
 static int g_sta_fail_count = 0;
+static int g_last_wifi_disc_reason = 0;
 static esp_netif_t *g_sta_netif = NULL;
 static esp_netif_t *g_ap_netif = NULL;
 
@@ -148,21 +168,30 @@ static int clamp_int(int value, int min_val, int max_val) {
     return value;
 }
 
+static void sanitize_relay_count(void) {
+    g_cfg.relay_count = clamp_int(g_cfg.relay_count, 1, MAX_RELAYS);
+}
+
 static bool valid_output_gpio_int(int pin) {
     return pin >= 0 && pin <= 39 && GPIO_IS_VALID_OUTPUT_GPIO(pin);
 }
 
 static void sanitize_relay_gpio_map(void) {
-    for (int i = 0; i < 4; i++) {
-        if (!valid_output_gpio_int(g_cfg.relay_gpio[i])) {
+    sanitize_relay_count();
+    for (int i = 0; i < MAX_RELAYS; i++) {
+        if (valid_output_gpio_int(g_cfg.relay_gpio[i])) continue;
+        if (i < 4) {
             g_cfg.relay_gpio[i] = DEFAULT_RELAY_GPIOS[i];
+        } else {
+            g_cfg.relay_gpio[i] = -1;
         }
     }
 }
 
 static void configure_relay_gpio_outputs(void) {
     sanitize_relay_gpio_map();
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < MAX_RELAYS; i++) {
+        if (!valid_output_gpio_int(g_cfg.relay_gpio[i])) continue;
         gpio_num_t pin = (gpio_num_t)g_cfg.relay_gpio[i];
         gpio_reset_pin(pin);
         gpio_set_direction(pin, GPIO_MODE_OUTPUT);
@@ -184,6 +213,7 @@ static void load_config_from_nvs(void) {
     nvs_handle_t nvs;
     if (nvs_open("cfg", NVS_READONLY, &nvs) != ESP_OK) {
         ESP_LOGW(TAG, "NVS cfg not found, using defaults");
+        sanitize_relay_count();
         sanitize_relay_gpio_map();
         return;
     }
@@ -192,9 +222,33 @@ static void load_config_from_nvs(void) {
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Loaded config from NVS");
     } else {
-        ESP_LOGW(TAG, "Config read failed, using defaults");
+        legacy_device_config_v1_t legacy = {0};
+        len = sizeof(legacy);
+        err = nvs_get_blob(nvs, "device", &legacy, &len);
+        if (err == ESP_OK) {
+            ESP_LOGW(TAG, "Loaded legacy config from NVS, migrating");
+            safe_strcpy(g_cfg.name, legacy.name, sizeof(g_cfg.name));
+            safe_strcpy(g_cfg.type, legacy.type, sizeof(g_cfg.type));
+            safe_strcpy(g_cfg.passcode, legacy.passcode, sizeof(g_cfg.passcode));
+            g_cfg.relay_count = 4;
+            for (int i = 0; i < 4; i++) g_cfg.relay_gpio[i] = legacy.relay_gpio[i];
+            for (int i = 4; i < MAX_RELAYS; i++) g_cfg.relay_gpio[i] = -1;
+            safe_strcpy(g_cfg.wifi_ssid, legacy.wifi_ssid, sizeof(g_cfg.wifi_ssid));
+            safe_strcpy(g_cfg.wifi_pass, legacy.wifi_pass, sizeof(g_cfg.wifi_pass));
+            safe_strcpy(g_cfg.ap_ssid, legacy.ap_ssid, sizeof(g_cfg.ap_ssid));
+            safe_strcpy(g_cfg.ap_pass, legacy.ap_pass, sizeof(g_cfg.ap_pass));
+            g_cfg.use_static_ip = legacy.use_static_ip;
+            safe_strcpy(g_cfg.static_ip, legacy.static_ip, sizeof(g_cfg.static_ip));
+            safe_strcpy(g_cfg.gateway, legacy.gateway, sizeof(g_cfg.gateway));
+            safe_strcpy(g_cfg.subnet_mask, legacy.subnet_mask, sizeof(g_cfg.subnet_mask));
+            safe_strcpy(g_cfg.ota_key, legacy.ota_key, sizeof(g_cfg.ota_key));
+            save_config_to_nvs();
+        } else {
+            ESP_LOGW(TAG, "Config read failed, using defaults");
+        }
     }
     nvs_close(nvs);
+    sanitize_relay_count();
     sanitize_relay_gpio_map();
     sanitize_wifi_field(g_cfg.wifi_ssid);
     sanitize_wifi_field(g_cfg.wifi_pass);
@@ -236,7 +290,8 @@ static void ledc_set_percent(ledc_channel_t channel, int pct) {
 }
 
 static void apply_relay(int idx, bool on) {
-    if (idx < 0 || idx > 3) return;
+    if (idx < 0 || idx >= MAX_RELAYS) return;
+    if (idx >= g_cfg.relay_count) return;
     sanitize_relay_gpio_map();
     int pin = g_cfg.relay_gpio[idx];
     if (!valid_output_gpio_int(pin)) return;
@@ -292,7 +347,8 @@ static bool handle_control(cJSON *root) {
 
     if (strncmp(ch, "relay", 5) == 0) {
         int idx = atoi(ch + 5) - 1;
-        bool target = parse_on_off_toggle(st, (idx >= 0 && idx < 4) ? g_state.relay[idx] : false);
+        if (idx < 0 || idx >= g_cfg.relay_count) return false;
+        bool target = parse_on_off_toggle(st, (idx >= 0 && idx < MAX_RELAYS) ? g_state.relay[idx] : false);
         apply_relay(idx, target);
         return true;
     }
@@ -327,11 +383,14 @@ static bool handle_control(cJSON *root) {
         return true;
     }
 
-    if (strcmp(ch, "fan") == 0 || strcmp(ch, "fan_power") == 0) {
+    if (strcmp(ch, "fan") == 0 || strcmp(ch, "fan_power") == 0 || strcmp(ch, "fan_speed") == 0) {
         bool power = g_state.fan_power;
         int speed = g_state.fan_speed_pct;
         if (strcmp(ch, "fan_power") == 0) {
             power = parse_on_off_toggle(st, g_state.fan_power);
+        } else if (strcmp(ch, "fan_speed") == 0) {
+            speed = val;
+            power = speed > 0;
         } else if (strcmp(st, "set") == 0) {
             speed = val;
             power = speed > 0;
@@ -379,11 +438,79 @@ static void init_outputs(void) {
         ledc_channel_config(&channels[i]);
     }
 
-    for (int i = 0; i < 4; i++) apply_relay(i, false);
+    for (int i = 0; i < MAX_RELAYS; i++) apply_relay(i, false);
+    for (int i = g_cfg.relay_count; i < MAX_RELAYS; i++) {
+        if (valid_output_gpio_int(g_cfg.relay_gpio[i])) {
+            gpio_set_level((gpio_num_t)g_cfg.relay_gpio[i], 0);
+        }
+        g_state.relay[i] = false;
+    }
     apply_light_single(false);
     apply_dimmer(0);
     apply_rgb(0, 0, 0, 0);
     apply_fan(false, 0);
+}
+
+static void add_ip_info_to_json(cJSON *obj, const char *prefix, esp_netif_t *netif) {
+    if (!obj || !prefix || !netif) return;
+    esp_netif_ip_info_t info = {0};
+    if (esp_netif_get_ip_info(netif, &info) != ESP_OK) return;
+    char ip[20] = {0};
+    char gw[20] = {0};
+    char mask[20] = {0};
+    snprintf(ip, sizeof(ip), IPSTR, IP2STR(&info.ip));
+    snprintf(gw, sizeof(gw), IPSTR, IP2STR(&info.gw));
+    snprintf(mask, sizeof(mask), IPSTR, IP2STR(&info.netmask));
+
+    char key_ip[32] = {0};
+    char key_gw[32] = {0};
+    char key_mask[32] = {0};
+    snprintf(key_ip, sizeof(key_ip), "%s_ip", prefix);
+    snprintf(key_gw, sizeof(key_gw), "%s_gw", prefix);
+    snprintf(key_mask, sizeof(key_mask), "%s_mask", prefix);
+    cJSON_AddStringToObject(obj, key_ip, ip);
+    cJSON_AddStringToObject(obj, key_gw, gw);
+    cJSON_AddStringToObject(obj, key_mask, mask);
+}
+
+static void add_network_status(cJSON *root) {
+    cJSON *net = cJSON_CreateObject();
+    wifi_mode_t mode = WIFI_MODE_NULL;
+    esp_err_t mode_err = esp_wifi_get_mode(&mode);
+    if (mode_err != ESP_OK) {
+        cJSON_AddStringToObject(net, "mode", "unknown");
+    } else if (mode == WIFI_MODE_STA) {
+        cJSON_AddStringToObject(net, "mode", "sta");
+    } else if (mode == WIFI_MODE_AP) {
+        cJSON_AddStringToObject(net, "mode", "ap");
+    } else if (mode == WIFI_MODE_APSTA) {
+        cJSON_AddStringToObject(net, "mode", "apsta");
+    } else {
+        cJSON_AddStringToObject(net, "mode", "unknown");
+    }
+
+    bool sta_connected = false;
+    if (g_wifi_events) {
+        EventBits_t bits = xEventGroupGetBits(g_wifi_events);
+        sta_connected = (bits & WIFI_CONNECTED_BIT) != 0;
+    }
+    cJSON_AddBoolToObject(net, "sta_connected", sta_connected);
+    cJSON_AddNumberToObject(net, "last_disconnect_reason", g_last_wifi_disc_reason);
+    cJSON_AddStringToObject(net, "configured_ssid", g_cfg.wifi_ssid);
+    cJSON_AddStringToObject(net, "fallback_ap_ssid", g_cfg.ap_ssid);
+    cJSON_AddBoolToObject(net, "static_ip_enabled", g_cfg.use_static_ip);
+
+    wifi_ap_record_t ap_info = {0};
+    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        cJSON_AddStringToObject(net, "connected_ssid", (const char *)ap_info.ssid);
+        cJSON_AddNumberToObject(net, "rssi", ap_info.rssi);
+    } else {
+        cJSON_AddStringToObject(net, "connected_ssid", "");
+    }
+
+    add_ip_info_to_json(net, "sta", g_sta_netif);
+    add_ip_info_to_json(net, "ap", g_ap_netif);
+    cJSON_AddItemToObject(root, "network", net);
 }
 
 static esp_err_t status_handler(httpd_req_t *req) {
@@ -391,18 +518,20 @@ static esp_err_t status_handler(httpd_req_t *req) {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "name", g_cfg.name);
     cJSON_AddStringToObject(root, "type", g_cfg.type);
+    cJSON_AddNumberToObject(root, "relay_count", g_cfg.relay_count);
     cJSON_AddBoolToObject(root, "static_ip_enabled", g_cfg.use_static_ip);
     cJSON_AddStringToObject(root, "static_ip", g_cfg.static_ip);
     cJSON_AddStringToObject(root, "gateway", g_cfg.gateway);
     cJSON_AddStringToObject(root, "subnet_mask", g_cfg.subnet_mask);
-    cJSON_AddStringToObject(root, "fw_version", "0.2.0");
+    cJSON_AddStringToObject(root, "fw_version", "0.3.0");
     cJSON_AddStringToObject(root, "ota_mode", "signed-hmac");
 
     cJSON *outputs = cJSON_CreateObject();
-    cJSON_AddBoolToObject(outputs, "relay1", g_state.relay[0]);
-    cJSON_AddBoolToObject(outputs, "relay2", g_state.relay[1]);
-    cJSON_AddBoolToObject(outputs, "relay3", g_state.relay[2]);
-    cJSON_AddBoolToObject(outputs, "relay4", g_state.relay[3]);
+    for (int i = 0; i < g_cfg.relay_count; i++) {
+        char key[16] = {0};
+        snprintf(key, sizeof(key), "relay%d", i + 1);
+        cJSON_AddBoolToObject(outputs, key, g_state.relay[i]);
+    }
     cJSON_AddBoolToObject(outputs, "light", g_state.light_single);
     cJSON_AddNumberToObject(outputs, "dimmer", g_state.dimmer_pct);
     cJSON_AddNumberToObject(outputs, "rgb_r", g_state.rgb[0]);
@@ -413,10 +542,16 @@ static esp_err_t status_handler(httpd_req_t *req) {
     cJSON_AddNumberToObject(outputs, "fan_speed", g_state.fan_speed_pct);
     cJSON_AddItemToObject(root, "outputs", outputs);
     cJSON *relay_gpio = cJSON_CreateArray();
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < MAX_RELAYS; i++) {
         cJSON_AddItemToArray(relay_gpio, cJSON_CreateNumber(g_cfg.relay_gpio[i]));
     }
     cJSON_AddItemToObject(root, "relay_gpio", relay_gpio);
+    cJSON *gpio_candidates = cJSON_CreateArray();
+    for (int i = 0; i <= 39; i++) {
+        if (GPIO_IS_VALID_OUTPUT_GPIO(i)) cJSON_AddItemToArray(gpio_candidates, cJSON_CreateNumber(i));
+    }
+    cJSON_AddItemToObject(root, "gpio_candidates", gpio_candidates);
+    add_network_status(root);
 
     esp_err_t err = send_json(req, root);
     cJSON_Delete(root);
@@ -431,16 +566,25 @@ static esp_err_t web_root_handler(httpd_req_t *req) {
         "<title>8bb ESP32</title>"
         "<style>"
         "body{font-family:Arial,sans-serif;margin:16px;background:#10161c;color:#e9eef4}"
-        "h1{margin:0 0 10px 0;font-size:22px}h2{font-size:16px;margin:14px 0 8px}"
-        ".grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}"
+        "h1{margin:0 0 10px 0;font-size:22px}h2{font-size:16px;margin:8px 0}"
         ".card{border:1px solid #2a3a4a;border-radius:10px;padding:12px;background:#131c24;margin-bottom:12px}"
-        "label{display:block;font-size:12px;color:#a8bacd;margin-bottom:6px}"
-        "input,select,button{width:100%;padding:10px;border-radius:8px;border:1px solid #324657;background:#0f151c;color:#e9eef4;box-sizing:border-box}"
-        "button{cursor:pointer;background:#1f3345;border-color:#4a6a85}"
         ".row{display:grid;grid-template-columns:1fr 1fr;gap:8px}"
         ".row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}"
-        "pre{background:#0b1016;border:1px solid #2a3a4a;padding:10px;border-radius:8px;overflow:auto;max-height:220px}"
+        ".row4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px}"
+        "label{display:block;font-size:12px;color:#a8bacd;margin-bottom:6px}"
+        "input,select,button,textarea{width:100%;padding:10px;border-radius:8px;border:1px solid #324657;background:#0f151c;color:#e9eef4;box-sizing:border-box}"
+        "button{cursor:pointer;background:#1f3345;border-color:#4a6a85}"
+        "button.secondary{background:#132332}"
         ".small{font-size:12px;color:#9cb0c3}"
+        ".tabs{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 14px}"
+        ".tab{width:auto;padding:8px 12px}"
+        ".tab.active{background:#2f5576}"
+        ".panel{display:none}"
+        ".panel.active{display:block}"
+        ".relay-grid{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:8px}"
+        ".relay-config-grid{display:grid;grid-template-columns:repeat(3,minmax(120px,1fr));gap:8px}"
+        ".kpi{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:8px}"
+        "pre{background:#0b1016;border:1px solid #2a3a4a;padding:10px;border-radius:8px;overflow:auto;max-height:260px}"
         "</style></head><body>"
         "<h1>8bb ESP32 Device</h1>"
         "<div class='card'>"
@@ -453,18 +597,43 @@ static esp_err_t web_root_handler(httpd_req_t *req) {
         "<button id='refreshBtn'>Refresh Status</button>"
         "<button id='applyCfgBtn'>Save Config</button>"
         "</div>"
-        "<div class='small'>Manual UI for test/control/config. API root: /api/status</div>"
+        "<div class='small'>Tabbed local UI. API root: /api/status</div>"
         "</div>"
 
+        "<div class='tabs'>"
+        "<button class='tab active' data-tab='overviewPanel'>Overview</button>"
+        "<button class='tab' data-tab='controlsPanel'>Controls</button>"
+        "<button class='tab' data-tab='gpioPanel'>GPIO Scanner</button>"
+        "<button class='tab' data-tab='configPanel'>Config</button>"
+        "<button class='tab' data-tab='rawPanel'>Raw Status</button>"
+        "</div>"
+
+        "<div id='overviewPanel' class='panel active'>"
+        "<div class='card'>"
+        "<h2>Network Connection</h2>"
+        "<div class='kpi'>"
+        "<div><label>Mode</label><input id='netMode' readonly/></div>"
+        "<div><label>Connected SSID</label><input id='netSsid' readonly/></div>"
+        "<div><label>STA IP</label><input id='netStaIp' readonly/></div>"
+        "<div><label>AP IP</label><input id='netApIp' readonly/></div>"
+        "</div>"
+        "<div class='kpi'>"
+        "<div><label>Configured SSID</label><input id='netCfgSsid' readonly/></div>"
+        "<div><label>Fallback AP SSID</label><input id='netApSsid' readonly/></div>"
+        "<div><label>Last Wi-Fi Reason</label><input id='netReason' readonly/></div>"
+        "<div><label>Relay Ports</label><input id='relayCountView' readonly/></div>"
+        "</div>"
+        "</div>"
+        "</div>"
+
+        "<div id='controlsPanel' class='panel'>"
         "<div class='card'>"
         "<h2>Outputs</h2>"
-        "<div class='row3'>"
-        "<button data-relay='relay1' class='relayBtn'>Toggle Relay 1</button>"
-        "<button data-relay='relay2' class='relayBtn'>Toggle Relay 2</button>"
-        "<button data-relay='relay3' class='relayBtn'>Toggle Relay 3</button>"
-        "<button data-relay='relay4' class='relayBtn'>Toggle Relay 4</button>"
+        "<div id='relayButtons' class='relay-grid'></div>"
+        "<div class='row3' style='margin-top:8px'>"
         "<button id='lightBtn'>Toggle Light</button>"
         "<button id='fanPowerBtn'>Toggle Fan Power</button>"
+        "<button id='refreshControlBtn' class='secondary'>Reload Controls</button>"
         "</div>"
         "<div class='row'>"
         "<div><label>Dimmer %</label><input id='dimmerVal' type='number' min='0' max='100' value='50'/></div>"
@@ -475,7 +644,9 @@ static esp_err_t web_root_handler(httpd_req_t *req) {
         "<button id='setFanBtn'>Set Fan Speed</button>"
         "</div>"
         "</div>"
+        "</div>"
 
+        "<div id='gpioPanel' class='panel'>"
         "<div class='card'>"
         "<h2>GPIO Test</h2>"
         "<div class='row3'>"
@@ -483,64 +654,121 @@ static esp_err_t web_root_handler(httpd_req_t *req) {
         "<div><label>Level</label><select id='gpioLevel'><option value='1'>ON (1)</option><option value='0'>OFF (0)</option></select></div>"
         "<div><label>Apply</label><button id='gpioSetBtn'>Set GPIO</button></div>"
         "</div>"
-        "<div class='small'>For temporary manual test only. Does not change saved relay mapping.</div>"
+        "<div class='small'>Temporary test only. Does not change saved relay mapping.</div>"
         "</div>"
 
         "<div class='card'>"
-        "<h2>Config</h2>"
-        "<div class='grid'>"
-        "<div><label>Device Name</label><input id='cfgName' placeholder='8bb-esp32'/></div>"
-        "<div><label>Device Type</label><input id='cfgType' placeholder='relay_switch'/></div>"
-        "<div><label>New Device Passcode</label><input id='cfgNewPass' type='password'/></div>"
-        "<div><label>Wi-Fi SSID</label><input id='cfgWifiSsid'/></div>"
-        "<div><label>Wi-Fi Password</label><input id='cfgWifiPass' type='password'/></div>"
-        "<div><label>Fallback AP SSID</label><input id='cfgApSsid'/></div>"
-        "<div><label>Fallback AP Password</label><input id='cfgApPass' type='password'/></div>"
-        "<div><label>Relay1 GPIO</label><input id='cfgRelay1' type='number' min='0' max='39' value='16'/></div>"
-        "<div><label>Relay2 GPIO</label><input id='cfgRelay2' type='number' min='0' max='39' value='17'/></div>"
-        "<div><label>Relay3 GPIO</label><input id='cfgRelay3' type='number' min='0' max='39' value='18'/></div>"
-        "<div><label>Relay4 GPIO</label><input id='cfgRelay4' type='number' min='0' max='39' value='19'/></div>"
-        "<div><label>Use Static IP</label><select id='cfgStaticUse'><option value='0'>No (DHCP)</option><option value='1'>Yes</option></select></div>"
-        "<div><label>Static IP</label><input id='cfgStaticIp' placeholder='192.168.1.50'/></div>"
-        "<div><label>Gateway</label><input id='cfgGateway' placeholder='192.168.1.1'/></div>"
-        "<div><label>Subnet Mask</label><input id='cfgMask' placeholder='255.255.255.0'/></div>"
-        "<div><label>OTA Key</label><input id='cfgOtaKey' type='password'/></div>"
+        "<h2>GPIO Scanner</h2>"
+        "<div class='row4'>"
+        "<button id='scanStartBtn'>Start Scan (1.5s)</button>"
+        "<button id='scanPauseBtn' class='secondary'>Pause</button>"
+        "<button id='scanContinueBtn' class='secondary'>Continue</button>"
+        "<button id='scanStopBtn' class='secondary'>Stop</button>"
+        "</div>"
+        "<div class='row3' style='margin-top:8px'>"
+        "<button id='scanTestOnBtn'>Test ON Current GPIO</button>"
+        "<button id='scanTestOffBtn'>Test OFF Current GPIO</button>"
+        "<button id='scanNextBtn' class='secondary'>Next GPIO</button>"
+        "</div>"
+        "<div class='row' style='margin-top:8px'>"
+        "<div><label>Current Scan GPIO</label><input id='scanCurrentPin' readonly/></div>"
+        "<div><label>Scan State</label><input id='scanState' readonly value='stopped'/></div>"
+        "</div>"
+        "<div class='small'>Use Pause instantly when relay clicks, test ON/OFF, then Continue.</div>"
         "</div>"
         "</div>"
 
+        "<div id='configPanel' class='panel'>"
+        "<div class='card'>"
+        "<h2>Config</h2>"
+        "<div class='row'>"
+        "<div><label>Device Name</label><input id='cfgName' placeholder='8bb-esp32'/></div>"
+        "<div><label>Device Type</label><input id='cfgType' placeholder='relay_switch'/></div>"
+        "</div>"
+        "<div class='row'>"
+        "<div><label>New Device Passcode</label><input id='cfgNewPass' type='password'/></div>"
+        "<div><label>Wi-Fi SSID</label><input id='cfgWifiSsid'/></div>"
+        "</div>"
+        "<div class='row'>"
+        "<div><label>Wi-Fi Password</label><input id='cfgWifiPass' type='password'/></div>"
+        "<div><label>Fallback AP SSID</label><input id='cfgApSsid'/></div>"
+        "</div>"
+        "<div class='row'>"
+        "<div><label>Fallback AP Password</label><input id='cfgApPass' type='password'/></div>"
+        "<div><label>Use Static IP</label><select id='cfgStaticUse'><option value='0'>No (DHCP)</option><option value='1'>Yes</option></select></div>"
+        "</div>"
+        "<div class='row'>"
+        "<div><label>Static IP</label><input id='cfgStaticIp' placeholder='192.168.1.50'/></div>"
+        "<div><label>Gateway</label><input id='cfgGateway' placeholder='192.168.1.1'/></div>"
+        "</div>"
+        "<div class='row'>"
+        "<div><label>Subnet Mask</label><input id='cfgMask' placeholder='255.255.255.0'/></div>"
+        "<div><label>OTA Key</label><input id='cfgOtaKey' type='password'/></div>"
+        "</div>"
+        "<div class='row'>"
+        "<div><label>Relay Port Count (1-8)</label><input id='cfgRelayCount' type='number' min='1' max='8' value='4'/></div>"
+        "<div><label>Apply Port Count</label><button id='cfgRelayCountApply' class='secondary'>Update Relay Rows</button></div>"
+        "</div>"
+        "<div id='relayConfigRows' class='relay-config-grid' style='margin-top:8px'></div>"
+        "</div>"
+        "</div>"
+
+        "<div id='rawPanel' class='panel'>"
         "<div class='card'><h2>Status</h2><pre id='statusOut'>Loading...</pre></div>"
         "<div class='card'><h2>Log</h2><pre id='logOut'></pre></div>"
+        "</div>"
         "<script>"
         "const $=id=>document.getElementById(id);"
+        "const MAX_RELAYS=8;"
         "let S={};"
+        "let scanner={running:false,paused:false,pins:[],idx:0,currentPin:null,timer:null};"
         "const log=m=>{$('logOut').textContent=(new Date().toISOString()+' '+m+'\\n'+$('logOut').textContent).slice(0,6000);};"
         "const pass=()=>$('pass').value||'';"
+        "function setTab(name){document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));const p=$(name);if(p)p.classList.add('active');document.querySelectorAll('.tab').forEach(t=>{if(t.getAttribute('data-tab')===name)t.classList.add('active');});}"
+        "document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>setTab(t.getAttribute('data-tab')));"
         "async function api(path,payload){"
         "const o=payload?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}:{};"
         "const r=await fetch(path,o);const t=await r.text();let j={};try{j=t?JSON.parse(t):{}}catch(_){j={raw:t}}"
         "if(!r.ok){throw new Error((j&&j.detail)||t||('HTTP '+r.status));}return j;}"
-        "function setCfgFromStatus(s){$('cfgName').value=s.name||$('cfgName').value;$('cfgType').value=s.type||$('cfgType').value;$('cfgStaticUse').value=s.static_ip_enabled?'1':'0';$('cfgStaticIp').value=s.static_ip||'';$('cfgGateway').value=s.gateway||'';$('cfgMask').value=s.subnet_mask||'';const rg=Array.isArray(s.relay_gpio)?s.relay_gpio:[];$('cfgRelay1').value=(rg[0]??$('cfgRelay1').value);$('cfgRelay2').value=(rg[1]??$('cfgRelay2').value);$('cfgRelay3').value=(rg[2]??$('cfgRelay3').value);$('cfgRelay4').value=(rg[3]??$('cfgRelay4').value);}"
+        "function buildRelayConfigRows(){const c=Math.min(MAX_RELAYS,Math.max(1,parseInt($('cfgRelayCount').value||'4',10)));const rg=Array.isArray(S.relay_gpio)?S.relay_gpio:[];let h='';for(let i=0;i<c;i++){const v=(Number.isInteger(rg[i])?rg[i]:(i<4?[16,17,18,19][i]:-1));h+='<div><label>Relay '+(i+1)+' GPIO</label><input id=\\'cfgRelay'+(i+1)+'\\' type=\\'number\\' min=\\'-1\\' max=\\'39\\' value=\\''+v+'\\'/></div>';h+='<div><label>Relay '+(i+1)+' ON</label><button type=\\'button\\' onclick=\\\"doControl(\\\\'relay'+(i+1)+'\\\\',\\\\'on\\\\')\\\">ON</button></div>';h+='<div><label>Relay '+(i+1)+' OFF</label><button type=\\'button\\' onclick=\\\"doControl(\\\\'relay'+(i+1)+'\\\\',\\\\'off\\\\')\\\">OFF</button></div>';}$('relayConfigRows').innerHTML=h;}"
+        "function buildRelayButtons(){const c=Math.min(MAX_RELAYS,Math.max(1,parseInt(S.relay_count||'4',10)));let h='';for(let i=1;i<=c;i++){h+='<button type=\\'button\\' class=\\'relayBtn\\' data-relay=\\'relay'+i+'\\'>Toggle Relay '+i+'</button>';}$('relayButtons').innerHTML=h;document.querySelectorAll('.relayBtn').forEach(b=>b.onclick=()=>doControl(b.getAttribute('data-relay'),'toggle'));}"
+        "function setOverview(s){const n=s.network||{};$('netMode').value=n.mode||'';$('netSsid').value=n.connected_ssid||'';$('netStaIp').value=n.sta_ip||'';$('netApIp').value=n.ap_ip||'';$('netCfgSsid').value=n.configured_ssid||'';$('netApSsid').value=n.fallback_ap_ssid||'';$('netReason').value=(n.last_disconnect_reason??'').toString();$('relayCountView').value=(s.relay_count??'').toString();}"
+        "function setCfgFromStatus(s){const n=s.network||{};$('cfgName').value=s.name||$('cfgName').value;$('cfgType').value=s.type||$('cfgType').value;$('cfgStaticUse').value=s.static_ip_enabled?'1':'0';$('cfgStaticIp').value=s.static_ip||'';$('cfgGateway').value=s.gateway||'';$('cfgMask').value=s.subnet_mask||'';$('cfgWifiSsid').value=n.configured_ssid||$('cfgWifiSsid').value;$('cfgApSsid').value=n.fallback_ap_ssid||$('cfgApSsid').value;$('cfgRelayCount').value=(s.relay_count||4);buildRelayConfigRows();setOverview(s);buildRelayButtons();}"
         "async function refresh(){try{S=await api('/api/status');$('statusOut').textContent=JSON.stringify(S,null,2);setCfgFromStatus(S);log('status refreshed');}catch(e){log('status error: '+e.message);}}"
         "async function doControl(channel,state,value){const p={passcode:pass(),channel:channel,state:state};if(value!==undefined)p.value=value;const r=await api('/api/control',p);log('control '+channel+' '+state+' ok');await refresh();return r;}"
-        "document.querySelectorAll('.relayBtn').forEach(b=>b.onclick=()=>doControl(b.getAttribute('data-relay'),'toggle'));"
         "$('lightBtn').onclick=()=>doControl('light','toggle');"
         "$('fanPowerBtn').onclick=()=>doControl('fan_power','toggle');"
+        "$('refreshControlBtn').onclick=()=>refresh();"
         "$('setDimmerBtn').onclick=()=>doControl('dimmer','set',parseInt($('dimmerVal').value||'0',10));"
         "$('setFanBtn').onclick=()=>doControl('fan_speed','set',parseInt($('fanVal').value||'0',10));"
         "$('gpioSetBtn').onclick=async()=>{try{const p={passcode:pass(),gpio:parseInt($('gpioPin').value||'0',10),value:parseInt($('gpioLevel').value||'0',10)};const r=await api('/api/test/gpio',p);log('gpio test ok '+JSON.stringify(r));}catch(e){log('gpio test error: '+e.message);}};"
         "$('pairBtn').onclick=async()=>{try{const r=await api('/api/pair',{passcode:pass()});log('pair ok '+JSON.stringify(r));}catch(e){log('pair error: '+e.message);}};"
+        "$('cfgRelayCountApply').onclick=()=>buildRelayConfigRows();"
         "$('refreshBtn').onclick=()=>refresh();"
+        "async function scannerSet(pin,level){await api('/api/test/gpio',{passcode:pass(),gpio:pin,value:level});}"
+        "function scannerUpdateState(t){$('scanState').value=t;}"
+        "function scannerClearTimer(){if(scanner.timer){clearTimeout(scanner.timer);scanner.timer=null;}}"
+        "async function scannerStep(){if(!scanner.running||scanner.paused)return;try{if(scanner.currentPin!==null){await scannerSet(scanner.currentPin,0);}if(!scanner.pins.length){throw new Error('No GPIO candidates');}if(scanner.idx>=scanner.pins.length)scanner.idx=0;const pin=scanner.pins[scanner.idx++];scanner.currentPin=pin;$('scanCurrentPin').value=String(pin);$('gpioPin').value=String(pin);await scannerSet(pin,1);scannerUpdateState('running');log('scanner gpio '+pin+' ON');if(!scanner.running||scanner.paused){scannerUpdateState(scanner.paused?'paused':'stopped');return;}scanner.timer=setTimeout(()=>{scannerStep().catch(e=>log('scanner error: '+e.message));},1500);}catch(e){scannerUpdateState('error');log('scanner error: '+e.message);}}"
+        "function scannerPins(){const fromStatus=Array.isArray(S.gpio_candidates)?S.gpio_candidates:[];const pins=fromStatus.map(x=>parseInt(x,10)).filter(v=>Number.isInteger(v)&&v>=0&&v<=39);return pins.length?pins:[2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];}"
+        "$('scanStartBtn').onclick=async()=>{try{scanner.running=true;scanner.paused=false;scanner.idx=0;scanner.pins=scannerPins();scannerClearTimer();if(scanner.currentPin!==null){try{await scannerSet(scanner.currentPin,0);}catch(_){}}scanner.currentPin=null;scannerUpdateState('starting');await scannerStep();}catch(e){log('scan start error: '+e.message);}};"
+        "$('scanPauseBtn').onclick=()=>{scanner.paused=true;scannerClearTimer();scannerUpdateState('paused');log('scanner paused at gpio '+(scanner.currentPin??'none'));};"
+        "$('scanContinueBtn').onclick=()=>{if(!scanner.running)return;scanner.paused=false;scannerUpdateState('running');scannerStep().catch(e=>log('scanner continue error: '+e.message));};"
+        "$('scanStopBtn').onclick=async()=>{scanner.running=false;scanner.paused=false;scannerClearTimer();if(scanner.currentPin!==null){try{await scannerSet(scanner.currentPin,0);}catch(_){}}scanner.currentPin=null;$('scanCurrentPin').value='';scannerUpdateState('stopped');log('scanner stopped');};"
+        "$('scanNextBtn').onclick=()=>{if(!scanner.running)return;if(scanner.paused){scanner.paused=false;scannerStep().catch(e=>log('scanner next error: '+e.message));}};"
+        "$('scanTestOnBtn').onclick=async()=>{try{const p=scanner.currentPin!==null?scanner.currentPin:parseInt($('gpioPin').value||'0',10);await scannerSet(p,1);$('scanCurrentPin').value=String(p);scanner.currentPin=p;log('manual test ON gpio '+p);}catch(e){log('manual test ON error: '+e.message);}};"
+        "$('scanTestOffBtn').onclick=async()=>{try{const p=scanner.currentPin!==null?scanner.currentPin:parseInt($('gpioPin').value||'0',10);await scannerSet(p,0);$('scanCurrentPin').value=String(p);scanner.currentPin=p;log('manual test OFF gpio '+p);}catch(e){log('manual test OFF error: '+e.message);}};"
         "$('applyCfgBtn').onclick=async()=>{"
         "try{const p={passcode:pass(),use_static_ip:$('cfgStaticUse').value==='1'};"
         "const setIf=(k,v)=>{if(v!==undefined&&v!==null&&String(v).length>0)p[k]=v;};"
         "setIf('name',$('cfgName').value.trim());setIf('type',$('cfgType').value.trim());setIf('new_passcode',$('cfgNewPass').value);"
         "setIf('wifi_ssid',$('cfgWifiSsid').value);setIf('wifi_pass',$('cfgWifiPass').value);"
-        "const rg=[parseInt($('cfgRelay1').value||'-1',10),parseInt($('cfgRelay2').value||'-1',10),parseInt($('cfgRelay3').value||'-1',10),parseInt($('cfgRelay4').value||'-1',10)];if(rg.every(v=>Number.isInteger(v)&&v>=0&&v<=39)){p.relay_gpio=rg;}"
+        "const c=Math.min(MAX_RELAYS,Math.max(1,parseInt($('cfgRelayCount').value||'4',10)));p.relay_count=c;const rg=[];for(let i=1;i<=MAX_RELAYS;i++){const el=$('cfgRelay'+i);if(el){rg.push(parseInt(el.value||'-1',10));}else{rg.push(-1);}}if(rg.every(v=>Number.isInteger(v)&&v>=-1&&v<=39)){p.relay_gpio=rg;}"
         "setIf('ap_ssid',$('cfgApSsid').value);setIf('ap_pass',$('cfgApPass').value);"
         "setIf('static_ip',$('cfgStaticIp').value.trim());setIf('gateway',$('cfgGateway').value.trim());setIf('subnet_mask',$('cfgMask').value.trim());"
         "setIf('ota_key',$('cfgOtaKey').value);"
         "await api('/api/config',p);log('config saved, reboot device for Wi-Fi mode changes if needed');await refresh();"
         "}catch(e){log('config error: '+e.message);}};"
+        "scannerUpdateState('stopped');"
         "refresh();"
         "</script>"
         "</body></html>";
@@ -566,7 +794,7 @@ static esp_err_t pair_handler(httpd_req_t *req) {
 }
 
 static esp_err_t config_handler(httpd_req_t *req) {
-    char buf[1024] = {0};
+    char buf[2048] = {0};
     int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (len <= 0) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad payload");
     cJSON *root = cJSON_Parse(buf);
@@ -583,6 +811,7 @@ static esp_err_t config_handler(httpd_req_t *req) {
     cJSON *wifi_pass = cJSON_GetObjectItem(root, "wifi_pass");
     cJSON *ap_ssid = cJSON_GetObjectItem(root, "ap_ssid");
     cJSON *ap_pass = cJSON_GetObjectItem(root, "ap_pass");
+    cJSON *relay_count = cJSON_GetObjectItem(root, "relay_count");
     cJSON *relay_gpio = cJSON_GetObjectItem(root, "relay_gpio");
     cJSON *ota_key = cJSON_GetObjectItem(root, "ota_key");
     cJSON *static_ip_enabled = cJSON_GetObjectItem(root, "use_static_ip");
@@ -597,8 +826,9 @@ static esp_err_t config_handler(httpd_req_t *req) {
     if (cJSON_IsString(wifi_pass)) safe_strcpy(g_cfg.wifi_pass, wifi_pass->valuestring, sizeof(g_cfg.wifi_pass));
     if (cJSON_IsString(ap_ssid)) safe_strcpy(g_cfg.ap_ssid, ap_ssid->valuestring, sizeof(g_cfg.ap_ssid));
     if (cJSON_IsString(ap_pass)) safe_strcpy(g_cfg.ap_pass, ap_pass->valuestring, sizeof(g_cfg.ap_pass));
+    if (cJSON_IsNumber(relay_count)) g_cfg.relay_count = relay_count->valueint;
     if (cJSON_IsArray(relay_gpio)) {
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < MAX_RELAYS; i++) {
             cJSON *it = cJSON_GetArrayItem(relay_gpio, i);
             if (cJSON_IsNumber(it)) g_cfg.relay_gpio[i] = it->valueint;
         }
@@ -612,10 +842,18 @@ static esp_err_t config_handler(httpd_req_t *req) {
     sanitize_wifi_field(g_cfg.wifi_pass);
     sanitize_wifi_field(g_cfg.ap_ssid);
     sanitize_wifi_field(g_cfg.ap_pass);
+    sanitize_relay_count();
     sanitize_relay_gpio_map();
     configure_relay_gpio_outputs();
-    for (int i = 0; i < 4; i++) {
-        apply_relay(i, g_state.relay[i]);
+    for (int i = 0; i < MAX_RELAYS; i++) {
+        if (i < g_cfg.relay_count) {
+            apply_relay(i, g_state.relay[i]);
+        } else {
+            if (valid_output_gpio_int(g_cfg.relay_gpio[i])) {
+                gpio_set_level((gpio_num_t)g_cfg.relay_gpio[i], 0);
+            }
+            g_state.relay[i] = false;
+        }
     }
 
     save_config_to_nvs();
@@ -870,6 +1108,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *disc = (wifi_event_sta_disconnected_t *)event_data;
+        g_last_wifi_disc_reason = disc ? disc->reason : -1;
         ESP_LOGW(TAG, "Wi-Fi disconnected reason=%d retry=%d", disc ? disc->reason : -1, g_sta_fail_count + 1);
         g_sta_fail_count++;
         if (g_sta_fail_count < 5) {
@@ -884,6 +1123,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
                      g_cfg.name, g_cfg.name, IP2STR(&evt->ip_info.ip), IP2STR(&evt->ip_info.gw), IP2STR(&evt->ip_info.netmask));
         }
         g_sta_fail_count = 0;
+        g_last_wifi_disc_reason = 0;
         xEventGroupSetBits(g_wifi_events, WIFI_CONNECTED_BIT);
     }
 }
