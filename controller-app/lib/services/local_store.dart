@@ -58,16 +58,19 @@ class LocalStore {
 
   Future<String> loadServerUrl() async {
     final settings = await _readSettings();
+    final fromEnv = await _envValue(['CONTROLLER_BACKEND_URL', 'BACKEND_URL']);
+    if (fromEnv.isNotEmpty) {
+      final currentSaved = (settings[_serverUrlKey] ?? '').toString().trim();
+      if (currentSaved != fromEnv) {
+        settings[_serverUrlKey] = fromEnv;
+        await _writeSettings(settings);
+      }
+      return fromEnv;
+    }
+
     final current = (settings[_serverUrlKey] ?? '').toString().trim();
     if (current.isNotEmpty) {
       return current;
-    }
-
-    final fromEnv = await _envValue(['CONTROLLER_BACKEND_URL', 'BACKEND_URL']);
-    if (fromEnv.isNotEmpty) {
-      settings[_serverUrlKey] = fromEnv;
-      await _writeSettings(settings);
-      return fromEnv;
     }
 
     final legacy = (await _legacyPref(_serverUrlKey)).trim();

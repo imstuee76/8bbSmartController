@@ -18,7 +18,7 @@ class SessionLogger {
       return;
     }
     final data = await DataPaths.dataDir();
-    final now = DateTime.now().toUtc();
+    final now = DateTime.now();
     final day = _fmtDay(now);
     final stamp = _fmtStamp(now);
     _sessionId = 'controller-$stamp-${pid}';
@@ -45,7 +45,7 @@ class SessionLogger {
       await init();
     }
     final row = <String, dynamic>{
-      'time': DateTime.now().toUtc().toIso8601String(),
+      'time': _isoLocal(DateTime.now()),
       'event': event,
       'payload': payload ?? <String, dynamic>{},
     };
@@ -62,7 +62,7 @@ class SessionLogger {
       await init();
     }
     final row = <String, dynamic>{
-      'time': DateTime.now().toUtc().toIso8601String(),
+      'time': _isoLocal(DateTime.now()),
       'event': event,
       'error': error.toString(),
       'stack_trace': stackTrace?.toString() ?? '',
@@ -97,6 +97,21 @@ class SessionLogger {
     final hh = dt.hour.toString().padLeft(2, '0');
     final mm = dt.minute.toString().padLeft(2, '0');
     final ss = dt.second.toString().padLeft(2, '0');
-    return '${y}${m}${d}T${hh}${mm}${ss}Z';
+    final off = dt.timeZoneOffset;
+    final sign = off.isNegative ? '-' : '+';
+    final offAbs = off.abs();
+    final offH = offAbs.inHours.toString().padLeft(2, '0');
+    final offM = (offAbs.inMinutes % 60).toString().padLeft(2, '0');
+    return '${y}${m}${d}T${hh}${mm}${ss}${sign}${offH}${offM}';
+  }
+
+  String _isoLocal(DateTime dt) {
+    final local = dt.toLocal();
+    final off = local.timeZoneOffset;
+    final sign = off.isNegative ? '-' : '+';
+    final offAbs = off.abs();
+    final offH = offAbs.inHours.toString().padLeft(2, '0');
+    final offM = (offAbs.inMinutes % 60).toString().padLeft(2, '0');
+    return '${local.toIso8601String()}$sign$offH:$offM';
   }
 }

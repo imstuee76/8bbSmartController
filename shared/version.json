@@ -1,11 +1,11 @@
 {
   "controller": {
-    "version": "0.1.9",
-    "build": 10
+    "version": "0.1.10",
+    "build": 11
   },
   "flasher": {
-    "version": "0.2.9",
-    "build": 10
+    "version": "0.2.10",
+    "build": 11
   },
-  "updated_at": "2026-02-28T23:24:47+00:00"
+  "updated_at": "2026-02-28T23:38:43+00:00"
 }
