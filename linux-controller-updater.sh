@@ -37,9 +37,30 @@ log() {
   printf '[8bb-updater] %s\n' "$*"
 }
 
+sanitize_log_text() {
+  local text="$*"
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    text="${text//${GITHUB_TOKEN}/***REDACTED***}"
+  fi
+  printf '%s' "$text"
+}
+
 run() {
-  log "\$ $*"
+  local safe_cmd
+  safe_cmd="$(sanitize_log_text "$*")"
+  log "\$ $safe_cmd"
   "$@"
+}
+
+apt_update_safe() {
+  if ! command -v sudo >/dev/null 2>&1 || ! command -v apt-get >/dev/null 2>&1; then
+    return 1
+  fi
+  if run sudo apt-get update; then
+    return 0
+  fi
+  log "WARNING: apt-get update failed (likely broken external repo). Continuing with best effort."
+  return 1
 }
 
 load_env_file() {
@@ -68,8 +89,10 @@ ensure_cmd() {
   fi
   log "Missing command '$cmd'. Attempting apt install: $pkg"
   if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-    run sudo apt-get update
-    run sudo apt-get install -y "$pkg"
+    apt_update_safe || true
+    if ! run sudo apt-get install -y "$pkg"; then
+      log "WARNING: apt install failed for '$pkg'."
+    fi
   fi
   if ! command -v "$cmd" >/dev/null 2>&1; then
     log "ERROR: command '$cmd' is still unavailable after install attempt."
@@ -173,8 +196,10 @@ install_deps() {
     done
     if ((${#missing[@]} > 0)); then
       log "Installing missing Linux build packages: ${missing[*]}"
-      run sudo apt-get update
-      run sudo apt-get install -y "${missing[@]}"
+      apt_update_safe || true
+      if ! run sudo apt-get install -y "${missing[@]}"; then
+        log "WARNING: Optional Linux build package install failed. Flutter may still run if toolchain is already present."
+      fi
     fi
   fi
 
