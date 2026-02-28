@@ -90,6 +90,7 @@ git_push.cmd
 
 Notes:
 - Uses token from `.env` without writing token to git remote URL.
+- `GITHUB_REPO` supports either `owner/repo` or owner-only with `GITHUB_REPO_NAME`.
 - Initializes git repo if missing.
 - Bumps versions automatically before commit unless `--skip-bump` is used.
 - Git logs are written to `data/logs/git/sessions/`.

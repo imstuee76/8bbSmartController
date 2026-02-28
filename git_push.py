@@ -45,8 +45,18 @@ def log_error(message: str) -> None:
         fp.write(line + "\n")
 
 
+def _sanitize_cmd(cmd: list[str]) -> str:
+    sanitized: list[str] = []
+    for part in cmd:
+        if "extraheader=AUTHORIZATION:" in part:
+            sanitized.append("http.https://github.com/.extraheader=AUTHORIZATION: basic <redacted>")
+        else:
+            sanitized.append(part)
+    return " ".join(sanitized)
+
+
 def run(cmd: list[str], check: bool = True, capture_output: bool = False) -> subprocess.CompletedProcess[str]:
-    printable = " ".join(cmd)
+    printable = _sanitize_cmd(cmd)
     log(f"$ {printable}")
     result = subprocess.run(
         cmd,
@@ -106,10 +116,13 @@ def ensure_git_repo(branch: str) -> None:
 def detect_repo_slug(env: dict[str, str]) -> str:
     repo_value = env.get("GITHUB_REPO", "").strip()
     owner = env.get("GITHUB_OWNER", "").strip()
+    repo_name = env.get("GITHUB_REPO_NAME", "").strip()
     if repo_value and "/" in repo_value:
         return repo_value
     if repo_value and owner:
         return f"{owner}/{repo_value}"
+    if repo_value and repo_name:
+        return f"{repo_value}/{repo_name}"
     if repo_value and "/" not in repo_value:
         # Backward compatible mode: value is owner only.
         return f"{repo_value}/{ROOT.name}"
