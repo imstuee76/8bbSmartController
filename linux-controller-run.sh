@@ -63,6 +63,19 @@ ensure_flutter() {
   exit 1
 }
 
+ensure_linux_desktop_project() {
+  local app_dir="$APP_ROOT/controller-app"
+  local linux_cmake="$app_dir/linux/CMakeLists.txt"
+  if [[ -f "$linux_cmake" ]]; then
+    return 0
+  fi
+
+  log "Linux desktop project files missing. Creating linux platform support..."
+  pushd "$app_dir" >/dev/null
+  run "$FLUTTER_BIN" create --platforms=linux .
+  popd >/dev/null
+}
+
 load_env_file() {
   local env_file=""
   if [[ -f "$DATA_DIR/.env" ]]; then
@@ -86,6 +99,7 @@ main() {
   export SMART_CONTROLLER_DATA_DIR="$DATA_DIR"
   load_env_file
   ensure_flutter
+  ensure_linux_desktop_project
 
   pushd "$APP_ROOT/controller-app" >/dev/null
   run "$FLUTTER_BIN" pub get

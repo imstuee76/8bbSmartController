@@ -126,6 +126,7 @@ Behavior:
 - Overwrites controller app files each update, but preserves `.env` and `/data` storage.
 - Installs missing controller deps, including local Flutter SDK bootstrap to `.tools/flutter` if Flutter is not in PATH.
 - `linux-controller-run.sh` auto-runs updater once when Flutter is missing, then starts controller.
+- Auto-creates missing Flutter Linux desktop scaffolding (`controller-app/linux`) when needed.
 - Writes updater logs to `/data/logs/updater/sessions/<session>/`.
 - Writes controller run logs to `/data/logs/controller/sessions/<session>/`.
 

@@ -181,6 +181,19 @@ ensure_permissions() {
   fi
 }
 
+ensure_linux_desktop_project() {
+  local app_dir="$APP_ROOT/controller-app"
+  local linux_cmake="$app_dir/linux/CMakeLists.txt"
+  if [[ -f "$linux_cmake" ]]; then
+    return 0
+  fi
+
+  log "Linux desktop project files missing. Bootstrapping Flutter linux platform..."
+  pushd "$app_dir" >/dev/null
+  run "$FLUTTER_BIN" create --platforms=linux .
+  popd >/dev/null
+}
+
 install_deps() {
   ensure_cmd python3 python3
   ensure_cmd curl curl
@@ -205,6 +218,7 @@ install_deps() {
 
   ensure_flutter
   run "$FLUTTER_BIN" config --enable-linux-desktop
+  ensure_linux_desktop_project
   pushd "$APP_ROOT/controller-app" >/dev/null
   run "$FLUTTER_BIN" pub get
   popd >/dev/null
