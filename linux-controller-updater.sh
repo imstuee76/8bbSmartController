@@ -92,7 +92,9 @@ install_deps() {
     return 1
   fi
   run flutter config --enable-linux-desktop
-  run flutter pub get --directory "$APP_ROOT/controller-app"
+  pushd "$APP_ROOT/controller-app" >/dev/null
+  run flutter pub get
+  popd >/dev/null
 }
 
 show_version() {

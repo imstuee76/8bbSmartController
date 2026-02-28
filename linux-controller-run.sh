@@ -53,8 +53,10 @@ main() {
     exit 1
   fi
 
-  run flutter pub get --directory "$APP_ROOT/controller-app"
-  run flutter run -d linux --target "$APP_ROOT/controller-app/lib/main.dart" "$@"
+  pushd "$APP_ROOT/controller-app" >/dev/null
+  run flutter pub get
+  run flutter run -d linux --target lib/main.dart "$@"
+  popd >/dev/null
 }
 
 main "$@"
