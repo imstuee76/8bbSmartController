@@ -11,6 +11,7 @@ class SessionLogger {
   String _sessionId = '';
   late File _activityFile;
   late File _errorFile;
+  Future<void> _writeQueue = Future<void>.value();
 
   Future<void> init({String appVersion = ''}) async {
     if (_ready) {
@@ -72,8 +73,14 @@ class SessionLogger {
   }
 
   Future<void> _append(File file, Map<String, dynamic> row) async {
-    await file.parent.create(recursive: true);
-    await file.writeAsString('${jsonEncode(row)}\n', mode: FileMode.append);
+    final line = '${jsonEncode(row)}\n';
+    _writeQueue = _writeQueue
+        .catchError((_) {})
+        .then((_) async {
+          await file.parent.create(recursive: true);
+          await file.writeAsString(line, mode: FileMode.append, flush: true);
+        });
+    await _writeQueue;
   }
 
   String _fmtDay(DateTime dt) {

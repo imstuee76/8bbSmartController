@@ -54,6 +54,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
   bool _loading = true;
   bool _saving = false;
   bool _authConfigured = false;
+  String? _initError;
   String _integrationTestOutput = '';
   String _moesLastDiscoveredAt = '';
   String _moesLastLightScanAt = '';
@@ -76,43 +77,60 @@ class _ConfigScreenState extends State<ConfigScreen> {
     _init();
   }
 
+  String _friendlyError(Object error) {
+    final text = error.toString();
+    final lower = text.toLowerCase();
+    if (lower.contains('connection refused') || lower.contains('socketexception')) {
+      return 'Backend unreachable at ${widget.api.baseUrl}.\n'
+          'Set the Windows flasher URL in Controller / API, then Save Config.';
+    }
+    return text;
+  }
+
   Future<void> _init() async {
     _serverCtl.text = await widget.store.loadServerUrl();
     final token = await widget.store.loadAuthToken();
     widget.api.authToken = token;
-    _authConfigured = await widget.api.isAuthConfigured();
-    final display = await widget.api.fetchDisplayConfig();
-    final integrations = await widget.api.fetchIntegrationsConfig();
+    try {
+      _authConfigured = await widget.api.isAuthConfigured();
+      final display = await widget.api.fetchDisplayConfig();
+      final integrations = await widget.api.fetchIntegrationsConfig();
 
-    _resolution = display.resolution;
-    _scale = display.scale;
+      _resolution = display.resolution;
+      _scale = display.scale;
 
-    _spotifyIdCtl.text = integrations.spotify['client_id']?.toString() ?? '';
-    _spotifySecretCtl.text = integrations.spotify['client_secret']?.toString() ?? '';
-    _spotifyRedirectCtl.text = integrations.spotify['redirect_uri']?.toString() ?? '';
-    _spotifyRefreshCtl.text = integrations.spotify['refresh_token']?.toString() ?? '';
-    _spotifyDeviceCtl.text = integrations.spotify['device_id']?.toString() ?? '';
+      _spotifyIdCtl.text = integrations.spotify['client_id']?.toString() ?? '';
+      _spotifySecretCtl.text = integrations.spotify['client_secret']?.toString() ?? '';
+      _spotifyRedirectCtl.text = integrations.spotify['redirect_uri']?.toString() ?? '';
+      _spotifyRefreshCtl.text = integrations.spotify['refresh_token']?.toString() ?? '';
+      _spotifyDeviceCtl.text = integrations.spotify['device_id']?.toString() ?? '';
 
-    _weatherProviderCtl.text = integrations.weather['provider']?.toString() ?? 'openweather';
-    _weatherApiCtl.text = integrations.weather['api_key']?.toString() ?? '';
-    _weatherLocationCtl.text = integrations.weather['location']?.toString() ?? '';
+      _weatherProviderCtl.text = integrations.weather['provider']?.toString() ?? 'openweather';
+      _weatherApiCtl.text = integrations.weather['api_key']?.toString() ?? '';
+      _weatherLocationCtl.text = integrations.weather['location']?.toString() ?? '';
 
-    _tuyaRegionCtl.text = integrations.tuya['cloud_region']?.toString() ?? '';
-    _tuyaIdCtl.text = integrations.tuya['client_id']?.toString() ?? '';
-    _tuyaSecretCtl.text = integrations.tuya['client_secret']?.toString() ?? '';
-    _moesHubIpCtl.text = integrations.moes['hub_ip']?.toString() ?? '';
-    _moesHubIdCtl.text = integrations.moes['hub_device_id']?.toString() ?? '';
-    _moesHubKeyCtl.text = integrations.moes['hub_local_key']?.toString() ?? '';
-    _moesHubVersionCtl.text = integrations.moes['hub_version']?.toString() ?? '3.4';
-    _moesLastDiscoveredAt = integrations.moes['last_discovered_at']?.toString() ?? '';
-    _moesLastLightScanAt = integrations.moes['last_light_scan_at']?.toString() ?? '';
+      _tuyaRegionCtl.text = integrations.tuya['cloud_region']?.toString() ?? '';
+      _tuyaIdCtl.text = integrations.tuya['client_id']?.toString() ?? '';
+      _tuyaSecretCtl.text = integrations.tuya['client_secret']?.toString() ?? '';
+      _moesHubIpCtl.text = integrations.moes['hub_ip']?.toString() ?? '';
+      _moesHubIdCtl.text = integrations.moes['hub_device_id']?.toString() ?? '';
+      _moesHubKeyCtl.text = integrations.moes['hub_local_key']?.toString() ?? '';
+      _moesHubVersionCtl.text = integrations.moes['hub_version']?.toString() ?? '3.4';
+      _moesLastDiscoveredAt = integrations.moes['last_discovered_at']?.toString() ?? '';
+      _moesLastLightScanAt = integrations.moes['last_light_scan_at']?.toString() ?? '';
 
-    _scanSubnetCtl.text = integrations.scan['subnet_hint']?.toString() ?? '';
-    _otaKeyCtl.text = integrations.ota['shared_key']?.toString() ?? '';
-
-    setState(() {
-      _loading = false;
-    });
+      _scanSubnetCtl.text = integrations.scan['subnet_hint']?.toString() ?? '';
+      _otaKeyCtl.text = integrations.ota['shared_key']?.toString() ?? '';
+      _initError = null;
+    } catch (e) {
+      _initError = _friendlyError(e);
+      _integrationTestOutput = _initError!;
+    } finally {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+      });
+    }
   }
 
   Future<void> _save() async {
@@ -478,6 +496,14 @@ class _ConfigScreenState extends State<ConfigScreen> {
       padding: const EdgeInsets.all(12),
       child: Column(
         children: [
+          if (_initError != null)
+            Card(
+              color: const Color(0xFFFFF3E0),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(_initError!),
+              ),
+            ),
           Card(
             child: Padding(
               padding: const EdgeInsets.all(12),

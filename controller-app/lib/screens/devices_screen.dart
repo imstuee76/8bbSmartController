@@ -16,10 +16,21 @@ class DevicesScreen extends StatefulWidget {
 
 class _DevicesScreenState extends State<DevicesScreen> {
   bool _loading = true;
+  String? _error;
   List<SmartDevice> _devices = [];
   List<Map<String, dynamic>> _scanResults = [];
   final TextEditingController _subnetCtl = TextEditingController();
   String _statusOutput = '';
+
+  String _friendlyError(Object error) {
+    final text = error.toString();
+    final lower = text.toLowerCase();
+    if (lower.contains('connection refused') || lower.contains('socketexception')) {
+      return 'Backend unreachable at ${widget.api.baseUrl}.\n'
+          'Set the Windows flasher URL in Config > Controller / API.';
+    }
+    return text;
+  }
 
   @override
   void initState() {
@@ -28,19 +39,35 @@ class _DevicesScreenState extends State<DevicesScreen> {
   }
 
   Future<void> _refresh() async {
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
       _devices = await widget.api.fetchDevices();
+      _error = null;
+    } catch (e) {
+      _devices = <SmartDevice>[];
+      _error = _friendlyError(e);
+      _statusOutput = _error!;
     } finally {
       setState(() => _loading = false);
     }
   }
 
   Future<void> _scan() async {
-    final results = await widget.api.scanNetwork(subnetHint: _subnetCtl.text.trim());
-    setState(() {
-      _scanResults = results;
-    });
+    try {
+      final results = await widget.api.scanNetwork(subnetHint: _subnetCtl.text.trim());
+      setState(() {
+        _scanResults = results;
+        _error = null;
+      });
+    } catch (e) {
+      setState(() {
+        _error = _friendlyError(e);
+        _statusOutput = _error!;
+      });
+    }
   }
 
   String _providerOf(SmartDevice device) {
@@ -444,7 +471,14 @@ class _DevicesScreenState extends State<DevicesScreen> {
                   Expanded(
                     child: _loading
                         ? const Center(child: CircularProgressIndicator())
-                        : ListView.builder(
+                        : _error != null
+                            ? Center(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: Text(_error!),
+                                ),
+                              )
+                            : ListView.builder(
                             itemCount: _devices.length,
                             itemBuilder: (context, index) {
                               final d = _devices[index];

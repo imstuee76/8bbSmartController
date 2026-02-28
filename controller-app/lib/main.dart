@@ -11,21 +11,23 @@ import 'services/local_store.dart';
 import 'services/session_logger.dart';
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await SessionLogger.instance.init(appVersion: controllerDisplayVersion);
-  FlutterError.onError = (FlutterErrorDetails details) {
-    FlutterError.presentError(details);
-    unawaited(
-      SessionLogger.instance.logError(
-        'flutter_error',
-        details.exception,
-        stackTrace: details.stack,
-        payload: <String, dynamic>{'library': details.library ?? ''},
-      ),
-    );
-  };
   runZonedGuarded(
-    () => runApp(const SmartControllerBootstrap()),
+    () async {
+      WidgetsFlutterBinding.ensureInitialized();
+      await SessionLogger.instance.init(appVersion: controllerDisplayVersion);
+      FlutterError.onError = (FlutterErrorDetails details) {
+        FlutterError.presentError(details);
+        unawaited(
+          SessionLogger.instance.logError(
+            'flutter_error',
+            details.exception,
+            stackTrace: details.stack,
+            payload: <String, dynamic>{'library': details.library ?? ''},
+          ),
+        );
+      };
+      runApp(const SmartControllerBootstrap());
+    },
     (Object error, StackTrace stackTrace) {
       unawaited(SessionLogger.instance.logError('uncaught_zone_error', error, stackTrace: stackTrace));
     },

@@ -16,6 +16,16 @@ class _MainScreenState extends State<MainScreen> {
   String? _error;
   List<Map<String, dynamic>> _tiles = [];
 
+  String _friendlyError(Object error) {
+    final text = error.toString();
+    final lower = text.toLowerCase();
+    if (lower.contains('connection refused') || lower.contains('socketexception')) {
+      return 'Backend unreachable at ${widget.api.baseUrl}.\n'
+          'Set the Windows flasher URL in Config > Controller / API.';
+    }
+    return text;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -34,7 +44,7 @@ class _MainScreenState extends State<MainScreen> {
       });
     } catch (e) {
       setState(() {
-        _error = e.toString();
+        _error = _friendlyError(e);
       });
     } finally {
       setState(() {
