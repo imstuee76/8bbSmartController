@@ -85,10 +85,34 @@ load_env_file() {
   fi
   if [[ -n "$env_file" ]]; then
     log "Loading env from $env_file"
-    set -a
-    # shellcheck disable=SC1090
-    source "$env_file"
-    set +a
+    while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+      local line="$raw_line"
+      line="${line//$'\r'/}"
+      if [[ -z "${line//[[:space:]]/}" ]]; then
+        continue
+      fi
+      if [[ "$line" =~ ^[[:space:]]*# ]]; then
+        continue
+      fi
+      if [[ ! "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]]; then
+        continue
+      fi
+      local key="${BASH_REMATCH[1]}"
+      local value="${BASH_REMATCH[2]}"
+      value="${value//$'\r'/}"
+
+      if [[ "$value" =~ ^[[:space:]]*\"(.*)\"[[:space:]]*$ ]]; then
+        value="${BASH_REMATCH[1]}"
+      elif [[ "$value" =~ ^[[:space:]]*\'(.*)\'[[:space:]]*$ ]]; then
+        value="${BASH_REMATCH[1]}"
+      else
+        value="${value%%#*}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+      fi
+
+      export "$key=$value"
+    done <"$env_file"
   fi
 }
 
