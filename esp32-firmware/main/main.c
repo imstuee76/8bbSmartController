@@ -122,6 +122,7 @@ static const ledc_channel_t CH_RGB_B = LEDC_CHANNEL_3;
 static const ledc_channel_t CH_RGB_W = LEDC_CHANNEL_4;
 static const ledc_channel_t CH_FAN = LEDC_CHANNEL_5;
 static const int DEFAULT_RELAY_GPIOS[4] = {RELAY1_PIN, RELAY2_PIN, RELAY3_PIN, RELAY4_PIN};
+static const int SAFE_SCAN_GPIOS[] = {2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33};
 
 static void safe_strcpy(char *dst, const char *src, size_t dst_size) {
     if (!dst || !src || dst_size == 0) return;
@@ -174,6 +175,13 @@ static void sanitize_relay_count(void) {
 
 static bool valid_output_gpio_int(int pin) {
     return pin >= 0 && pin <= 39 && GPIO_IS_VALID_OUTPUT_GPIO(pin);
+}
+
+static bool is_safe_scan_gpio_int(int pin) {
+    for (size_t i = 0; i < sizeof(SAFE_SCAN_GPIOS) / sizeof(SAFE_SCAN_GPIOS[0]); i++) {
+        if (SAFE_SCAN_GPIOS[i] == pin) return true;
+    }
+    return false;
 }
 
 static void sanitize_relay_gpio_map(void) {
@@ -549,8 +557,11 @@ static esp_err_t status_handler(httpd_req_t *req) {
     }
     cJSON_AddItemToObject(root, "relay_gpio", relay_gpio);
     cJSON *gpio_candidates = cJSON_CreateArray();
-    for (int i = 0; i <= 39; i++) {
-        if (GPIO_IS_VALID_OUTPUT_GPIO(i)) cJSON_AddItemToArray(gpio_candidates, cJSON_CreateNumber(i));
+    for (size_t i = 0; i < sizeof(SAFE_SCAN_GPIOS) / sizeof(SAFE_SCAN_GPIOS[0]); i++) {
+        int pin = SAFE_SCAN_GPIOS[i];
+        if (GPIO_IS_VALID_OUTPUT_GPIO(pin) && is_safe_scan_gpio_int(pin)) {
+            cJSON_AddItemToArray(gpio_candidates, cJSON_CreateNumber(pin));
+        }
     }
     cJSON_AddItemToObject(root, "gpio_candidates", gpio_candidates);
     add_network_status(root);
@@ -673,11 +684,12 @@ static esp_err_t web_root_handler(httpd_req_t *req) {
         "<button id='scanTestOffBtn'>Test OFF Current GPIO</button>"
         "<button id='scanNextBtn' class='secondary'>Next GPIO</button>"
         "</div>"
-        "<div class='row' style='margin-top:8px'>"
+        "<div class='row3' style='margin-top:8px'>"
+        "<div><label>Start From GPIO</label><input id='scanStartPin' type='number' min='2' max='33' value='16'/></div>"
         "<div><label>Current Scan GPIO</label><input id='scanCurrentPin' readonly/></div>"
         "<div><label>Scan State</label><input id='scanState' readonly value='stopped'/></div>"
         "</div>"
-        "<div class='small'>Use Pause instantly when relay clicks, test ON/OFF, then Continue.</div>"
+        "<div class='small'>Scans only safe ESP32 output GPIOs. Use Pause instantly when relay clicks, test ON/OFF, then Continue.</div>"
         "</div>"
         "</div>"
 
@@ -752,9 +764,9 @@ static esp_err_t web_root_handler(httpd_req_t *req) {
         "async function scannerSet(pin,level){await api('/api/test/gpio',{passcode:requirePass(),gpio:pin,value:level});}"
         "function scannerUpdateState(t){$('scanState').value=t;}"
         "function scannerClearTimer(){if(scanner.timer){clearTimeout(scanner.timer);scanner.timer=null;}}"
-        "async function scannerStep(){if(!scanner.running||scanner.paused)return;try{if(scanner.currentPin!==null){await scannerSet(scanner.currentPin,0);}if(!scanner.pins.length){throw new Error('No GPIO candidates');}if(scanner.idx>=scanner.pins.length)scanner.idx=0;const pin=scanner.pins[scanner.idx++];scanner.currentPin=pin;$('scanCurrentPin').value=String(pin);$('gpioPin').value=String(pin);await scannerSet(pin,1);scannerUpdateState('running');log('scanner gpio '+pin+' ON');if(!scanner.running||scanner.paused){scannerUpdateState(scanner.paused?'paused':'stopped');return;}scanner.timer=setTimeout(()=>{scannerStep().catch(e=>log('scanner error: '+e.message));},1500);}catch(e){scannerUpdateState('error');log('scanner error: '+e.message);}}"
-        "function scannerPins(){const fromStatus=Array.isArray(S.gpio_candidates)?S.gpio_candidates:[];const pins=fromStatus.map(x=>parseInt(x,10)).filter(v=>Number.isInteger(v)&&v>=0&&v<=39);return pins.length?pins:[2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];}"
-        "$('scanStartBtn').onclick=async()=>{try{scanner.running=true;scanner.paused=false;scanner.idx=0;scanner.pins=scannerPins();scannerClearTimer();if(scanner.currentPin!==null){try{await scannerSet(scanner.currentPin,0);}catch(_){}}scanner.currentPin=null;scannerUpdateState('starting');await scannerStep();}catch(e){log('scan start error: '+e.message);}};"
+        "async function scannerStep(){if(!scanner.running||scanner.paused)return;if(!scanner.pins.length){scannerUpdateState('error');log('scanner error: no safe GPIO candidates');scanner.running=false;return;}if(scanner.currentPin!==null){try{await scannerSet(scanner.currentPin,0);}catch(e){log('scanner clear gpio '+scanner.currentPin+' failed: '+e.message);}}let attempts=0;scanner.currentPin=null;while(attempts<scanner.pins.length&&scanner.currentPin===null){if(scanner.idx>=scanner.pins.length)scanner.idx=0;const pin=scanner.pins[scanner.idx++];attempts+=1;$('scanCurrentPin').value=String(pin);$('gpioPin').value=String(pin);try{await scannerSet(pin,1);scanner.currentPin=pin;scannerUpdateState('running');log('scanner gpio '+pin+' ON');}catch(e){log('scanner skip gpio '+pin+': '+e.message);}}if(scanner.currentPin===null){scannerUpdateState('error');log('scanner error: all GPIO candidates failed');scanner.running=false;return;}if(!scanner.running||scanner.paused){scannerUpdateState(scanner.paused?'paused':'stopped');return;}scanner.timer=setTimeout(()=>{scannerStep().catch(e=>log('scanner error: '+e.message));},1500);}"
+        "function scannerPins(){const safe=[2,4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33];const fromStatus=Array.isArray(S.gpio_candidates)?S.gpio_candidates:[];const base=fromStatus.length?fromStatus:safe;const pins=base.map(x=>parseInt(x,10)).filter(v=>Number.isInteger(v)&&safe.includes(v));return Array.from(new Set(pins));}"
+        "$('scanStartBtn').onclick=async()=>{try{scanner.running=true;scanner.paused=false;scanner.pins=scannerPins();scannerClearTimer();if(scanner.currentPin!==null){try{await scannerSet(scanner.currentPin,0);}catch(_){}}scanner.currentPin=null;const startRaw=parseInt($('scanStartPin').value||'',10);if(Number.isInteger(startRaw)){const exact=scanner.pins.indexOf(startRaw);if(exact>=0){scanner.idx=exact;}else{const next=scanner.pins.findIndex(v=>v>=startRaw);scanner.idx=(next>=0?next:0);}}else{scanner.idx=0;}if(scanner.pins.length){$('scanStartPin').value=String(scanner.pins[scanner.idx]);}scannerUpdateState('starting');await scannerStep();}catch(e){log('scan start error: '+e.message);}};"
         "$('scanPauseBtn').onclick=()=>{scanner.paused=true;scannerClearTimer();scannerUpdateState('paused');log('scanner paused at gpio '+((scanner.currentPin==null)?'none':scanner.currentPin));};"
         "$('scanContinueBtn').onclick=()=>{if(!scanner.running)return;scanner.paused=false;scannerUpdateState('running');scannerStep().catch(e=>log('scanner continue error: '+e.message));};"
         "$('scanStopBtn').onclick=async()=>{scanner.running=false;scanner.paused=false;scannerClearTimer();if(scanner.currentPin!==null){try{await scannerSet(scanner.currentPin,0);}catch(_){}}scanner.currentPin=null;$('scanCurrentPin').value='';scannerUpdateState('stopped');log('scanner stopped');};"
