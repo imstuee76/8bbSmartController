@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 
 from .security import decrypt_secret
+from .scanner import prime_neighbors
 from .storage import append_event, get_setting
 
 _spotify_cache: dict[str, Any] = {
@@ -142,10 +143,15 @@ def weather_current() -> dict[str, Any]:
     }
 
 
-def tuya_local_scan() -> dict[str, Any]:
+def tuya_local_scan(subnet_hint: str = "") -> dict[str, Any]:
     tuya_cfg = get_setting("tuya")
     if not tuya_cfg.get("local_scan_enabled", True):
         return {"devices": [], "enabled": False}
+
+    hint = (subnet_hint or "").strip()
+    primed = 0
+    if hint:
+        primed = prime_neighbors(hint)
 
     try:
         import tinytuya  # type: ignore
@@ -164,8 +170,13 @@ def tuya_local_scan() -> dict[str, Any]:
                 "product_key": item.get("productKey", ""),
             }
         )
-    append_event("tuya_local_scan", {"count": len(out)})
-    return {"devices": out, "enabled": True}
+    append_event("tuya_local_scan", {"count": len(out), "subnet_hint": hint, "primed_hosts": primed})
+    return {
+        "devices": out,
+        "enabled": True,
+        "subnet_hint": hint,
+        "primed_hosts": primed,
+    }
 
 
 def tuya_cloud_devices() -> dict[str, Any]:

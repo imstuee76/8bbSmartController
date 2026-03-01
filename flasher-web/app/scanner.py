@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import ipaddress
+import platform
 import re
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
@@ -59,12 +62,77 @@ def _quick_http_probe(ip: str) -> tuple[str, int]:
     return "unknown", 0
 
 
+def _network_from_hint(subnet_hint: str | None) -> ipaddress.IPv4Network | None:
+    raw = str(subnet_hint or "").strip()
+    if not raw:
+        return None
+
+    # "192.168.50" -> /24
+    m_3 = re.fullmatch(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})", raw)
+    if m_3:
+        octets = [int(m_3.group(i)) for i in (1, 2, 3)]
+        if all(0 <= o <= 255 for o in octets):
+            return ipaddress.ip_network(f"{octets[0]}.{octets[1]}.{octets[2]}.0/24", strict=False)
+        return None
+
+    # "192.168.50.88" -> use /24 segment
+    m_4 = re.fullmatch(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})", raw)
+    if m_4:
+        octets = [int(m_4.group(i)) for i in (1, 2, 3, 4)]
+        if all(0 <= o <= 255 for o in octets):
+            return ipaddress.ip_network(f"{octets[0]}.{octets[1]}.{octets[2]}.0/24", strict=False)
+        return None
+
+    # CIDR input
+    if "/" in raw:
+        try:
+            net = ipaddress.ip_network(raw, strict=False)
+        except ValueError:
+            return None
+        return net if isinstance(net, ipaddress.IPv4Network) else None
+
+    return None
+
+
+def _ping_once(ip: str, timeout_ms: int = 240) -> None:
+    os_name = platform.system().lower()
+    if "windows" in os_name:
+        cmd = ["ping", "-n", "1", "-w", str(timeout_ms), ip]
+    else:
+        cmd = ["ping", "-c", "1", "-W", "1", ip]
+    try:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    except Exception:
+        pass
+
+
+def prime_neighbors(subnet_hint: str | None = None) -> int:
+    network = _network_from_hint(subnet_hint)
+    if network is None:
+        return 0
+
+    # Keep bounded and quick.
+    hosts = [str(ip) for ip in network.hosts()]
+    if len(hosts) > 256:
+        hosts = hosts[:256]
+    if not hosts:
+        return 0
+
+    with ThreadPoolExecutor(max_workers=64) as pool:
+        list(pool.map(_ping_once, hosts))
+    return len(hosts)
+
+
 def scan_network(
     subnet_hint: str | None = None,
     resolve_hostnames: bool = False,
     automation_only: bool = False,
 ) -> list[dict[str, Any]]:
-    _ = subnet_hint
+    network = _network_from_hint(subnet_hint)
+    if network is not None:
+        # Warm ARP table for the requested subnet before reading arp cache.
+        prime_neighbors(str(network))
+
     results: list[dict[str, Any]] = []
 
     try:
@@ -74,6 +142,12 @@ def scan_network(
             if not match:
                 continue
             ip = match.group(1)
+            if network is not None:
+                try:
+                    if ipaddress.ip_address(ip) not in network:
+                        continue
+                except ValueError:
+                    continue
             mac = match.group(2).replace("-", ":").lower()
             hostname = ""
             if resolve_hostnames:
@@ -134,16 +208,5 @@ def scan_network(
             if not automation_only or candidate:
                 filtered.append(item)
         results = filtered
-
-    if not results:
-        results.append(
-            {
-                "ip": "192.168.1.200",
-                "mac": "00:00:00:00:00:00",
-                "hostname": "sample-esp32",
-                "source": "sample",
-                "device_hint": "relay_switch",
-            }
-        )
 
     return results

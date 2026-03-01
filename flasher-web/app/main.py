@@ -493,9 +493,12 @@ def get_weather_current() -> dict[str, Any]:
 
 
 @app.post("/api/integrations/tuya/local-scan", dependencies=[Depends(require_auth_if_configured)])
-def post_tuya_local_scan() -> dict[str, Any]:
+def post_tuya_local_scan(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    subnet_hint = ""
+    if isinstance(payload, dict):
+        subnet_hint = str(payload.get("subnet_hint", "")).strip()
     try:
-        return tuya_local_scan()
+        return tuya_local_scan(subnet_hint=subnet_hint)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

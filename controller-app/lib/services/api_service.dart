@@ -364,8 +364,12 @@ class ApiService {
     return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
-  Future<Map<String, dynamic>> tuyaLocalScan() async {
-    final res = await _client.post(_uri('/api/integrations/tuya/local-scan'), headers: _jsonHeaders());
+  Future<Map<String, dynamic>> tuyaLocalScan({String subnetHint = ''}) async {
+    final res = await _client.post(
+      _uri('/api/integrations/tuya/local-scan'),
+      headers: _jsonHeaders(),
+      body: jsonEncode({'subnet_hint': subnetHint}),
+    );
     if (res.statusCode != 200) {
       throw Exception('Tuya local scan failed: ${res.body}');
     }

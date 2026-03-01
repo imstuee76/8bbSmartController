@@ -479,7 +479,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
   Future<void> _testTuyaLocal() async {
     _markActionRunning('tuya_local_scan');
     try {
-      final result = await widget.api.tuyaLocalScan();
+      final result = await widget.api.tuyaLocalScan(subnetHint: _scanSubnetCtl.text.trim());
       if (!mounted) return;
       setState(() {
         _tuyaLocalDevices = (result['devices'] as List<dynamic>? ?? <dynamic>[]).whereType<Map<String, dynamic>>().toList();
@@ -843,6 +843,14 @@ class _ConfigScreenState extends State<ConfigScreen> {
                 body: _panelBody(
                   [
                     const Text('LAN mode only. No Tuya cloud required.'),
+                    const SizedBox(height: 6),
+                    const Text('Simple flow: 1) Enter subnet hint, 2) Discover hub, 3) Discover lights, 4) Add Device'),
+                    TextField(
+                      controller: _scanSubnetCtl,
+                      decoration: const InputDecoration(
+                        labelText: 'LAN subnet hint (e.g. 192.168.50 or 192.168.50.0/24)',
+                      ),
+                    ),
                     TextField(controller: _moesHubIpCtl, decoration: const InputDecoration(labelText: 'Hub IP (optional/manual)')),
                     TextField(controller: _moesHubIdCtl, decoration: const InputDecoration(labelText: 'Hub Device ID (optional)')),
                     TextField(
@@ -990,6 +998,12 @@ class _ConfigScreenState extends State<ConfigScreen> {
                 headerBuilder: (_, __) => _panelHeader('Tuya', 'Local/cloud scan + credentials'),
                 body: _panelBody(
                   [
+                    TextField(
+                      controller: _scanSubnetCtl,
+                      decoration: const InputDecoration(
+                        labelText: 'LAN subnet hint for local scan (e.g. 192.168.50)',
+                      ),
+                    ),
                     TextField(controller: _tuyaRegionCtl, decoration: const InputDecoration(labelText: 'Cloud region')),
                     TextField(controller: _tuyaIdCtl, decoration: const InputDecoration(labelText: 'Client ID')),
                     TextField(controller: _tuyaSecretCtl, decoration: const InputDecoration(labelText: 'Client Secret')),
