@@ -576,9 +576,13 @@ class _DevicesScreenState extends State<DevicesScreen> {
                         ..._scanResults.map(
                           (item) => ListTile(
                             dense: true,
-                            title: Text(item['ip']?.toString() ?? ''),
+                            title: Text(
+                              (item['name']?.toString().trim().isNotEmpty ?? false)
+                                  ? item['name'].toString()
+                                  : (item['ip']?.toString() ?? ''),
+                            ),
                             subtitle: Text(
-                              '${item['hostname'] ?? ''} ${item['mac'] ?? ''}\n'
+                              'IP: ${item['ip'] ?? ''}  Host: ${item['hostname'] ?? ''}  MAC: ${item['mac'] ?? ''}\n'
                               'Hint: ${item['device_hint'] ?? item['provider_hint'] ?? 'unknown'}'
                               '  Score: ${item['score'] ?? 0}',
                             ),

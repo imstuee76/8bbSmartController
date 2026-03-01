@@ -37,7 +37,17 @@ def _marker_score(text: str) -> int:
     return sum(1 for marker in AUTOMATION_MARKERS if marker in blob)
 
 
-def _quick_http_probe(ip: str) -> tuple[str, int]:
+def _sanitize_name(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    # Avoid noisy placeholders.
+    if text.lower() in ("unknown", "none", "null", "n/a"):
+        return ""
+    return text[:96]
+
+
+def _quick_http_probe(ip: str) -> tuple[str, int, str]:
     # Keep probing short to preserve snappy scan UX.
     try:
         with httpx.Client(timeout=0.35) as client:
@@ -47,9 +57,17 @@ def _quick_http_probe(ip: str) -> tuple[str, int]:
                 body = status_res.json()
                 device_type = str(body.get("device_type", "") or body.get("type", "")).strip().lower()
                 hint = device_type if device_type else "esp_firmware"
-                return hint, 8
+                name = ""
+                if isinstance(body, dict):
+                    name = (
+                        _sanitize_name(body.get("name"))
+                        or _sanitize_name(body.get("device_name"))
+                        or _sanitize_name(body.get("hostname"))
+                        or _sanitize_name(body.get("title"))
+                    )
+                return hint, 8, name
             except Exception:
-                return "esp_firmware", 6
+                return "esp_firmware", 6, ""
     except Exception:
         pass
 
@@ -59,11 +77,11 @@ def _quick_http_probe(ip: str) -> tuple[str, int]:
         if root_res.status_code < 400:
             body = root_res.text.lower()
             if any(marker in body for marker in ("tuya", "smartlife", "moes", "gateway", "bhub")):
-                return "tuya_or_moes", 4
+                return "tuya_or_moes", 4, ""
     except Exception:
         pass
 
-    return "unknown", 0
+    return "unknown", 0, ""
 
 
 def _network_from_hint(subnet_hint: str | None) -> ipaddress.IPv4Network | None:
@@ -111,13 +129,14 @@ def _ping_once(ip: str, timeout_ms: int = 240) -> None:
 
 
 def _probe_ip_candidate(ip: str) -> dict[str, Any] | None:
-    hint, boost = _quick_http_probe(ip)
+    hint, boost, name = _quick_http_probe(ip)
     if boost <= 0:
         return None
     return {
         "ip": ip,
         "mac": "",
         "hostname": "",
+        "name": name,
         "source": "http_probe",
         "device_hint": hint if hint not in ("unknown", "marker_match") else "unknown",
         "provider_hint": hint,
@@ -164,6 +183,7 @@ def _collect_neighbors(resolve_hostnames: bool) -> list[dict[str, Any]]:
                     "ip": ip,
                     "mac": mac,
                     "hostname": hostname,
+                    "name": hostname,
                     "source": "arp",
                     "device_hint": "unknown",
                 }
@@ -190,6 +210,7 @@ def _collect_neighbors(resolve_hostnames: bool) -> list[dict[str, Any]]:
                     "ip": ip,
                     "mac": mac,
                     "hostname": "",
+                    "name": "",
                     "source": "ip_neigh",
                     "device_hint": "unknown",
                 }
@@ -259,13 +280,15 @@ def scan_network(
                 provider_hint = "marker_match"
 
             if ip and probe_budget > 0:
-                hint, boost = _quick_http_probe(ip)
+                hint, boost, friendly_name = _quick_http_probe(ip)
                 probe_budget -= 1
                 if boost > 0:
                     provider_hint = hint
                     score += boost
                     if hint not in ("unknown", "marker_match") and item.get("device_hint", "unknown") == "unknown":
                         item["device_hint"] = hint
+                    if friendly_name and not str(item.get("name", "")).strip():
+                        item["name"] = friendly_name
 
             candidate = score >= 1
             item["automation_candidate"] = candidate
@@ -291,6 +314,8 @@ def scan_network(
                         row["provider_hint"] = hit.get("provider_hint", "unknown")
                     if str(row.get("device_hint", "unknown")) == "unknown":
                         row["device_hint"] = hit.get("device_hint", "unknown")
+                    if not str(row.get("name", "")).strip():
+                        row["name"] = str(hit.get("name", "")).strip()
                     row["automation_candidate"] = True
                 else:
                     results.append(hit)
