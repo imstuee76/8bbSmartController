@@ -21,7 +21,7 @@ class _MainScreenState extends State<MainScreen> {
     final lower = text.toLowerCase();
     if (lower.contains('connection refused') || lower.contains('socketexception')) {
       return 'Backend unreachable at ${widget.api.baseUrl}.\n'
-          'Set the Windows flasher URL in Config > Controller / API.';
+          'Check: backend is running on Windows, URL/port are correct, and firewall allows TCP 8088.';
     }
     return text;
   }

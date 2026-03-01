@@ -206,6 +206,65 @@ ensure_permissions() {
   fi
 }
 
+create_desktop_shortcut() {
+  local desktop_dir="${XDG_DESKTOP_DIR:-$HOME/Desktop}"
+  if command -v xdg-user-dir >/dev/null 2>&1; then
+    local detected_desktop
+    detected_desktop="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+    if [[ -n "$detected_desktop" ]]; then
+      desktop_dir="$detected_desktop"
+    fi
+  fi
+
+  local launcher_dir="$HOME/.local/share/applications"
+  local launcher_file="$launcher_dir/8bb-controller.desktop"
+  local -a target_dirs=("$desktop_dir" "$HOME/Desktop" "$HOME/desktop")
+
+  mkdir -p "$launcher_dir"
+
+  cat >"$launcher_file" <<EOF
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=8bb Smart Controller
+Comment=Run the 8bb Smart Controller app
+Exec=$APP_ROOT/linux-controller-run.sh
+Path=$APP_ROOT
+Terminal=false
+Categories=Utility;HomeAutomation;
+Icon=preferences-system
+StartupNotify=true
+EOF
+
+  chmod +x "$launcher_file"
+
+  local copied_any="false"
+  local seen_dirs="|"
+  for dir in "${target_dirs[@]}"; do
+    if [[ -z "$dir" ]]; then
+      continue
+    fi
+    if [[ "$seen_dirs" == *"|$dir|"* ]]; then
+      continue
+    fi
+    seen_dirs="${seen_dirs}${dir}|"
+    mkdir -p "$dir"
+    local desktop_launcher="$dir/8bb-controller.desktop"
+    install -m 0755 "$launcher_file" "$desktop_launcher"
+    if command -v gio >/dev/null 2>&1; then
+      gio set "$desktop_launcher" metadata::trusted true >/dev/null 2>&1 || true
+    fi
+    copied_any="true"
+    log " - Desktop: $desktop_launcher"
+  done
+
+  log "Desktop shortcut updated:"
+  log " - App menu: $launcher_file"
+  if [[ "$copied_any" != "true" ]]; then
+    log " - Desktop: not created (no target directory resolved)"
+  fi
+}
+
 ensure_linux_desktop_project() {
   local app_dir="$APP_ROOT/controller-app"
   local linux_cmake="$app_dir/linux/CMakeLists.txt"
@@ -325,6 +384,7 @@ main() {
   ensure_cmd rsync rsync
   sync_controller_files
   ensure_permissions
+  create_desktop_shortcut
   install_deps
   show_version
   log "Update complete. Preserved: $DATA_DIR and .env files."

@@ -37,6 +37,14 @@ class LocalStore {
   }
 
   Future<String> _envValue(List<String> keys) async {
+    final processEnv = Platform.environment;
+    for (final key in keys) {
+      final value = (processEnv[key] ?? '').trim();
+      if (value.isNotEmpty) {
+        return value;
+      }
+    }
+
     final env = await DataPaths.loadEnvMap();
     for (final key in keys) {
       final value = (env[key] ?? '').trim();
@@ -45,6 +53,41 @@ class LocalStore {
       }
     }
     return '';
+  }
+
+  String _normalizeServerUrl(String input) {
+    var value = input.trim();
+    if (value.isEmpty) {
+      return '';
+    }
+
+    if (!value.contains('://')) {
+      value = 'http://$value';
+    }
+
+    Uri uri;
+    try {
+      uri = Uri.parse(value);
+    } catch (_) {
+      return input.trim();
+    }
+
+    String host = uri.host.trim();
+    if (host.isEmpty && uri.path.isNotEmpty) {
+      host = uri.path.trim();
+    }
+    if (host.isEmpty) {
+      return input.trim();
+    }
+
+    final scheme = uri.scheme.trim().isEmpty ? 'http' : uri.scheme.trim();
+    final port = uri.hasPort ? uri.port : 8088;
+    final normalized = Uri(
+      scheme: scheme,
+      host: host,
+      port: port,
+    ).toString();
+    return normalized.endsWith('/') ? normalized.substring(0, normalized.length - 1) : normalized;
   }
 
   Future<String> _legacyPref(String key) async {
@@ -58,22 +101,31 @@ class LocalStore {
 
   Future<String> loadServerUrl() async {
     final settings = await _readSettings();
-    final fromEnv = await _envValue(['CONTROLLER_BACKEND_URL', 'BACKEND_URL']);
+    final fromEnv = await _envValue([
+      'CONTROLLER_BACKEND_URL',
+      'SMART_CONTROLLER_BACKEND_URL',
+      'BACKEND_URL',
+    ]);
     if (fromEnv.isNotEmpty) {
+      final normalized = _normalizeServerUrl(fromEnv);
       final currentSaved = (settings[_serverUrlKey] ?? '').toString().trim();
-      if (currentSaved != fromEnv) {
-        settings[_serverUrlKey] = fromEnv;
+      if (normalized.isNotEmpty && currentSaved != normalized) {
+        settings[_serverUrlKey] = normalized;
         await _writeSettings(settings);
       }
-      return fromEnv;
+      return normalized.isEmpty ? fromEnv : normalized;
     }
 
-    final current = (settings[_serverUrlKey] ?? '').toString().trim();
+    final current = _normalizeServerUrl((settings[_serverUrlKey] ?? '').toString().trim());
     if (current.isNotEmpty) {
+      if ((settings[_serverUrlKey] ?? '').toString().trim() != current) {
+        settings[_serverUrlKey] = current;
+        await _writeSettings(settings);
+      }
       return current;
     }
 
-    final legacy = (await _legacyPref(_serverUrlKey)).trim();
+    final legacy = _normalizeServerUrl((await _legacyPref(_serverUrlKey)).trim());
     if (legacy.isNotEmpty) {
       settings[_serverUrlKey] = legacy;
       await _writeSettings(settings);
@@ -83,12 +135,13 @@ class LocalStore {
   }
 
   Future<void> saveServerUrl(String value) async {
+    final normalized = _normalizeServerUrl(value);
     final settings = await _readSettings();
-    settings[_serverUrlKey] = value.trim();
+    settings[_serverUrlKey] = normalized.isEmpty ? value.trim() : normalized;
     await _writeSettings(settings);
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_serverUrlKey, value.trim());
+      await prefs.setString(_serverUrlKey, normalized.isEmpty ? value.trim() : normalized);
     } catch (_) {}
   }
 
@@ -99,7 +152,11 @@ class LocalStore {
       return current;
     }
 
-    final fromEnv = await _envValue(['CONTROLLER_AUTH_TOKEN', 'AUTH_TOKEN']);
+    final fromEnv = await _envValue([
+      'CONTROLLER_AUTH_TOKEN',
+      'SMART_CONTROLLER_AUTH_TOKEN',
+      'AUTH_TOKEN',
+    ]);
     if (fromEnv.isNotEmpty) {
       settings[_authTokenKey] = fromEnv;
       await _writeSettings(settings);

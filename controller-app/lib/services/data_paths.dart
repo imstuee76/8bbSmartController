@@ -14,15 +14,42 @@ class DataPaths {
   }
 
   static Future<File?> resolveEnvFile() async {
+    final env = Platform.environment;
+    final configuredEnvFile = (env['SMART_CONTROLLER_ENV_FILE'] ?? '').trim();
+    if (configuredEnvFile.isNotEmpty) {
+      final configured = File(configuredEnvFile);
+      if (await configured.exists()) {
+        return configured;
+      }
+    }
+
     final data = await dataDir();
-    final dataEnv = File('${data.path}${Platform.pathSeparator}.env');
-    if (await dataEnv.exists()) {
-      return dataEnv;
+    final appRoot = (env['SMART_CONTROLLER_APP_ROOT'] ?? '').trim();
+    final current = Directory.current.path;
+    final parent = Directory.current.parent.path;
+    final grandParent = Directory.current.parent.parent.path;
+
+    final candidates = <String>[
+      '${data.path}${Platform.pathSeparator}.env',
+      if (appRoot.isNotEmpty) '$appRoot${Platform.pathSeparator}.env',
+      '$current${Platform.pathSeparator}.env',
+      '$parent${Platform.pathSeparator}.env',
+      '$grandParent${Platform.pathSeparator}.env',
+    ];
+
+    final seen = <String>{};
+    for (final path in candidates) {
+      final normalized = path.trim();
+      if (normalized.isEmpty || seen.contains(normalized)) {
+        continue;
+      }
+      seen.add(normalized);
+      final file = File(normalized);
+      if (await file.exists()) {
+        return file;
+      }
     }
-    final localEnv = File('${Directory.current.path}${Platform.pathSeparator}.env');
-    if (await localEnv.exists()) {
-      return localEnv;
-    }
+
     return null;
   }
 
