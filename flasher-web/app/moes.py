@@ -134,6 +134,28 @@ def _resolve_hub_inputs(
 
     if not selected_hub:
         selected_hub = f"bhubw-{selected_ip}" if selected_ip else "bhubw-local"
+
+    # UX fallback: if user clicks "Discover Lights" without manually selecting a hub,
+    # auto-pick the highest scored discovered hub candidate.
+    if not selected_ip:
+        try:
+            discovered = discover_bhubw_local()
+            hubs = discovered.get("hubs", [])
+            if isinstance(hubs, list) and hubs:
+                best = hubs[0] if isinstance(hubs[0], dict) else {}
+                if isinstance(best, dict):
+                    best_ip = str(best.get("ip", "")).strip()
+                    best_id = str(best.get("id", "")).strip()
+                    best_ver = str(best.get("version", "")).strip()
+                    if best_ip:
+                        selected_ip = best_ip
+                    if not selected_hub or selected_hub == "bhubw-local":
+                        selected_hub = best_id or f"bhubw-{best_ip}"
+                    if not selected_version_raw and best_ver:
+                        selected_version_raw = best_ver
+        except Exception:
+            pass
+
     return selected_hub, selected_ip, selected_key, _parse_version(selected_version_raw)
 
 

@@ -887,8 +887,14 @@ def delete_tile(tile_id: str) -> dict[str, Any]:
 @app.post("/api/discovery/scan", dependencies=[Depends(require_auth_if_configured)])
 def discovery_scan(payload: dict[str, Any]) -> dict[str, Any]:
     subnet = payload.get("subnet_hint") if isinstance(payload, dict) else None
-    results = scan_network(subnet)
-    append_event("network_scan", {"count": len(results), "subnet_hint": subnet or ""})
+    automation_only = True
+    if isinstance(payload, dict) and "automation_only" in payload:
+        automation_only = bool(payload.get("automation_only"))
+    results = scan_network(subnet, automation_only=automation_only)
+    append_event(
+        "network_scan",
+        {"count": len(results), "subnet_hint": subnet or "", "automation_only": automation_only},
+    )
     return {"results": results}
 
 

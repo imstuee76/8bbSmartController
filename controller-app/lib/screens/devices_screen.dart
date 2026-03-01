@@ -57,10 +57,14 @@ class _DevicesScreenState extends State<DevicesScreen> {
 
   Future<void> _scan() async {
     try {
-      final results = await widget.api.scanNetwork(subnetHint: _subnetCtl.text.trim());
+      final results = await widget.api.scanNetwork(
+        subnetHint: _subnetCtl.text.trim(),
+        automationOnly: true,
+      );
       setState(() {
         _scanResults = results;
         _error = null;
+        _statusOutput = 'Automation scan found ${results.length} candidate device(s).';
       });
     } catch (e) {
       setState(() {
@@ -573,7 +577,11 @@ class _DevicesScreenState extends State<DevicesScreen> {
                           (item) => ListTile(
                             dense: true,
                             title: Text(item['ip']?.toString() ?? ''),
-                            subtitle: Text('${item['hostname'] ?? ''} ${item['mac'] ?? ''}'),
+                            subtitle: Text(
+                              '${item['hostname'] ?? ''} ${item['mac'] ?? ''}\n'
+                              'Hint: ${item['device_hint'] ?? item['provider_hint'] ?? 'unknown'}'
+                              '  Score: ${item['score'] ?? 0}',
+                            ),
                             trailing: IconButton(
                               icon: const Icon(Icons.add_circle_outline),
                               onPressed: () => _openCreateDialog(presetHost: item['ip']?.toString() ?? ''),

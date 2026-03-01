@@ -326,7 +326,21 @@ class _ConfigScreenState extends State<ConfigScreen> {
     _setOutputMessage(const JsonEncoder.withIndent('  ').convert(payload), openOutputPanel: openOutputPanel);
   }
 
+  void _markActionRunning(String action, {Map<String, dynamic>? extra}) {
+    final payload = <String, dynamic>{
+      'action': action,
+      'status': 'running',
+      'backend_url': widget.api.baseUrl,
+      'at_utc': DateTime.now().toUtc().toIso8601String(),
+    };
+    if (extra != null && extra.isNotEmpty) {
+      payload.addAll(extra);
+    }
+    _setOutputJson(payload);
+  }
+
   Future<void> _setupAdmin() async {
+    _markActionRunning('auth_setup');
     try {
       await widget.api.setupAdmin(
         username: _adminUserCtl.text.trim(),
@@ -351,6 +365,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
   }
 
   Future<void> _login() async {
+    _markActionRunning('auth_login');
     try {
       final token = await widget.api.login(
         username: _adminUserCtl.text.trim(),
@@ -462,6 +477,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
   }
 
   Future<void> _testTuyaLocal() async {
+    _markActionRunning('tuya_local_scan');
     try {
       final result = await widget.api.tuyaLocalScan();
       if (!mounted) return;
@@ -487,6 +503,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
   }
 
   Future<void> _testTuyaCloud() async {
+    _markActionRunning('tuya_cloud_scan');
     try {
       final result = await widget.api.tuyaCloudDevices();
       if (!mounted) return;
@@ -512,12 +529,24 @@ class _ConfigScreenState extends State<ConfigScreen> {
   }
 
   Future<void> _discoverMoesHubLocal() async {
+    _markActionRunning('moes_discover_local');
     try {
       final result = await widget.api.moesDiscoverLocal(subnetHint: _scanSubnetCtl.text.trim());
       if (!mounted) return;
+      final hubs = (result['hubs'] as List<dynamic>? ?? <dynamic>[]).whereType<Map<String, dynamic>>().toList();
       setState(() {
-        _moesHubs = (result['hubs'] as List<dynamic>? ?? <dynamic>[]).whereType<Map<String, dynamic>>().toList();
+        _moesHubs = hubs;
         _moesLastDiscoveredAt = DateTime.now().toUtc().toIso8601String();
+        // Auto-populate best candidate to simplify one-click flow.
+        if (hubs.isNotEmpty) {
+          final best = hubs.first;
+          final bestIp = (best['ip'] ?? '').toString().trim();
+          final bestId = (best['id'] ?? '').toString().trim();
+          final bestVersion = (best['version'] ?? '').toString().trim();
+          if (bestIp.isNotEmpty) _moesHubIpCtl.text = bestIp;
+          if (bestId.isNotEmpty) _moesHubIdCtl.text = bestId;
+          if (bestVersion.isNotEmpty) _moesHubVersionCtl.text = bestVersion;
+        }
       });
       _setOutputJson(result);
       if (!mounted) return;
@@ -538,6 +567,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
   }
 
   Future<void> _discoverMoesLights() async {
+    _markActionRunning('moes_discover_lights');
     try {
       final result = await widget.api.moesDiscoverLights(
         hubDeviceId: _moesHubIdCtl.text.trim(),

@@ -123,11 +123,14 @@ class ApiService {
     }
   }
 
-  Future<List<Map<String, dynamic>>> scanNetwork({String? subnetHint}) async {
+  Future<List<Map<String, dynamic>>> scanNetwork({String? subnetHint, bool automationOnly = true}) async {
     final res = await _client.post(
       _uri('/api/discovery/scan'),
       headers: _jsonHeaders(),
-      body: jsonEncode({'subnet_hint': subnetHint ?? ''}),
+      body: jsonEncode({
+        'subnet_hint': subnetHint ?? '',
+        'automation_only': automationOnly,
+      }),
     );
     if (res.statusCode != 200) {
       throw Exception('Scan failed: ${res.body}');
