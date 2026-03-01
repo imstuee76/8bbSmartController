@@ -463,6 +463,11 @@ class _LoggingClient extends http.BaseClient {
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    final sid = _logger.sessionId.trim();
+    if (sid.isNotEmpty && !request.headers.containsKey('X-8bb-Session-Id')) {
+      request.headers['X-8bb-Session-Id'] = sid;
+    }
+
     final started = DateTime.now().toUtc();
     final startMs = DateTime.now().millisecondsSinceEpoch;
     try {

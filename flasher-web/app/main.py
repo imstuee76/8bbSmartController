@@ -93,8 +93,13 @@ async def request_session_logger(request: Request, call_next: Any) -> Response:
     auth_token = request.headers.get("x-auth-token", "")
     auth_token_hash = hashlib.sha256(auth_token.encode("utf-8")).hexdigest()[:12] if auth_token else ""
 
+    header_session = (
+        request.headers.get("x-8bb-session-id", "")
+        or request.headers.get("x-client-session-id", "")
+    ).strip()
     cookie_session = request.cookies.get(SESSION_COOKIE_NAME, "")
-    session_id, created = get_or_create_client_session_id(cookie_session)
+    incoming_session = header_session or cookie_session
+    session_id, created = get_or_create_client_session_id(incoming_session)
     base_record: dict[str, Any] = {
         "request_id": req_id,
         "method": request.method,
@@ -135,7 +140,8 @@ async def request_session_logger(request: Request, call_next: Any) -> Response:
         # Logging must never break API handling.
         pass
 
-    if created:
+    # Browser UI uses cookie-based stickiness. Controller app uses explicit header session IDs.
+    if created and not header_session:
         response.set_cookie(
             key=SESSION_COOKIE_NAME,
             value=session_id,
