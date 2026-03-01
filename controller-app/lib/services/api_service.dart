@@ -401,6 +401,7 @@ class ApiService {
     String hubIp = '',
     String hubLocalKey = '',
     String hubVersion = '',
+    String subnetHint = '',
   }) async {
     final res = await _client.post(
       _uri('/api/integrations/moes/discover-lights'),
@@ -410,6 +411,7 @@ class ApiService {
         'hub_ip': hubIp,
         'hub_local_key': hubLocalKey,
         'hub_version': hubVersion,
+        'subnet_hint': subnetHint,
       }),
     );
     if (res.statusCode != 200) {

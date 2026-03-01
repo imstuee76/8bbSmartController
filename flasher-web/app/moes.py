@@ -109,6 +109,7 @@ def _resolve_hub_inputs(
     hub_ip: str = "",
     hub_local_key: str = "",
     hub_version: str = "",
+    subnet_hint: str = "",
 ) -> tuple[str, str, str, float]:
     moes_cfg = get_setting("moes")
     selected_hub = (hub_device_id or moes_cfg.get("hub_device_id", "")).strip()
@@ -139,7 +140,7 @@ def _resolve_hub_inputs(
     # auto-pick the highest scored discovered hub candidate.
     if not selected_ip:
         try:
-            discovered = discover_bhubw_local()
+            discovered = discover_bhubw_local(subnet_hint=subnet_hint)
             hubs = discovered.get("hubs", [])
             if isinstance(hubs, list) and hubs:
                 best = hubs[0] if isinstance(hubs[0], dict) else {}
@@ -326,12 +327,14 @@ def discover_bhubw_lights(
     hub_ip: str = "",
     hub_local_key: str = "",
     hub_version: str = "",
+    subnet_hint: str = "",
 ) -> dict[str, Any]:
     selected_hub, selected_ip, selected_key, selected_version = _resolve_hub_inputs(
         hub_device_id=hub_device_id,
         hub_ip=hub_ip,
         hub_local_key=hub_local_key,
         hub_version=hub_version,
+        subnet_hint=subnet_hint,
     )
     parent = _create_hub_device(
         hub_id=selected_hub,

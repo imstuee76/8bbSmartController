@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 
 from .security import decrypt_secret
-from .scanner import prime_neighbors
+from .scanner import prime_neighbors, scan_network
 from .storage import append_event, get_setting
 
 _spotify_cache: dict[str, Any] = {
@@ -170,12 +170,37 @@ def tuya_local_scan(subnet_hint: str = "") -> dict[str, Any]:
                 "product_key": item.get("productKey", ""),
             }
         )
-    append_event("tuya_local_scan", {"count": len(out), "subnet_hint": hint, "primed_hosts": primed})
+    lan_candidates: list[dict[str, Any]] = []
+    if hint:
+        try:
+            lan_scan = scan_network(hint, automation_only=True)
+            lan_candidates = [
+                {
+                    "ip": str(item.get("ip", "")).strip(),
+                    "hint": str(item.get("device_hint", "") or item.get("provider_hint", "")).strip(),
+                    "score": int(item.get("score", 0)),
+                }
+                for item in lan_scan
+                if str(item.get("ip", "")).strip()
+            ]
+        except Exception:
+            lan_candidates = []
+
+    append_event(
+        "tuya_local_scan",
+        {
+            "count": len(out),
+            "subnet_hint": hint,
+            "primed_hosts": primed,
+            "lan_candidates": len(lan_candidates),
+        },
+    )
     return {
         "devices": out,
         "enabled": True,
         "subnet_hint": hint,
         "primed_hosts": primed,
+        "lan_candidates": lan_candidates[:40],
     }
 
 

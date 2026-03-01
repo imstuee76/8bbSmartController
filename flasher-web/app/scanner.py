@@ -10,6 +10,10 @@ from typing import Any
 import httpx
 
 ARP_RE = re.compile(r"(?:\(|\s)(\d+\.\d+\.\d+\.\d+)(?:\)|\s).{0,40}(([0-9a-f]{2}[:-]){5}[0-9a-f]{2})", re.IGNORECASE)
+IP_NEIGH_RE = re.compile(
+    r"^\s*(\d+\.\d+\.\d+\.\d+)\s+dev\s+\S+(?:\s+lladdr\s+(([0-9a-f]{2}:){5}[0-9a-f]{2}))?.*$",
+    re.IGNORECASE,
+)
 AUTOMATION_MARKERS = (
     "esp",
     "espressif",
@@ -106,6 +110,96 @@ def _ping_once(ip: str, timeout_ms: int = 240) -> None:
         pass
 
 
+def _probe_ip_candidate(ip: str) -> dict[str, Any] | None:
+    hint, boost = _quick_http_probe(ip)
+    if boost <= 0:
+        return None
+    return {
+        "ip": ip,
+        "mac": "",
+        "hostname": "",
+        "source": "http_probe",
+        "device_hint": hint if hint not in ("unknown", "marker_match") else "unknown",
+        "provider_hint": hint,
+        "score": boost,
+        "automation_candidate": True,
+    }
+
+
+def _active_http_probe(network: ipaddress.IPv4Network, max_hosts: int = 256) -> list[dict[str, Any]]:
+    hosts = [str(ip) for ip in network.hosts()]
+    if len(hosts) > max_hosts:
+        hosts = hosts[:max_hosts]
+    if not hosts:
+        return []
+    out: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=64) as pool:
+        for item in pool.map(_probe_ip_candidate, hosts):
+            if item:
+                out.append(item)
+    return out
+
+
+def _collect_neighbors(resolve_hostnames: bool) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+
+    try:
+        output = subprocess.check_output(["arp", "-a"], text=True, stderr=subprocess.STDOUT)
+        for line in output.splitlines():
+            match = ARP_RE.search(line)
+            if not match:
+                continue
+            ip = match.group(1)
+            mac = match.group(2).replace("-", ":").lower()
+            hostname = ""
+            if resolve_hostnames:
+                import socket
+
+                try:
+                    hostname = socket.gethostbyaddr(ip)[0]
+                except OSError:
+                    hostname = ""
+            rows.append(
+                {
+                    "ip": ip,
+                    "mac": mac,
+                    "hostname": hostname,
+                    "source": "arp",
+                    "device_hint": "unknown",
+                }
+            )
+    except Exception:
+        pass
+
+    if rows:
+        return rows
+
+    # Linux fallback when `arp` isn't present.
+    try:
+        output = subprocess.check_output(["ip", "-4", "neigh"], text=True, stderr=subprocess.STDOUT)
+        for line in output.splitlines():
+            m = IP_NEIGH_RE.match(line)
+            if not m:
+                continue
+            ip = m.group(1)
+            mac = (m.group(2) or "").lower()
+            if not mac or mac == "00:00:00:00:00:00":
+                continue
+            rows.append(
+                {
+                    "ip": ip,
+                    "mac": mac,
+                    "hostname": "",
+                    "source": "ip_neigh",
+                    "device_hint": "unknown",
+                }
+            )
+    except Exception:
+        pass
+
+    return rows
+
+
 def prime_neighbors(subnet_hint: str | None = None) -> int:
     network = _network_from_hint(subnet_hint)
     if network is None:
@@ -133,47 +227,19 @@ def scan_network(
         # Warm ARP table for the requested subnet before reading arp cache.
         prime_neighbors(str(network))
 
-    results: list[dict[str, Any]] = []
-
-    try:
-        output = subprocess.check_output(["arp", "-a"], text=True, stderr=subprocess.STDOUT)
-        for line in output.splitlines():
-            match = ARP_RE.search(line)
-            if not match:
-                continue
-            ip = match.group(1)
-            if network is not None:
-                try:
-                    if ipaddress.ip_address(ip) not in network:
-                        continue
-                except ValueError:
-                    continue
-            mac = match.group(2).replace("-", ":").lower()
-            hostname = ""
-            if resolve_hostnames:
-                import socket
-
-                try:
-                    hostname = socket.gethostbyaddr(ip)[0]
-                except OSError:
-                    hostname = ""
-            results.append(
-                {
-                    "ip": ip,
-                    "mac": mac,
-                    "hostname": hostname,
-                    "source": "arp",
-                    "device_hint": "unknown",
-                }
-            )
-    except Exception:
-        pass
+    results: list[dict[str, Any]] = _collect_neighbors(resolve_hostnames)
 
     # Dedupe by IP before enrichment/filter.
     deduped: list[dict[str, Any]] = []
     seen_ips: set[str] = set()
     for row in results:
         ip = str(row.get("ip", "")).strip()
+        if network is not None:
+            try:
+                if ipaddress.ip_address(ip) not in network:
+                    continue
+            except ValueError:
+                continue
         if not ip or ip in seen_ips:
             continue
         seen_ips.add(ip)
@@ -201,12 +267,35 @@ def scan_network(
                     if hint not in ("unknown", "marker_match") and item.get("device_hint", "unknown") == "unknown":
                         item["device_hint"] = hint
 
-            candidate = score >= 2
+            candidate = score >= 1
             item["automation_candidate"] = candidate
             item["provider_hint"] = provider_hint
             item["score"] = score
             if not automation_only or candidate:
                 filtered.append(item)
         results = filtered
+
+    # If neighbor table is sparse, actively probe the subnet for likely automation endpoints.
+    if network is not None and len(results) < 2:
+        active_hits = _active_http_probe(network)
+        if active_hits:
+            by_ip = {str(r.get("ip", "")).strip(): r for r in results}
+            for hit in active_hits:
+                ip = str(hit.get("ip", "")).strip()
+                if not ip:
+                    continue
+                if ip in by_ip:
+                    row = by_ip[ip]
+                    row["score"] = max(int(row.get("score", 0)), int(hit.get("score", 0)))
+                    if str(row.get("provider_hint", "unknown")) == "unknown":
+                        row["provider_hint"] = hit.get("provider_hint", "unknown")
+                    if str(row.get("device_hint", "unknown")) == "unknown":
+                        row["device_hint"] = hit.get("device_hint", "unknown")
+                    row["automation_candidate"] = True
+                else:
+                    results.append(hit)
+
+        if automation_only:
+            results = [row for row in results if bool(row.get("automation_candidate"))]
 
     return results

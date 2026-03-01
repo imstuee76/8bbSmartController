@@ -574,6 +574,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
         hubIp: _moesHubIpCtl.text.trim(),
         hubLocalKey: _moesHubKeyCtl.text.trim(),
         hubVersion: _moesHubVersionCtl.text.trim(),
+        subnetHint: _scanSubnetCtl.text.trim(),
       );
       if (!mounted) return;
       setState(() {
