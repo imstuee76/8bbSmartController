@@ -268,7 +268,9 @@ def scan_network(
     results = deduped
 
     if results:
-        probe_budget = 20
+        # In automation-only mode we should probe all neighbor entries to avoid
+        # missing valid ESP devices that appear late in ARP order.
+        probe_budget = len(results) if automation_only else 20
         filtered: list[dict[str, Any]] = []
         for item in results:
             ip = str(item.get("ip", "")).strip()
@@ -298,8 +300,11 @@ def scan_network(
                 filtered.append(item)
         results = filtered
 
-    # If neighbor table is sparse, actively probe the subnet for likely automation endpoints.
-    if network is not None and len(results) < 2:
+    # Active probe pass:
+    # - Always in automation-only mode (more reliable on busy LANs).
+    # - Also when neighbor table is sparse.
+    should_active_probe = network is not None and (automation_only or len(results) < 2)
+    if should_active_probe:
         active_hits = _active_http_probe(network)
         if active_hits:
             by_ip = {str(r.get("ip", "")).strip(): r for r in results}
