@@ -107,13 +107,15 @@ def _find_brightness_dp(dps: dict[str, Any]) -> str | int | None:
 def _resolve_hub_inputs(
     hub_device_id: str = "",
     hub_ip: str = "",
+    hub_mac: str = "",
     hub_local_key: str = "",
     hub_version: str = "",
     subnet_hint: str = "",
-) -> tuple[str, str, str, float]:
+) -> tuple[str, str, str, float, str]:
     moes_cfg = get_setting("moes")
     selected_hub = (hub_device_id or moes_cfg.get("hub_device_id", "")).strip()
     selected_ip = (hub_ip or moes_cfg.get("hub_ip", "")).strip()
+    selected_mac = (hub_mac or moes_cfg.get("hub_mac", "")).strip().lower()
     selected_version_raw = (hub_version or str(moes_cfg.get("hub_version", "3.4"))).strip()
 
     selected_key = (hub_local_key or "").strip()
@@ -127,6 +129,8 @@ def _resolve_hub_inputs(
                 if str(item.get("id", "")).strip() == selected_hub:
                     if not selected_ip:
                         selected_ip = str(item.get("ip", "")).strip()
+                    if not selected_mac:
+                        selected_mac = str(item.get("mac", "")).strip().lower()
                     if not selected_version_raw:
                         selected_version_raw = str(item.get("version", "")).strip()
                     break
@@ -144,12 +148,23 @@ def _resolve_hub_inputs(
             hubs = discovered.get("hubs", [])
             if isinstance(hubs, list) and hubs:
                 best = hubs[0] if isinstance(hubs[0], dict) else {}
+                if selected_mac:
+                    for candidate in hubs:
+                        if not isinstance(candidate, dict):
+                            continue
+                        candidate_mac = str(candidate.get("mac", "")).strip().lower()
+                        if candidate_mac and candidate_mac == selected_mac:
+                            best = candidate
+                            break
                 if isinstance(best, dict):
                     best_ip = str(best.get("ip", "")).strip()
+                    best_mac = str(best.get("mac", "")).strip().lower()
                     best_id = str(best.get("id", "")).strip()
                     best_ver = str(best.get("version", "")).strip()
                     if best_ip:
                         selected_ip = best_ip
+                    if best_mac and not selected_mac:
+                        selected_mac = best_mac
                     if not selected_hub or selected_hub == "bhubw-local":
                         selected_hub = best_id or f"bhubw-{best_ip}"
                     if not selected_version_raw and best_ver:
@@ -157,7 +172,7 @@ def _resolve_hub_inputs(
         except Exception:
             pass
 
-    return selected_hub, selected_ip, selected_key, _parse_version(selected_version_raw)
+    return selected_hub, selected_ip, selected_key, _parse_version(selected_version_raw), selected_mac
 
 
 def _create_hub_device(hub_id: str, hub_ip: str, local_key: str, version: float) -> Any:
@@ -261,6 +276,7 @@ def discover_bhubw_local(subnet_hint: str = "") -> dict[str, Any]:
         if not isinstance(entry, dict):
             continue
         ip = str(entry.get("ip", "")).strip()
+        mac = str(entry.get("mac", "")).strip().lower()
         dev_id = str(entry.get("id", "")).strip()
         version = str(entry.get("version", "")).strip()
         marker_blob = _text_blob(
@@ -282,6 +298,8 @@ def discover_bhubw_local(subnet_hint: str = "") -> dict[str, Any]:
                     candidate["id"] = dev_id
                 if version and not candidate.get("version"):
                     candidate["version"] = version
+                if mac and not str(candidate.get("mac", "")).strip():
+                    candidate["mac"] = mac
                 candidate["score"] = max(int(candidate.get("score", 0)), score)
                 candidate.setdefault("reasons", []).append("matched tuya local scan")
                 matched = True
@@ -298,7 +316,7 @@ def discover_bhubw_local(subnet_hint: str = "") -> dict[str, Any]:
                 "id": dev_id,
                 "ip": ip,
                 "version": version,
-                "mac": "",
+                "mac": mac,
                 "hostname": "",
                 "name": "",
                 "score": score,
@@ -325,13 +343,15 @@ def discover_bhubw_local(subnet_hint: str = "") -> dict[str, Any]:
 def discover_bhubw_lights(
     hub_device_id: str = "",
     hub_ip: str = "",
+    hub_mac: str = "",
     hub_local_key: str = "",
     hub_version: str = "",
     subnet_hint: str = "",
 ) -> dict[str, Any]:
-    selected_hub, selected_ip, selected_key, selected_version = _resolve_hub_inputs(
+    selected_hub, selected_ip, selected_key, selected_version, selected_mac = _resolve_hub_inputs(
         hub_device_id=hub_device_id,
         hub_ip=hub_ip,
+        hub_mac=hub_mac,
         hub_local_key=hub_local_key,
         hub_version=hub_version,
         subnet_hint=subnet_hint,
@@ -351,6 +371,7 @@ def discover_bhubw_lights(
         {
             "id": selected_hub,
             "ip": selected_ip,
+            "mac": selected_mac,
             "name": "MOES BHUB-W",
             "version": str(selected_version),
             "online": True,
@@ -397,6 +418,7 @@ def discover_bhubw_lights(
     moes_cfg["last_light_scan_at"] = utc_now()
     moes_cfg["hub_device_id"] = selected_hub
     moes_cfg["hub_ip"] = selected_ip
+    moes_cfg["hub_mac"] = selected_mac
     moes_cfg["hub_version"] = str(selected_version)
     set_setting("moes", moes_cfg)
 
@@ -405,6 +427,7 @@ def discover_bhubw_lights(
         {
             "selected_hub": selected_hub,
             "hub_ip": selected_ip,
+            "hub_mac": selected_mac,
             "light_count": len(lights),
             "subdevice_count": len(subdevices),
             "local_only": True,
@@ -413,6 +436,7 @@ def discover_bhubw_lights(
     return {
         "selected_hub_device_id": selected_hub,
         "selected_hub_ip": selected_ip,
+        "selected_hub_mac": selected_mac,
         "selected_hub_version": str(selected_version),
         "hubs": hubs,
         "lights": lights,
@@ -423,9 +447,10 @@ def discover_bhubw_lights(
 
 
 def send_bhubw_light_command(metadata: dict[str, Any], command: dict[str, Any]) -> dict[str, Any]:
-    selected_hub, selected_ip, selected_key, selected_version = _resolve_hub_inputs(
+    selected_hub, selected_ip, selected_key, selected_version, selected_mac = _resolve_hub_inputs(
         hub_device_id=str(metadata.get("hub_device_id", "")).strip(),
         hub_ip=str(metadata.get("hub_ip", "")).strip(),
+        hub_mac=str(metadata.get("hub_mac", "")).strip(),
         hub_local_key=str(metadata.get("hub_local_key", "")).strip(),
         hub_version=str(metadata.get("hub_version", "")).strip(),
     )
@@ -472,6 +497,7 @@ def send_bhubw_light_command(metadata: dict[str, Any], command: dict[str, Any]) 
             "resolved": {
                 "hub_id": selected_hub,
                 "hub_ip": selected_ip,
+                "hub_mac": selected_mac,
                 "hub_version": str(selected_version),
                 "cid": cid,
             },
@@ -487,6 +513,7 @@ def send_bhubw_light_command(metadata: dict[str, Any], command: dict[str, Any]) 
             "resolved": {
                 "hub_id": selected_hub,
                 "hub_ip": selected_ip,
+                "hub_mac": selected_mac,
                 "hub_version": str(selected_version),
                 "cid": cid,
             },
@@ -508,6 +535,7 @@ def send_bhubw_light_command(metadata: dict[str, Any], command: dict[str, Any]) 
             "resolved": {
                 "hub_id": selected_hub,
                 "hub_ip": selected_ip,
+                "hub_mac": selected_mac,
                 "hub_version": str(selected_version),
                 "cid": cid,
                 "brightness_dp": brightness_dp,
@@ -518,9 +546,10 @@ def send_bhubw_light_command(metadata: dict[str, Any], command: dict[str, Any]) 
 
 
 def get_bhubw_light_status(metadata: dict[str, Any]) -> dict[str, Any]:
-    selected_hub, selected_ip, selected_key, selected_version = _resolve_hub_inputs(
+    selected_hub, selected_ip, selected_key, selected_version, selected_mac = _resolve_hub_inputs(
         hub_device_id=str(metadata.get("hub_device_id", "")).strip(),
         hub_ip=str(metadata.get("hub_ip", "")).strip(),
+        hub_mac=str(metadata.get("hub_mac", "")).strip(),
         hub_local_key=str(metadata.get("hub_local_key", "")).strip(),
         hub_version=str(metadata.get("hub_version", "")).strip(),
     )
@@ -552,6 +581,7 @@ def get_bhubw_light_status(metadata: dict[str, Any]) -> dict[str, Any]:
         "device_id": cid,
         "hub_id": selected_hub,
         "hub_ip": selected_ip,
+        "hub_mac": selected_mac,
         "hub_version": str(selected_version),
         "outputs": outputs,
         "dps": dps,

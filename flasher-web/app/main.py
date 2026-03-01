@@ -455,12 +455,14 @@ def post_moes_discover_local(payload: dict[str, Any]) -> dict[str, Any]:
 def post_moes_discover_lights(payload: dict[str, Any]) -> dict[str, Any]:
     hub_device_id = ""
     hub_ip = ""
+    hub_mac = ""
     hub_local_key = ""
     hub_version = ""
     subnet_hint = ""
     if isinstance(payload, dict):
         hub_device_id = str(payload.get("hub_device_id", "")).strip()
         hub_ip = str(payload.get("hub_ip", "")).strip()
+        hub_mac = str(payload.get("hub_mac", "")).strip()
         hub_local_key = str(payload.get("hub_local_key", "")).strip()
         hub_version = str(payload.get("hub_version", "")).strip()
         subnet_hint = str(payload.get("subnet_hint", "")).strip()
@@ -468,6 +470,7 @@ def post_moes_discover_lights(payload: dict[str, Any]) -> dict[str, Any]:
         return discover_bhubw_lights(
             hub_device_id=hub_device_id,
             hub_ip=hub_ip,
+            hub_mac=hub_mac,
             hub_local_key=hub_local_key,
             hub_version=hub_version,
             subnet_hint=subnet_hint,

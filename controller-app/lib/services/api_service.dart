@@ -399,6 +399,7 @@ class ApiService {
   Future<Map<String, dynamic>> moesDiscoverLights({
     String hubDeviceId = '',
     String hubIp = '',
+    String hubMac = '',
     String hubLocalKey = '',
     String hubVersion = '',
     String subnetHint = '',
@@ -409,6 +410,7 @@ class ApiService {
       body: jsonEncode({
         'hub_device_id': hubDeviceId,
         'hub_ip': hubIp,
+        'hub_mac': hubMac,
         'hub_local_key': hubLocalKey,
         'hub_version': hubVersion,
         'subnet_hint': subnetHint,

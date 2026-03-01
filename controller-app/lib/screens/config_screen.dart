@@ -1,6 +1,8 @@
+import 'dart:math' as math;
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../models/config_models.dart';
 import '../services/api_service.dart';
@@ -39,6 +41,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
   final _tuyaIdCtl = TextEditingController();
   final _tuyaSecretCtl = TextEditingController();
   final _moesHubIpCtl = TextEditingController();
+  final _moesHubMacCtl = TextEditingController();
   final _moesHubIdCtl = TextEditingController();
   final _moesHubKeyCtl = TextEditingController();
   final _moesHubVersionCtl = TextEditingController(text: '3.4');
@@ -55,9 +58,11 @@ class _ConfigScreenState extends State<ConfigScreen> {
   bool _saving = false;
   bool _testingBackend = false;
   bool _authConfigured = false;
+  bool _logWindowOpen = false;
   String? _initError;
   String _openPanel = 'auth';
   int _panelUiEpoch = 0;
+  Offset _logWindowOffset = const Offset(20, 20);
   String _integrationTestOutput = '';
   String _moesLastDiscoveredAt = '';
   String _moesLastLightScanAt = '';
@@ -116,6 +121,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
       _tuyaIdCtl.text = integrations.tuya['client_id']?.toString() ?? '';
       _tuyaSecretCtl.text = integrations.tuya['client_secret']?.toString() ?? '';
       _moesHubIpCtl.text = integrations.moes['hub_ip']?.toString() ?? '';
+      _moesHubMacCtl.text = integrations.moes['hub_mac']?.toString() ?? '';
       _moesHubIdCtl.text = integrations.moes['hub_device_id']?.toString() ?? '';
       _moesHubKeyCtl.text = integrations.moes['hub_local_key']?.toString() ?? '';
       _moesHubVersionCtl.text = integrations.moes['hub_version']?.toString() ?? '3.4';
@@ -163,6 +169,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
       },
       moes: {
         'hub_ip': _moesHubIpCtl.text.trim(),
+        'hub_mac': _moesHubMacCtl.text.trim(),
         'hub_device_id': _moesHubIdCtl.text.trim(),
         'hub_local_key': _moesHubKeyCtl.text.trim(),
         'hub_version': _moesHubVersionCtl.text.trim().isEmpty ? '3.4' : _moesHubVersionCtl.text.trim(),
@@ -311,18 +318,17 @@ class _ConfigScreenState extends State<ConfigScreen> {
     });
   }
 
-  void _setOutputMessage(String message, {bool openOutputPanel = true}) {
+  void _setOutputMessage(String message, {bool openOutputPanel = false}) {
     if (!mounted) return;
     setState(() {
       _integrationTestOutput = message;
       if (openOutputPanel) {
-        _openPanel = 'output';
-        _panelUiEpoch += 1;
+        _logWindowOpen = true;
       }
     });
   }
 
-  void _setOutputJson(Map<String, dynamic> payload, {bool openOutputPanel = true}) {
+  void _setOutputJson(Map<String, dynamic> payload, {bool openOutputPanel = false}) {
     _setOutputMessage(const JsonEncoder.withIndent('  ').convert(payload), openOutputPanel: openOutputPanel);
   }
 
@@ -336,7 +342,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
     if (extra != null && extra.isNotEmpty) {
       payload.addAll(extra);
     }
-    _setOutputJson(payload);
+    _setOutputJson(payload, openOutputPanel: false);
   }
 
   Future<void> _setupAdmin() async {
@@ -572,6 +578,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
       final result = await widget.api.moesDiscoverLights(
         hubDeviceId: _moesHubIdCtl.text.trim(),
         hubIp: _moesHubIpCtl.text.trim(),
+        hubMac: _moesHubMacCtl.text.trim(),
         hubLocalKey: _moesHubKeyCtl.text.trim(),
         hubVersion: _moesHubVersionCtl.text.trim(),
         subnetHint: _scanSubnetCtl.text.trim(),
@@ -604,6 +611,9 @@ class _ConfigScreenState extends State<ConfigScreen> {
       if ((hub['ip'] ?? '').toString().isNotEmpty) {
         _moesHubIpCtl.text = (hub['ip'] ?? '').toString();
       }
+      if ((hub['mac'] ?? '').toString().isNotEmpty) {
+        _moesHubMacCtl.text = (hub['mac'] ?? '').toString();
+      }
       if ((hub['id'] ?? '').toString().isNotEmpty) {
         _moesHubIdCtl.text = (hub['id'] ?? '').toString();
       }
@@ -630,6 +640,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
           'source_name': 'MOES BHUB-W',
           'connection_mode': 'local_lan',
           'hub_ip': _moesHubIpCtl.text.trim(),
+          'hub_mac': _moesHubMacCtl.text.trim(),
           'hub_device_id': _moesHubIdCtl.text.trim(),
           'hub_version': _moesHubVersionCtl.text.trim(),
           'moes_cid': lightCid,
@@ -773,6 +784,111 @@ class _ConfigScreenState extends State<ConfigScreen> {
     }
   }
 
+  Future<void> _copyOutput() async {
+    if (_integrationTestOutput.trim().isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: _integrationTestOutput));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Log copied to clipboard')));
+  }
+
+  void _clearOutput() {
+    if (!mounted) return;
+    setState(() {
+      _integrationTestOutput = '';
+    });
+  }
+
+  void _toggleLogWindow() {
+    if (!mounted) return;
+    setState(() {
+      _logWindowOpen = !_logWindowOpen;
+    });
+  }
+
+  Widget _buildLogWindow(Size viewport) {
+    final maxWidth = math.max(300.0, viewport.width - 16);
+    final maxHeight = math.max(240.0, viewport.height - 16);
+    final width = math.min(760.0, maxWidth);
+    final height = math.min(460.0, maxHeight);
+    final maxLeft = math.max(8.0, viewport.width - width - 8);
+    final maxTop = math.max(8.0, viewport.height - height - 8);
+    final left = _logWindowOffset.dx.clamp(8.0, maxLeft).toDouble();
+    final top = _logWindowOffset.dy.clamp(8.0, maxTop).toDouble();
+
+    return Positioned(
+      left: left,
+      top: top,
+      child: Material(
+        elevation: 12,
+        borderRadius: BorderRadius.circular(12),
+        color: Theme.of(context).colorScheme.surface,
+        child: SizedBox(
+          width: width,
+          height: height,
+          child: Column(
+            children: [
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onPanUpdate: (details) {
+                  setState(() {
+                    _logWindowOffset = Offset(
+                      (_logWindowOffset.dx + details.delta.dx).clamp(8.0, maxLeft).toDouble(),
+                      (_logWindowOffset.dy + details.delta.dy).clamp(8.0, maxTop).toDouble(),
+                    );
+                  });
+                },
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          'Live Output Log',
+                          style: TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Copy log',
+                        onPressed: _integrationTestOutput.isEmpty ? null : _copyOutput,
+                        icon: const Icon(Icons.copy_outlined, size: 18),
+                      ),
+                      IconButton(
+                        tooltip: 'Clear log',
+                        onPressed: _integrationTestOutput.isEmpty ? null : _clearOutput,
+                        icon: const Icon(Icons.delete_outline, size: 18),
+                      ),
+                      IconButton(
+                        tooltip: 'Close log window',
+                        onPressed: _toggleLogWindow,
+                        icon: const Icon(Icons.close, size: 18),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              Expanded(
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  child: SingleChildScrollView(
+                    child: SelectableText(
+                      _integrationTestOutput.isEmpty ? 'No output yet.' : _integrationTestOutput,
+                      style: const TextStyle(fontFamily: 'monospace'),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
@@ -787,13 +903,14 @@ class _ConfigScreenState extends State<ConfigScreen> {
       'weather',
       'tuya',
       'network',
-      if (_integrationTestOutput.isNotEmpty) 'output',
     ];
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(12),
-      child: Column(
-        children: [
+    return Stack(
+      children: [
+        SingleChildScrollView(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            children: [
           if (_initError != null)
             Card(
               color: const Color(0xFFFFF3E0),
@@ -802,6 +919,28 @@ class _ConfigScreenState extends State<ConfigScreen> {
                 child: Text(_initError!),
               ),
             ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton(
+                  onPressed: _toggleLogWindow,
+                  child: Text(_logWindowOpen ? 'Hide Log Window' : 'Open Log Window'),
+                ),
+                OutlinedButton(
+                  onPressed: _integrationTestOutput.isEmpty ? null : _copyOutput,
+                  child: const Text('Copy Log'),
+                ),
+                OutlinedButton(
+                  onPressed: _integrationTestOutput.isEmpty ? null : _clearOutput,
+                  child: const Text('Clear Log'),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
           ExpansionPanelList.radio(
             key: ValueKey('config-panels-$_panelUiEpoch'),
             initialOpenPanelValue: _openPanel,
@@ -853,6 +992,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
                       ),
                     ),
                     TextField(controller: _moesHubIpCtl, decoration: const InputDecoration(labelText: 'Hub IP (optional/manual)')),
+                    TextField(controller: _moesHubMacCtl, decoration: const InputDecoration(labelText: 'Hub MAC (optional/manual)')),
                     TextField(controller: _moesHubIdCtl, decoration: const InputDecoration(labelText: 'Hub Device ID (optional)')),
                     TextField(
                       controller: _moesHubKeyCtl,
@@ -1070,22 +1210,6 @@ class _ConfigScreenState extends State<ConfigScreen> {
                   ],
                 ),
               ),
-              if (_integrationTestOutput.isNotEmpty)
-                ExpansionPanelRadio(
-                  value: 'output',
-                  headerBuilder: (_, __) => _panelHeader('Output', 'Test/discovery response log'),
-                  body: _panelBody(
-                    [
-                      SizedBox(
-                        width: double.infinity,
-                        child: SelectableText(
-                          _integrationTestOutput,
-                          style: const TextStyle(fontFamily: 'monospace'),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
             ],
           ),
           const SizedBox(height: 8),
@@ -1095,9 +1219,12 @@ class _ConfigScreenState extends State<ConfigScreen> {
               onPressed: _saving ? null : _save,
               child: Text(_saving ? 'Saving...' : 'Save Config'),
             ),
-          )
-        ],
-      ),
+            )
+          ],
+          ),
+        ),
+        if (_logWindowOpen) _buildLogWindow(MediaQuery.sizeOf(context)),
+      ],
     );
   }
 }

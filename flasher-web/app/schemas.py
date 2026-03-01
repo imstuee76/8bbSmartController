@@ -51,6 +51,7 @@ class ScanConfig(BaseModel):
 
 class MoesConfig(BaseModel):
     hub_ip: str = ""
+    hub_mac: str = ""
     hub_device_id: str = ""
     hub_local_key: str = ""
     hub_version: str = "3.4"

@@ -142,6 +142,7 @@ DEFAULT_SETTINGS = {
     },
     "moes": {
         "hub_ip": "",
+        "hub_mac": "",
         "hub_device_id": "",
         "hub_local_key": "",
         "hub_version": "3.4",
