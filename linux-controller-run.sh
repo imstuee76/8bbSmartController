@@ -13,6 +13,9 @@ ERROR_LOG="$SESSION_DIR/errors-$DAY_LOCAL.log"
 FLUTTER_HOME_DEFAULT="$APP_ROOT/.tools/flutter"
 FLUTTER_BIN=""
 ENV_FILE_LOADED=""
+BACKEND_PID=""
+BACKEND_ACTIVITY_LOG="$SESSION_DIR/backend-$DAY_LOCAL.log"
+BACKEND_ERROR_LOG="$SESSION_DIR/backend-errors-$DAY_LOCAL.log"
 
 mkdir -p "$SESSION_DIR"
 mkdir -p "$DATA_DIR/logs/updater"
@@ -28,6 +31,24 @@ run() {
   log "\$ $*"
   "$@"
 }
+
+is_true() {
+  local raw="${1:-}"
+  local v
+  v="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  [[ "$v" == "1" || "$v" == "true" || "$v" == "yes" || "$v" == "on" ]]
+}
+
+cleanup_backend() {
+  if [[ -n "$BACKEND_PID" ]] && kill -0 "$BACKEND_PID" >/dev/null 2>&1; then
+    log "Stopping local backend (pid=$BACKEND_PID)"
+    kill "$BACKEND_PID" >/dev/null 2>&1 || true
+    wait "$BACKEND_PID" >/dev/null 2>&1 || true
+    BACKEND_PID=""
+  fi
+}
+
+trap cleanup_backend EXIT INT TERM
 
 resolve_flutter() {
   if command -v flutter >/dev/null 2>&1; then
@@ -76,6 +97,23 @@ ensure_linux_desktop_project() {
   pushd "$app_dir" >/dev/null
   run "$FLUTTER_BIN" create --platforms=linux .
   popd >/dev/null
+}
+
+ensure_python_pip() {
+  if python3 -m pip --version >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+    log "python3 pip missing. Installing python3-pip..."
+    run sudo apt-get update || true
+    run sudo apt-get install -y python3-pip || true
+  fi
+
+  if ! python3 -m pip --version >/dev/null 2>&1; then
+    log "ERROR: python3 pip is required for local backend but unavailable."
+    return 1
+  fi
 }
 
 load_env_file() {
@@ -176,6 +214,96 @@ EOF
   fi
 }
 
+ensure_local_backend_deps() {
+  local req_file="$APP_ROOT/flasher-web/requirements.txt"
+  if [[ ! -f "$req_file" ]]; then
+    log "ERROR: Missing local backend requirements: $req_file"
+    log "Run ./linux-controller-updater.sh to sync controller runtime files."
+    return 1
+  fi
+  ensure_python_pip
+  run python3 -m pip install --user --upgrade -r "$req_file"
+}
+
+wait_for_local_backend() {
+  local base_url="$1"
+  if ! command -v curl >/dev/null 2>&1; then
+    log "curl not found; skipping local backend readiness check."
+    return 0
+  fi
+
+  local i=0
+  while ((i < 40)); do
+    if curl -fsS "${base_url}/api/auth/status" >/dev/null 2>&1; then
+      log "Local backend ready: ${base_url}"
+      return 0
+    fi
+    if [[ -n "$BACKEND_PID" ]] && ! kill -0 "$BACKEND_PID" >/dev/null 2>&1; then
+      log "ERROR: Local backend process exited unexpectedly."
+      if [[ -f "$BACKEND_ERROR_LOG" ]]; then
+        log "Last backend errors:"
+        tail -n 30 "$BACKEND_ERROR_LOG" || true
+      fi
+      return 1
+    fi
+    sleep 0.25
+    i=$((i + 1))
+  done
+
+  log "WARNING: Local backend readiness timed out; continuing startup."
+  return 0
+}
+
+start_local_backend() {
+  local use_local_raw="${CONTROLLER_USE_LOCAL_BACKEND:-1}"
+  if ! is_true "$use_local_raw"; then
+    log "Local backend disabled by CONTROLLER_USE_LOCAL_BACKEND=$use_local_raw"
+    return 0
+  fi
+
+  local backend_dir="$APP_ROOT/flasher-web"
+  if [[ ! -d "$backend_dir" ]]; then
+    log "ERROR: Local backend folder missing: $backend_dir"
+    log "Run ./linux-controller-updater.sh first."
+    return 1
+  fi
+
+  local host="${CONTROLLER_LOCAL_BACKEND_HOST:-127.0.0.1}"
+  local port="${CONTROLLER_LOCAL_BACKEND_PORT:-8088}"
+  local reload_flag=""
+  if is_true "${CONTROLLER_LOCAL_BACKEND_RELOAD:-0}"; then
+    reload_flag="--reload"
+  fi
+
+  local base_url="http://${host}:${port}"
+  export CONTROLLER_BACKEND_URL="$base_url"
+  export SMART_CONTROLLER_BACKEND_URL="$base_url"
+
+  if command -v curl >/dev/null 2>&1; then
+    if curl -fsS "${base_url}/api/auth/status" >/dev/null 2>&1; then
+      log "Local backend already running: $base_url"
+      return 0
+    fi
+  fi
+
+  ensure_local_backend_deps
+
+  log "Starting local backend: $base_url"
+  (
+    cd "$backend_dir"
+    if [[ -n "$reload_flag" ]]; then
+      exec python3 -m uvicorn app.main:app --host "$host" --port "$port" --reload
+    else
+      exec python3 -m uvicorn app.main:app --host "$host" --port "$port"
+    fi
+  ) >>"$BACKEND_ACTIVITY_LOG" 2>>"$BACKEND_ERROR_LOG" &
+  BACKEND_PID=$!
+  log "Local backend pid: $BACKEND_PID"
+  log "Backend logs: $BACKEND_ACTIVITY_LOG | $BACKEND_ERROR_LOG"
+
+  wait_for_local_backend "$base_url"
+}
+
 main() {
   log "Session: $SESSION_ID"
   log "App root: $APP_ROOT"
@@ -186,6 +314,7 @@ main() {
   if [[ -z "$ENV_FILE_LOADED" && -f "$APP_ROOT/.env" ]]; then
     export SMART_CONTROLLER_ENV_FILE="$APP_ROOT/.env"
   fi
+  start_local_backend
   if [[ -n "${CONTROLLER_BACKEND_URL:-}" ]]; then
     log "Configured backend URL: ${CONTROLLER_BACKEND_URL}"
   else

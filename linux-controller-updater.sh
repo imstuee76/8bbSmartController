@@ -16,6 +16,7 @@ FLUTTER_BIN=""
 
 CONTROLLER_SYNC_PATHS=(
   "controller-app"
+  "flasher-web"
   "shared"
   "linux-controller-run.sh"
   "linux-controller-updater.sh"
@@ -178,7 +179,7 @@ sync_controller_files() {
   local extract="$TMP_ROOT/extract"
   mkdir -p "$extract"
 
-  log "Controller-only update source: $repo_slug ($branch)"
+  log "Controller runtime update source: $repo_slug ($branch)"
   download_archive "$repo_slug" "$branch" "$archive"
   run tar -xzf "$archive" -C "$extract"
 
@@ -278,13 +279,36 @@ ensure_linux_desktop_project() {
   popd >/dev/null
 }
 
+ensure_backend_runtime() {
+  local req_file="$APP_ROOT/flasher-web/requirements.txt"
+  if [[ ! -f "$req_file" ]]; then
+    log "WARNING: Backend requirements file missing: $req_file"
+    return 0
+  fi
+
+  if ! python3 -m pip --version >/dev/null 2>&1; then
+    log "python3 pip missing. Installing python3-pip..."
+    if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+      apt_update_safe || true
+      run sudo apt-get install -y python3-pip
+    fi
+  fi
+
+  if ! python3 -m pip --version >/dev/null 2>&1; then
+    log "ERROR: python3 pip is required but unavailable."
+    return 1
+  fi
+
+  run python3 -m pip install --user --upgrade -r "$req_file"
+}
+
 install_deps() {
   ensure_cmd python3 python3
   ensure_cmd curl curl
   ensure_cmd tar tar
   ensure_cmd rsync rsync
   if command -v apt-get >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
-    local -a pkgs=(clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-12-dev)
+    local -a pkgs=(clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-12-dev python3-pip)
     local -a missing=()
     for p in "${pkgs[@]}"; do
       if ! dpkg -s "$p" >/dev/null 2>&1; then
@@ -303,6 +327,7 @@ install_deps() {
   ensure_flutter
   run "$FLUTTER_BIN" config --enable-linux-desktop
   ensure_linux_desktop_project
+  ensure_backend_runtime
   pushd "$APP_ROOT/controller-app" >/dev/null
   run "$FLUTTER_BIN" pub get
   popd >/dev/null

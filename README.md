@@ -122,21 +122,22 @@ Run controller app:
 Behavior:
 - Never deletes `/data`.
 - Loads `.env` from `/data/.env` first.
-- Does not require `.git`; downloads latest GitHub archive and syncs controller-only files.
+- Does not require `.git`; downloads latest GitHub archive and syncs controller runtime files.
 - Overwrites controller app files each update, but preserves `.env` and `/data` storage.
-- Installs missing controller deps, including local Flutter SDK bootstrap to `.tools/flutter` if Flutter is not in PATH.
-- `linux-controller-run.sh` auto-runs updater once when Flutter is missing, then starts controller.
+- Installs missing controller deps, local backend Python deps, and local Flutter SDK bootstrap to `.tools/flutter` if Flutter is not in PATH.
+- `linux-controller-run.sh` auto-starts local backend (`flasher-web`) by default, then starts controller.
 - Auto-creates missing Flutter Linux desktop scaffolding (`controller-app/linux`) when needed.
 - Writes updater logs to `/data/logs/updater/sessions/<session>/`.
 - Writes controller run logs to `/data/logs/controller/sessions/<session>/`.
+- Local backend logs are also written in each controller session folder (`backend-*.log`, `backend-errors-*.log`).
 
 ## Split deployment model
 
-- `flasher-web` runs on Windows PC/server.
-- `controller-app` runs on Linux Mint touch controller.
-- They are separate processes/machines; only LAN API communication is shared.
-- In controller `Config`, set backend URL to your Windows flasher IP:
-  - example: `http://192.168.1.50:8088`
+- Recommended default: Linux controller runs both `controller-app` and local `flasher-web` backend (standalone mode).
+- Optional: disable local backend and use remote Windows backend by setting:
+  - `CONTROLLER_USE_LOCAL_BACKEND=0`
+  - `CONTROLLER_BACKEND_URL=http://<windows-ip>:8088`
+- Windows flasher can still be used as a separate machine for occasional serial flashing workflows.
 
 ## Legacy manual start
 
