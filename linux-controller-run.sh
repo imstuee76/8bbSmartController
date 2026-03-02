@@ -16,9 +16,6 @@ ENV_FILE_LOADED=""
 BACKEND_PID=""
 BACKEND_ACTIVITY_LOG="$SESSION_DIR/backend-$DAY_LOCAL.log"
 BACKEND_ERROR_LOG="$SESSION_DIR/backend-errors-$DAY_LOCAL.log"
-TOUCH_KEYBOARD_PID=""
-TOUCH_KEYBOARD_ACTIVITY_LOG="$SESSION_DIR/touch-keyboard-$DAY_LOCAL.log"
-TOUCH_KEYBOARD_ERROR_LOG="$SESSION_DIR/touch-keyboard-errors-$DAY_LOCAL.log"
 
 mkdir -p "$SESSION_DIR"
 mkdir -p "$DATA_DIR/logs/updater"
@@ -48,12 +45,6 @@ cleanup_processes() {
     kill "$BACKEND_PID" >/dev/null 2>&1 || true
     wait "$BACKEND_PID" >/dev/null 2>&1 || true
     BACKEND_PID=""
-  fi
-  if [[ -n "$TOUCH_KEYBOARD_PID" ]] && kill -0 "$TOUCH_KEYBOARD_PID" >/dev/null 2>&1; then
-    log "Stopping touch keyboard (pid=$TOUCH_KEYBOARD_PID)"
-    kill "$TOUCH_KEYBOARD_PID" >/dev/null 2>&1 || true
-    wait "$TOUCH_KEYBOARD_PID" >/dev/null 2>&1 || true
-    TOUCH_KEYBOARD_PID=""
   fi
 }
 
@@ -198,57 +189,6 @@ ensure_python_pip() {
     log "ERROR: python3 pip is required for local backend but unavailable."
     return 1
   fi
-}
-
-ensure_onboard() {
-  if command -v onboard >/dev/null 2>&1; then
-    return 0
-  fi
-
-  if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-    log "On-screen keyboard (onboard) missing. Installing..."
-    run sudo apt-get update || true
-    run sudo apt-get install -y onboard || true
-  fi
-
-  if ! command -v onboard >/dev/null 2>&1; then
-    log "WARNING: onboard is not available. Touch keyboard cannot auto-start."
-    return 1
-  fi
-  return 0
-}
-
-start_touch_keyboard() {
-  local enable_raw="${CONTROLLER_TOUCH_KEYBOARD:-1}"
-  if ! is_true "$enable_raw"; then
-    log "Touch keyboard disabled by CONTROLLER_TOUCH_KEYBOARD=$enable_raw"
-    return 0
-  fi
-
-  if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
-    log "No graphical display detected; skipping touch keyboard startup."
-    return 0
-  fi
-
-  local cmd="${CONTROLLER_TOUCH_KEYBOARD_CMD:-onboard}"
-  if [[ "$cmd" == "onboard" ]]; then
-    if ! ensure_onboard; then
-      return 0
-    fi
-    if pgrep -x onboard >/dev/null 2>&1; then
-      log "Touch keyboard already running (onboard)."
-      return 0
-    fi
-  elif ! command -v "$cmd" >/dev/null 2>&1; then
-    log "WARNING: Touch keyboard command not found: $cmd"
-    return 0
-  fi
-
-  log "Starting touch keyboard command: $cmd"
-  "$cmd" >>"$TOUCH_KEYBOARD_ACTIVITY_LOG" 2>>"$TOUCH_KEYBOARD_ERROR_LOG" &
-  TOUCH_KEYBOARD_PID=$!
-  log "Touch keyboard pid: $TOUCH_KEYBOARD_PID"
-  log "Touch keyboard logs: $TOUCH_KEYBOARD_ACTIVITY_LOG | $TOUCH_KEYBOARD_ERROR_LOG"
 }
 
 load_env_file() {
@@ -455,8 +395,10 @@ main() {
   else
     log "WARNING: CONTROLLER_BACKEND_URL not set. App may fall back to localhost."
   fi
+  export SMART_CONTROLLER_TOUCH_KEYBOARD_ENABLED="${CONTROLLER_TOUCH_KEYBOARD:-1}"
+  export SMART_CONTROLLER_TOUCH_KEYBOARD_CMD="${CONTROLLER_TOUCH_KEYBOARD_CMD:-onboard}"
+  log "Touch keyboard mode: focus-driven (${SMART_CONTROLLER_TOUCH_KEYBOARD_CMD})"
   create_desktop_shortcut
-  start_touch_keyboard
   ensure_flutter
   ensure_linux_desktop_project
   ensure_pub_deps

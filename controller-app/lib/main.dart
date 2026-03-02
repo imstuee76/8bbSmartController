@@ -9,6 +9,7 @@ import 'screens/main_screen.dart';
 import 'services/api_service.dart';
 import 'services/local_store.dart';
 import 'services/session_logger.dart';
+import 'services/touch_keyboard_service.dart';
 
 Future<void> main() async {
   runZonedGuarded(
@@ -92,6 +93,20 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
+  late final TouchKeyboardService _touchKeyboard;
+
+  @override
+  void initState() {
+    super.initState();
+    _touchKeyboard = TouchKeyboardService.fromEnvironment();
+    _touchKeyboard.start();
+  }
+
+  @override
+  void dispose() {
+    unawaited(_touchKeyboard.dispose());
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
