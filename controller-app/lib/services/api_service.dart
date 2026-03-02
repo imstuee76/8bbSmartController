@@ -189,6 +189,28 @@ class ApiService {
     }
   }
 
+  Future<void> updateTile({
+    required String tileId,
+    String? label,
+    Map<String, dynamic>? payload,
+  }) async {
+    final body = <String, dynamic>{};
+    if (label != null) {
+      body['label'] = label;
+    }
+    if (payload != null) {
+      body['payload'] = payload;
+    }
+    final res = await _client.patch(
+      _uri('/api/main/tiles/$tileId'),
+      headers: _jsonHeaders(),
+      body: jsonEncode(body),
+    );
+    if (res.statusCode != 200) {
+      throw Exception('Update tile failed: ${res.body}');
+    }
+  }
+
   Future<DisplayConfig> fetchDisplayConfig() async {
     final res = await _client.get(_uri('/api/config/display'));
     if (res.statusCode != 200) {

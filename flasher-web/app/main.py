@@ -913,6 +913,48 @@ def create_tile(payload: TileCreate) -> dict[str, Any]:
     return {"id": tile_id}
 
 
+@app.patch("/api/main/tiles/{tile_id}", dependencies=[Depends(require_auth_if_configured)])
+def patch_tile(tile_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be an object")
+
+    updates: list[str] = []
+    values: list[Any] = []
+
+    if "label" in payload:
+        updates.append("label=?")
+        values.append(str(payload.get("label", "")).strip())
+
+    if "payload" in payload:
+        raw_payload = payload.get("payload", {})
+        if not isinstance(raw_payload, dict):
+            raise HTTPException(status_code=400, detail="payload.payload must be an object")
+        updates.append("payload_json=?")
+        values.append(json.dumps(raw_payload))
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No supported fields to update")
+
+    now = utc_now()
+    updates.append("updated_at=?")
+    values.append(now)
+    values.append(tile_id)
+
+    conn = get_connection()
+    count = conn.execute(
+        f"UPDATE main_tiles SET {', '.join(updates)} WHERE id=?",
+        tuple(values),
+    ).rowcount
+    conn.commit()
+    conn.close()
+
+    if count == 0:
+        raise HTTPException(status_code=404, detail="Tile not found")
+
+    append_event("tile_updated", {"id": tile_id, "fields": [k for k in payload.keys() if k in ("label", "payload")]})
+    return {"updated": True}
+
+
 @app.delete("/api/main/tiles/{tile_id}", dependencies=[Depends(require_auth_if_configured)])
 def delete_tile(tile_id: str) -> dict[str, Any]:
     conn = get_connection()

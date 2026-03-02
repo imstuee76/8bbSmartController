@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
@@ -76,11 +78,22 @@ class _MainScreenState extends State<MainScreen> {
     return result ?? false;
   }
 
-  Future<void> _toggleDevice(
+  bool? _asBoolState(dynamic value) {
+    if (value == null) return null;
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    final text = value.toString().trim().toLowerCase();
+    if (text == 'on' || text == 'true' || text == '1' || text == 'yes') return true;
+    if (text == 'off' || text == 'false' || text == '0' || text == 'no') return false;
+    return null;
+  }
+
+  Future<void> _sendDeviceState(
     String refId, {
     required bool cloudMode,
     required String label,
     required String channel,
+    required String state,
   }) async {
     if (cloudMode) {
       final ok = await _confirmCloudWarning(label);
@@ -89,8 +102,84 @@ class _MainScreenState extends State<MainScreen> {
     await widget.api.sendDeviceCommand(
       deviceId: refId,
       channel: channel,
-      state: 'toggle',
+      state: state,
     );
+    await _load();
+  }
+
+  Future<void> _configureDeviceTile(Map<String, dynamic> tile) async {
+    final tileId = (tile['id'] ?? '').toString().trim();
+    if (tileId.isEmpty) return;
+    final payload = Map<String, dynamic>.from((tile['payload'] as Map<String, dynamic>?) ?? <String, dynamic>{});
+
+    var actionMode = (payload['action_mode'] ?? 'toggle').toString() == 'on_off' ? 'on_off' : 'toggle';
+    var showIp = (payload['show_ip'] as bool?) ?? false;
+    var showStatus = (payload['show_status'] as bool?) ?? true;
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setLocal) => AlertDialog(
+            title: const Text('Device Tile Options'),
+            content: SizedBox(
+              width: 420,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Control Buttons'),
+                  const SizedBox(height: 6),
+                  DropdownButtonFormField<String>(
+                    value: actionMode,
+                    items: const [
+                      DropdownMenuItem(value: 'toggle', child: Text('Toggle button')),
+                      DropdownMenuItem(value: 'on_off', child: Text('Separate ON + OFF')),
+                    ],
+                    onChanged: (v) {
+                      if (v != null) {
+                        setLocal(() => actionMode = v);
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: showStatus,
+                    onChanged: (v) => setLocal(() => showStatus = v ?? true),
+                    title: const Text('Show Status'),
+                  ),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: showIp,
+                    onChanged: (v) => setLocal(() => showIp = v ?? false),
+                    title: const Text('Show IP'),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text('Tip: Hold this tile for 5 seconds to open this menu again.'),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+              FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save')),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (saved != true) return;
+
+    final newPayload = <String, dynamic>{
+      ...payload,
+      'action_mode': actionMode,
+      'show_ip': showIp,
+      'show_status': showStatus,
+    };
+    await widget.api.updateTile(tileId: tileId, payload: newPayload);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Tile options saved')));
     await _load();
   }
 
@@ -145,6 +234,11 @@ class _MainScreenState extends State<MainScreen> {
       final channelName = (payload['channel_name'] ?? channelKey).toString();
       final channelValue = outputs[channelKey] ?? outputs['relay1'] ?? outputs['light'] ?? outputs['power'] ?? '--';
       final cloudMode = mode.toLowerCase().contains('cloud') || provider == 'tuya_cloud';
+      final actionMode = (payload['action_mode'] ?? 'toggle').toString() == 'on_off' ? 'on_off' : 'toggle';
+      final showIp = (payload['show_ip'] as bool?) ?? false;
+      final showStatus = (payload['show_status'] as bool?) ?? true;
+      final stateBool = _asBoolState(channelValue);
+      final statusColor = stateBool == null ? Colors.grey : (stateBool ? Colors.green : Colors.red);
       content = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -152,23 +246,67 @@ class _MainScreenState extends State<MainScreen> {
           Text('Source: $source'),
           Text('Mode: $mode'),
           Text('Channel: $channelName'),
+          if (showIp) Text('IP: ${(data['ip'] ?? data['host'] ?? '--').toString()}'),
           if (cloudMode)
             const Text(
               'Warning: cloud dependent',
               style: TextStyle(color: Colors.orange),
             ),
-          Text('State: ${channelValue.toString()}'),
+          if (showStatus)
+            Text(
+              'State: ${channelValue.toString()}',
+              style: TextStyle(color: statusColor, fontWeight: FontWeight.w700),
+            ),
           const SizedBox(height: 8),
-          if (refId.isNotEmpty)
-            FilledButton.tonal(
-              onPressed: () => _toggleDevice(
+          if (refId.isNotEmpty && actionMode == 'toggle')
+            FilledButton(
+              onPressed: () => _sendDeviceState(
                 refId,
                 cloudMode: cloudMode,
                 label: label,
                 channel: channelKey,
+                state: 'toggle',
               ),
-              child: const Text('Toggle'),
+              style: FilledButton.styleFrom(
+                backgroundColor: stateBool == null ? Colors.blueGrey : (stateBool ? Colors.green : Colors.red),
+                foregroundColor: Colors.white,
+              ),
+              child: Text(stateBool == true ? 'ON' : stateBool == false ? 'OFF' : 'Toggle'),
             ),
+          if (refId.isNotEmpty && actionMode == 'on_off')
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton(
+                    onPressed: () => _sendDeviceState(
+                      refId,
+                      cloudMode: cloudMode,
+                      label: label,
+                      channel: channelKey,
+                      state: 'on',
+                    ),
+                    style: FilledButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+                    child: const Text('ON'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton(
+                    onPressed: () => _sendDeviceState(
+                      refId,
+                      cloudMode: cloudMode,
+                      label: label,
+                      channel: channelKey,
+                      state: 'off',
+                    ),
+                    style: FilledButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+                    child: const Text('OFF'),
+                  ),
+                ),
+              ],
+            ),
+          const SizedBox(height: 6),
+          const Text('Hold 5s to configure this tile', style: TextStyle(fontSize: 12)),
         ],
       );
     } else if (tileType == 'automation') {
@@ -191,7 +329,7 @@ class _MainScreenState extends State<MainScreen> {
       content = Text('Tile type: $tileType');
     }
 
-    return Card(
+    final baseCard = Card(
       elevation: 1,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       child: Padding(
@@ -219,6 +357,15 @@ class _MainScreenState extends State<MainScreen> {
         ),
       ),
     );
+
+    if (tileType == 'device') {
+      return _HoldToConfigure(
+        holdDuration: const Duration(seconds: 5),
+        onHoldComplete: () => _configureDeviceTile(tile),
+        child: baseCard,
+      );
+    }
+    return baseCard;
   }
 
   @override
@@ -255,6 +402,66 @@ class _MainScreenState extends State<MainScreen> {
         ),
         itemBuilder: (context, index) => _buildTileCard(_tiles[index]),
       ),
+    );
+  }
+}
+
+class _HoldToConfigure extends StatefulWidget {
+  const _HoldToConfigure({
+    required this.child,
+    required this.onHoldComplete,
+    required this.holdDuration,
+  });
+
+  final Widget child;
+  final VoidCallback onHoldComplete;
+  final Duration holdDuration;
+
+  @override
+  State<_HoldToConfigure> createState() => _HoldToConfigureState();
+}
+
+class _HoldToConfigureState extends State<_HoldToConfigure> {
+  Timer? _holdTimer;
+  bool _fired = false;
+
+  void _start() {
+    _cancel();
+    _fired = false;
+    _holdTimer = Timer(widget.holdDuration, () {
+      _fired = true;
+      widget.onHoldComplete();
+    });
+  }
+
+  void _cancel() {
+    _holdTimer?.cancel();
+    _holdTimer = null;
+  }
+
+  @override
+  void dispose() {
+    _cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      behavior: HitTestBehavior.deferToChild,
+      onPointerDown: (_) => _start(),
+      onPointerUp: (_) {
+        if (!_fired) {
+          _cancel();
+        }
+      },
+      onPointerMove: (_) {
+        if (!_fired) {
+          _cancel();
+        }
+      },
+      onPointerCancel: (_) => _cancel(),
+      child: widget.child,
     );
   }
 }

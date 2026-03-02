@@ -357,6 +357,53 @@ class _DevicesScreenState extends State<DevicesScreen> {
     }
   }
 
+  DeviceChannel? _findDeviceChannel(SmartDevice device, String key) {
+    for (final ch in device.channels) {
+      if (ch.channelKey == key) return ch;
+    }
+    return null;
+  }
+
+  Future<void> _renameQuickChannel(SmartDevice device, _QuickChannel channel) async {
+    final ctl = TextEditingController(text: channel.name);
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('Rename ${channel.name}'),
+        content: TextField(
+          controller: ctl,
+          decoration: const InputDecoration(labelText: 'Relay button name'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save')),
+        ],
+      ),
+    );
+    if (saved != true) return;
+
+    final newName = ctl.text.trim();
+    if (newName.isEmpty) return;
+
+    final existing = _findDeviceChannel(device, channel.key);
+    try {
+      await widget.api.upsertChannel(
+        deviceId: device.id,
+        channelKey: channel.key,
+        channelName: newName,
+        channelKind: existing?.channelKind ?? channel.kind,
+        payload: existing?.payload ?? <String, dynamic>{},
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Relay name saved')));
+      await _refresh();
+      await _loadDeviceStatus(device, showOutput: false);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    }
+  }
+
   Future<bool> _confirmCloudUse(String action, SmartDevice device) async {
     final result = await showDialog<bool>(
       context: context,
@@ -723,6 +770,9 @@ class _DevicesScreenState extends State<DevicesScreen> {
           final stateColor = channel.state == null
               ? Colors.grey
               : (channel.state! ? Colors.green : Colors.redAccent);
+          final buttonColor = channel.state == null
+              ? Colors.blueGrey
+              : (channel.state! ? Colors.green : Colors.red);
           return Card(
             margin: const EdgeInsets.symmetric(vertical: 4),
             child: Padding(
@@ -747,7 +797,20 @@ class _DevicesScreenState extends State<DevicesScreen> {
                   ),
                   FilledButton.tonal(
                     onPressed: busy ? null : () => _toggleQuickChannel(device, channel),
-                    child: Text(busy ? '...' : 'Toggle'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: buttonColor,
+                      foregroundColor: Colors.white,
+                    ),
+                    child: Text(
+                      busy
+                          ? '...'
+                          : (channel.state == true ? 'ON' : channel.state == false ? 'OFF' : 'TOGGLE'),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  OutlinedButton(
+                    onPressed: () => _renameQuickChannel(device, channel),
+                    child: const Text('Rename'),
                   ),
                   const SizedBox(width: 6),
                   OutlinedButton(
