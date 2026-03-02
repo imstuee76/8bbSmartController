@@ -327,6 +327,15 @@ install_deps() {
   ensure_flutter
   run "$FLUTTER_BIN" config --enable-linux-desktop
   ensure_linux_desktop_project
+  if command -v apt-get >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
+    if ! command -v onboard >/dev/null 2>&1; then
+      log "Installing optional touch keyboard package: onboard"
+      apt_update_safe || true
+      if ! run sudo apt-get install -y onboard; then
+        log "WARNING: Could not install onboard automatically. You can install it manually if touch keyboard is needed."
+      fi
+    fi
+  fi
   ensure_backend_runtime
   pushd "$APP_ROOT/controller-app" >/dev/null
   run "$FLUTTER_BIN" pub get
