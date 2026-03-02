@@ -464,7 +464,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
                           width: 220,
                           child: TextField(
                             controller: _subnetCtl,
-                            decoration: const InputDecoration(labelText: 'Subnet hint'),
+                            decoration: const InputDecoration(labelText: 'Subnet or IP hint'),
                           ),
                         ),
                         const SizedBox(width: 8),

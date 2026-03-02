@@ -166,8 +166,10 @@ def tuya_local_scan(subnet_hint: str = "") -> dict[str, Any]:
             {
                 "id": item.get("gwId", ""),
                 "ip": item.get("ip", ""),
+                "mac": item.get("mac", ""),
                 "version": item.get("version", ""),
                 "product_key": item.get("productKey", ""),
+                "name": item.get("name", ""),
             }
         )
     lan_candidates: list[dict[str, Any]] = []

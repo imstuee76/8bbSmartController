@@ -906,9 +906,131 @@ def discovery_scan(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(payload, dict) and "automation_only" in payload:
         automation_only = bool(payload.get("automation_only"))
     results = scan_network(subnet, automation_only=automation_only)
+
+    by_ip: dict[str, dict[str, Any]] = {}
+    for row in results:
+        ip = str(row.get("ip", "")).strip()
+        if ip:
+            by_ip[ip] = row
+
+    def merge_candidate(
+        *,
+        ip: str,
+        provider_hint: str,
+        device_hint: str,
+        score: int,
+        source: str,
+        name: str = "",
+        hostname: str = "",
+        mac: str = "",
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        ip = str(ip or "").strip()
+        if not ip:
+            return
+        row = by_ip.get(ip)
+        if row is None:
+            row = {
+                "ip": ip,
+                "mac": str(mac or "").strip(),
+                "hostname": str(hostname or "").strip(),
+                "name": str(name or "").strip(),
+                "source": source,
+                "device_hint": device_hint,
+                "provider_hint": provider_hint,
+                "score": int(score),
+                "automation_candidate": True,
+            }
+            results.append(row)
+            by_ip[ip] = row
+        else:
+            if int(row.get("score", 0)) < int(score):
+                row["score"] = int(score)
+            if str(row.get("provider_hint", "")).strip().lower() in ("", "unknown", "marker_match"):
+                row["provider_hint"] = provider_hint
+            if str(row.get("device_hint", "")).strip().lower() in ("", "unknown", "marker_match"):
+                row["device_hint"] = device_hint
+            if not str(row.get("name", "")).strip() and str(name).strip():
+                row["name"] = str(name).strip()
+            if not str(row.get("hostname", "")).strip() and str(hostname).strip():
+                row["hostname"] = str(hostname).strip()
+            if not str(row.get("mac", "")).strip() and str(mac).strip():
+                row["mac"] = str(mac).strip()
+            row["automation_candidate"] = True
+        if extra:
+            for key, value in extra.items():
+                if value is None:
+                    continue
+                if isinstance(value, str):
+                    if not value.strip():
+                        continue
+                    row[key] = value.strip()
+                else:
+                    row[key] = value
+
+    tuya_count = 0
+    moes_hub_count = 0
+    subnet_hint = str(subnet or "").strip()
+    try:
+        tuya_local = tuya_local_scan(subnet_hint=subnet_hint)
+        for item in tuya_local.get("devices", []):
+            if not isinstance(item, dict):
+                continue
+            merge_candidate(
+                ip=str(item.get("ip", "")),
+                provider_hint="tuya_local",
+                device_hint="tuya_local",
+                score=10,
+                source="tuya_local_scan",
+                name=str(item.get("name", "")),
+                mac=str(item.get("mac", "")),
+                extra={
+                    "tuya_device_id": str(item.get("id", "")),
+                    "tuya_version": str(item.get("version", "")),
+                    "tuya_product_key": str(item.get("product_key", "")),
+                },
+            )
+            tuya_count += 1
+    except Exception:
+        pass
+
+    try:
+        moes_local = discover_bhubw_local(subnet_hint=subnet_hint)
+        for hub in moes_local.get("hubs", []):
+            if not isinstance(hub, dict):
+                continue
+            hub_score = int(hub.get("score", 0))
+            merge_candidate(
+                ip=str(hub.get("ip", "")),
+                provider_hint="moes_bhubw",
+                device_hint="moes_hub",
+                score=max(9, hub_score + 4),
+                source="moes_discovery",
+                name=str(hub.get("name", "")),
+                hostname=str(hub.get("hostname", "")),
+                mac=str(hub.get("mac", "")),
+                extra={
+                    "moes_hub_id": str(hub.get("id", "")),
+                    "moes_hub_version": str(hub.get("version", "")),
+                },
+            )
+            moes_hub_count += 1
+    except Exception:
+        pass
+
+    if automation_only:
+        results = [row for row in results if bool(row.get("automation_candidate"))]
+
+    results.sort(key=lambda item: (-int(item.get("score", 0)), str(item.get("ip", ""))))
     append_event(
         "network_scan",
-        {"count": len(results), "subnet_hint": subnet or "", "automation_only": automation_only},
+        {
+            "count": len(results),
+            "subnet_hint": subnet or "",
+            "automation_only": automation_only,
+            "tuya_local_merged": tuya_count,
+            "moes_hubs_merged": moes_hub_count,
+        },
     )
     return {"results": results}
 

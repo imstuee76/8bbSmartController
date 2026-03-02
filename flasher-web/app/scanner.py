@@ -48,9 +48,9 @@ def _sanitize_name(value: Any) -> str:
 
 
 def _quick_http_probe(ip: str) -> tuple[str, int, str]:
-    # Keep probing short to preserve snappy scan UX.
+    # Keep probing short, but long enough for slower ESP web handlers.
     try:
-        with httpx.Client(timeout=0.35) as client:
+        with httpx.Client(timeout=1.2) as client:
             status_res = client.get(f"http://{ip}/api/status")
         if status_res.status_code < 400:
             try:
@@ -72,7 +72,17 @@ def _quick_http_probe(ip: str) -> tuple[str, int, str]:
         pass
 
     try:
-        with httpx.Client(timeout=0.3) as client:
+        with httpx.Client(timeout=1.0) as client:
+            status_res = client.get(f"http://{ip}/status")
+        if status_res.status_code < 400:
+            text = status_res.text.lower()
+            if "relay" in text or "esp" in text or "switch" in text or "light" in text:
+                return "esp_firmware", 5, ""
+    except Exception:
+        pass
+
+    try:
+        with httpx.Client(timeout=0.8) as client:
             root_res = client.get(f"http://{ip}/")
         if root_res.status_code < 400:
             body = root_res.text.lower()
@@ -97,12 +107,12 @@ def _network_from_hint(subnet_hint: str | None) -> ipaddress.IPv4Network | None:
             return ipaddress.ip_network(f"{octets[0]}.{octets[1]}.{octets[2]}.0/24", strict=False)
         return None
 
-    # "192.168.50.88" -> use /24 segment
+    # "192.168.50.88" -> probe this host directly
     m_4 = re.fullmatch(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})", raw)
     if m_4:
         octets = [int(m_4.group(i)) for i in (1, 2, 3, 4)]
         if all(0 <= o <= 255 for o in octets):
-            return ipaddress.ip_network(f"{octets[0]}.{octets[1]}.{octets[2]}.0/24", strict=False)
+            return ipaddress.ip_network(f"{octets[0]}.{octets[1]}.{octets[2]}.{octets[3]}/32", strict=False)
         return None
 
     # CIDR input
