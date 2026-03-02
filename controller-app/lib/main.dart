@@ -154,6 +154,19 @@ class _HomeShellState extends State<HomeShell> {
         ),
         child: tabs[_index],
       ),
+      floatingActionButton: ValueListenableBuilder<bool>(
+        valueListenable: _touchKeyboard.hasEditableFocus,
+        builder: (context, editing, _) {
+          if (!editing) return const SizedBox.shrink();
+          return FloatingActionButton.extended(
+            heroTag: 'go-input-close',
+            onPressed: () => unawaited(_touchKeyboard.closeInput()),
+            label: const Text('GO', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+            icon: const Icon(Icons.keyboard_hide, size: 24),
+          );
+        },
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
     );
   }
 }

@@ -27,6 +27,7 @@ class TouchKeyboardService {
   final bool enabled;
   final String command;
   final List<String> args;
+  final ValueNotifier<bool> hasEditableFocus = ValueNotifier<bool>(false);
 
   Timer? _focusPoll;
   Process? _keyboardProcess;
@@ -55,6 +56,9 @@ class TouchKeyboardService {
   Future<void> _sync() async {
     if (!_active) return;
     final needsKeyboard = _focusedWidgetNeedsKeyboard();
+    if (hasEditableFocus.value != needsKeyboard) {
+      hasEditableFocus.value = needsKeyboard;
+    }
     if (needsKeyboard == _lastNeedsKeyboard) return;
     _lastNeedsKeyboard = needsKeyboard;
     if (needsKeyboard) {
@@ -105,6 +109,13 @@ class TouchKeyboardService {
     }
   }
 
+  Future<void> closeInput() async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    hasEditableFocus.value = false;
+    _lastNeedsKeyboard = false;
+    await _hide();
+  }
+
   Future<void> _configureOnboardForTablet() async {
     // Best effort; ignored when schema/keys are unavailable.
     final commands = <List<String>>[
@@ -123,7 +134,7 @@ class TouchKeyboardService {
     _active = false;
     _focusPoll?.cancel();
     _focusPoll = null;
-    _lastNeedsKeyboard = false;
-    await _hide();
+    await closeInput();
+    hasEditableFocus.dispose();
   }
 }
