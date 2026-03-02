@@ -8,6 +8,7 @@ import 'data_paths.dart';
 class LocalStore {
   static const _serverUrlKey = 'server_url';
   static const _authTokenKey = 'auth_token';
+  static const _devicesScanHintKey = 'devices_scan_hint';
   static const _settingsFileName = 'controller_settings.json';
 
   Future<File> _settingsFile() async {
@@ -179,6 +180,33 @@ class LocalStore {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_authTokenKey, value);
+    } catch (_) {}
+  }
+
+  Future<String> loadDevicesScanHint() async {
+    final settings = await _readSettings();
+    final current = (settings[_devicesScanHintKey] ?? '').toString().trim();
+    if (current.isNotEmpty) {
+      return current;
+    }
+
+    final legacy = (await _legacyPref(_devicesScanHintKey)).trim();
+    if (legacy.isNotEmpty) {
+      settings[_devicesScanHintKey] = legacy;
+      await _writeSettings(settings);
+      return legacy;
+    }
+    return '';
+  }
+
+  Future<void> saveDevicesScanHint(String value) async {
+    final trimmed = value.trim();
+    final settings = await _readSettings();
+    settings[_devicesScanHintKey] = trimmed;
+    await _writeSettings(settings);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_devicesScanHintKey, trimmed);
     } catch (_) {}
   }
 }

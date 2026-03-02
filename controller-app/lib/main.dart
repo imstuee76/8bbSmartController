@@ -97,7 +97,7 @@ class _HomeShellState extends State<HomeShell> {
   Widget build(BuildContext context) {
     final tabs = [
       MainScreen(api: widget.api),
-      DevicesScreen(api: widget.api),
+      DevicesScreen(api: widget.api, store: widget.store),
       ConfigScreen(
         api: widget.api,
         store: widget.store,

@@ -4,11 +4,13 @@ import 'package:flutter/material.dart';
 
 import '../models/device_models.dart';
 import '../services/api_service.dart';
+import '../services/local_store.dart';
 
 class DevicesScreen extends StatefulWidget {
-  const DevicesScreen({super.key, required this.api});
+  const DevicesScreen({super.key, required this.api, required this.store});
 
   final ApiService api;
+  final LocalStore store;
 
   @override
   State<DevicesScreen> createState() => _DevicesScreenState();
@@ -35,7 +37,18 @@ class _DevicesScreenState extends State<DevicesScreen> {
   @override
   void initState() {
     super.initState();
+    _loadSavedScanHint();
     _refresh();
+  }
+
+  Future<void> _loadSavedScanHint() async {
+    try {
+      final hint = await widget.store.loadDevicesScanHint();
+      if (!mounted) return;
+      setState(() {
+        _subnetCtl.text = hint;
+      });
+    } catch (_) {}
   }
 
   Future<void> _refresh() async {
@@ -57,6 +70,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
 
   Future<void> _scan() async {
     try {
+      await widget.store.saveDevicesScanHint(_subnetCtl.text.trim());
       final results = await widget.api.scanNetwork(
         subnetHint: _subnetCtl.text.trim(),
         automationOnly: true,
@@ -72,6 +86,12 @@ class _DevicesScreenState extends State<DevicesScreen> {
         _statusOutput = _error!;
       });
     }
+  }
+
+  @override
+  void dispose() {
+    _subnetCtl.dispose();
+    super.dispose();
   }
 
   String _providerOf(SmartDevice device) {
@@ -465,6 +485,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
                           child: TextField(
                             controller: _subnetCtl,
                             decoration: const InputDecoration(labelText: 'Subnet or IP hint'),
+                            onSubmitted: (value) => widget.store.saveDevicesScanHint(value),
                           ),
                         ),
                         const SizedBox(width: 8),

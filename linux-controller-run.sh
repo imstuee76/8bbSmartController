@@ -99,6 +99,81 @@ ensure_linux_desktop_project() {
   popd >/dev/null
 }
 
+ensure_pub_deps() {
+  local app_dir="$APP_ROOT/controller-app"
+  local pkg_cfg="$app_dir/.dart_tool/package_config.json"
+  if [[ -f "$pkg_cfg" && "$app_dir/pubspec.yaml" -ot "$pkg_cfg" ]]; then
+    if [[ ! -f "$app_dir/pubspec.lock" || "$app_dir/pubspec.lock" -ot "$pkg_cfg" ]]; then
+      log "Flutter deps unchanged; skipping pub get."
+      return 0
+    fi
+  fi
+  pushd "$app_dir" >/dev/null
+  run "$FLUTTER_BIN" pub get
+  popd >/dev/null
+}
+
+needs_release_rebuild() {
+  local app_dir="$APP_ROOT/controller-app"
+  local bundle_bin="$app_dir/build/linux/x64/release/bundle/smart_controller"
+
+  if [[ ! -x "$bundle_bin" ]]; then
+    return 0
+  fi
+  if [[ "$app_dir/pubspec.yaml" -nt "$bundle_bin" ]]; then
+    return 0
+  fi
+  if [[ -f "$app_dir/pubspec.lock" && "$app_dir/pubspec.lock" -nt "$bundle_bin" ]]; then
+    return 0
+  fi
+  if find "$app_dir/lib" "$app_dir/linux" -type f -newer "$bundle_bin" -print -quit | grep -q .; then
+    return 0
+  fi
+  return 1
+}
+
+ensure_release_bundle() {
+  local app_dir="$APP_ROOT/controller-app"
+  local bundle_bin="$app_dir/build/linux/x64/release/bundle/smart_controller"
+
+  if is_true "${CONTROLLER_FORCE_REBUILD:-0}"; then
+    log "Forced rebuild requested (CONTROLLER_FORCE_REBUILD=1)."
+  elif ! needs_release_rebuild; then
+    log "Using cached release bundle: $bundle_bin"
+    return 0
+  fi
+
+  pushd "$app_dir" >/dev/null
+  log "Building Linux release bundle (one-time or source changed)..."
+  run "$FLUTTER_BIN" build linux --release --target lib/main.dart
+  popd >/dev/null
+
+  if [[ ! -x "$bundle_bin" ]]; then
+    log "ERROR: Release bundle missing after build: $bundle_bin"
+    return 1
+  fi
+  log "Release bundle ready: $bundle_bin"
+}
+
+launch_controller_app() {
+  local app_dir="$APP_ROOT/controller-app"
+  local launch_mode="${CONTROLLER_LAUNCH_MODE:-release}"
+  local lower_mode
+  lower_mode="$(printf '%s' "$launch_mode" | tr '[:upper:]' '[:lower:]')"
+
+  if [[ "$lower_mode" == "debug" || "$lower_mode" == "dev" ]]; then
+    pushd "$app_dir" >/dev/null
+    run "$FLUTTER_BIN" run -d linux --target lib/main.dart "$@"
+    popd >/dev/null
+    return 0
+  fi
+
+  ensure_release_bundle
+  local bundle_bin="$app_dir/build/linux/x64/release/bundle/smart_controller"
+  log "Launching controller (release mode)"
+  run "$bundle_bin" "$@"
+}
+
 ensure_python_pip() {
   if python3 -m pip --version >/dev/null 2>&1; then
     return 0
@@ -323,11 +398,8 @@ main() {
   create_desktop_shortcut
   ensure_flutter
   ensure_linux_desktop_project
-
-  pushd "$APP_ROOT/controller-app" >/dev/null
-  run "$FLUTTER_BIN" pub get
-  run "$FLUTTER_BIN" run -d linux --target lib/main.dart "$@"
-  popd >/dev/null
+  ensure_pub_deps
+  launch_controller_app "$@"
 }
 
 main "$@"
