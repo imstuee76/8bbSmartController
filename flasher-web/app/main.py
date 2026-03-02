@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import ipaddress
 import re
 import time
 import traceback
@@ -276,6 +277,16 @@ def _require_device(device_id: str) -> tuple[Any, Any]:
 def _slug_value(value: str, fallback: str = "item") -> str:
     raw = re.sub(r"[^a-zA-Z0-9_-]+", "-", (value or "").strip().lower()).strip("-")
     return raw[:64] if raw else fallback
+
+
+def _is_single_ipv4_host_hint(value: str) -> bool:
+    raw = str(value or "").strip()
+    if not raw or "/" in raw:
+        return False
+    try:
+        return isinstance(ipaddress.ip_address(raw), ipaddress.IPv4Address)
+    except ValueError:
+        return False
 
 
 def _parse_major_minor(version: str) -> tuple[int, int | None]:
@@ -971,8 +982,11 @@ def discovery_scan(payload: dict[str, Any]) -> dict[str, Any]:
     tuya_count = 0
     moes_hub_count = 0
     subnet_hint = str(subnet or "").strip()
+    single_ip_hint = _is_single_ipv4_host_hint(subnet_hint)
+    tuya_local: dict[str, Any] = {"devices": [], "enabled": True}
     try:
-        tuya_local = tuya_local_scan(subnet_hint=subnet_hint)
+        if not single_ip_hint:
+            tuya_local = tuya_local_scan(subnet_hint=subnet_hint)
         for item in tuya_local.get("devices", []):
             if not isinstance(item, dict):
                 continue
@@ -995,7 +1009,7 @@ def discovery_scan(payload: dict[str, Any]) -> dict[str, Any]:
         pass
 
     try:
-        moes_local = discover_bhubw_local(subnet_hint=subnet_hint)
+        moes_local = discover_bhubw_local(subnet_hint=subnet_hint, tuya_local_override=tuya_local)
         for hub in moes_local.get("hubs", []):
             if not isinstance(hub, dict):
                 continue

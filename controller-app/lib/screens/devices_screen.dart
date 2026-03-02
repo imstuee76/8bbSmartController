@@ -18,6 +18,7 @@ class DevicesScreen extends StatefulWidget {
 
 class _DevicesScreenState extends State<DevicesScreen> {
   bool _loading = true;
+  bool _scanning = false;
   String? _error;
   List<SmartDevice> _devices = [];
   List<Map<String, dynamic>> _scanResults = [];
@@ -69,6 +70,11 @@ class _DevicesScreenState extends State<DevicesScreen> {
   }
 
   Future<void> _scan() async {
+    if (_scanning) return;
+    setState(() {
+      _scanning = true;
+      _statusOutput = 'Scanning LAN...';
+    });
     try {
       await widget.store.saveDevicesScanHint(_subnetCtl.text.trim());
       final results = await widget.api.scanNetwork(
@@ -85,6 +91,14 @@ class _DevicesScreenState extends State<DevicesScreen> {
         _error = _friendlyError(e);
         _statusOutput = _error!;
       });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _scanning = false;
+        });
+      }
     }
   }
 
@@ -489,7 +503,10 @@ class _DevicesScreenState extends State<DevicesScreen> {
                           ),
                         ),
                         const SizedBox(width: 8),
-                        FilledButton.tonal(onPressed: _scan, child: const Text('Scan LAN')),
+                        FilledButton.tonal(
+                          onPressed: _scanning ? null : _scan,
+                          child: Text(_scanning ? 'Scanning...' : 'Scan LAN'),
+                        ),
                       ],
                     ),
                   ),

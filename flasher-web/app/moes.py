@@ -212,7 +212,10 @@ def _create_child_device(parent: Any, cid: str) -> Any:
     return child
 
 
-def discover_bhubw_local(subnet_hint: str = "") -> dict[str, Any]:
+def discover_bhubw_local(
+    subnet_hint: str = "",
+    tuya_local_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     results = scan_network(subnet_hint or "")
     hubs: list[dict[str, Any]] = []
     probe_budget = 12
@@ -264,11 +267,12 @@ def discover_bhubw_local(subnet_hint: str = "") -> dict[str, Any]:
                 }
             )
 
-    tuya_local = {"devices": [], "enabled": True}
-    try:
-        tuya_local = tuya_local_scan()
-    except Exception as exc:
-        tuya_local = {"devices": [], "enabled": False, "error": str(exc)}
+    tuya_local = tuya_local_override if isinstance(tuya_local_override, dict) else {"devices": [], "enabled": True}
+    if not isinstance(tuya_local_override, dict):
+        try:
+            tuya_local = tuya_local_scan(subnet_hint=subnet_hint)
+        except Exception as exc:
+            tuya_local = {"devices": [], "enabled": False, "error": str(exc)}
 
     # Enrich LAN hub candidates with Tuya local scan IDs/versions where possible.
     seen = {(str(h.get("ip", "")).strip(), str(h.get("id", "")).strip()) for h in hubs}

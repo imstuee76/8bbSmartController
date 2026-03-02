@@ -158,7 +158,7 @@ def tuya_local_scan(subnet_hint: str = "") -> dict[str, Any]:
     except Exception as exc:  # pragma: no cover - optional import
         raise ValueError(f"tinytuya not installed: {exc}") from exc
 
-    devices = tinytuya.deviceScan(maxretry=12)  # type: ignore[attr-defined]
+    devices = tinytuya.deviceScan(maxretry=6)  # type: ignore[attr-defined]
     out = []
     for _, details in (devices or {}).items():
         item = details if isinstance(details, dict) else {}
