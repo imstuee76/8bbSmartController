@@ -66,6 +66,52 @@ def _brightness_dp_from_dps(dps: dict[str, Any]) -> str | int | None:
     return None
 
 
+def _channel_to_dp_hint(channel: str) -> int | None:
+    text = str(channel or "").strip().lower()
+    if not text:
+        return None
+    if text.startswith("dp_"):
+        try:
+            return int(text.split("_", 1)[1])
+        except Exception:
+            return None
+    import re
+
+    match = re.search(r"(relay|switch|channel|out|gang)[_-]?(\d+)$", text)
+    if not match:
+        return None
+    try:
+        return int(match.group(2))
+    except Exception:
+        return None
+
+
+def _resolve_local_toggle_dp(channel: str, dps: dict[str, Any]) -> str | int:
+    fallback = _onoff_dp_from_dps(dps)
+    dp_hint = _channel_to_dp_hint(channel)
+    if dp_hint is None:
+        return fallback
+    if str(dp_hint) in dps and isinstance(dps[str(dp_hint)], bool):
+        return dp_hint
+    if str(dp_hint) in dps:
+        return dp_hint
+    return fallback
+
+
+def _resolve_cloud_power_code(channel: str, cloud_values: dict[str, Any], functions: list[dict[str, Any]]) -> str | None:
+    requested = str(channel or "").strip().lower()
+    fn_codes = {str(f.get("code", "")).strip() for f in functions}
+    if requested:
+        if requested in cloud_values or requested in fn_codes:
+            return requested
+        dp_hint = _channel_to_dp_hint(requested)
+        if dp_hint is not None:
+            switch_code = f"switch_{dp_hint}"
+            if switch_code in cloud_values or switch_code in fn_codes:
+                return switch_code
+    return _pick_cloud_power_code(cloud_values, functions)
+
+
 def _cloud_client() -> Any:
     tuya_cfg = get_setting("tuya")
     region = str(tuya_cfg.get("cloud_region", "")).strip()
@@ -219,6 +265,7 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
     provider = str(metadata.get("provider", "tuya_local")).strip().lower()
     dev_id = str(metadata.get("tuya_device_id", "")).strip() or str(metadata.get("id", "")).strip()
     state = str(command.get("state", "")).strip().lower()
+    channel = str(command.get("channel", "")).strip().lower()
     payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
     value = command.get("value")
 
@@ -229,7 +276,7 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
             dev, local_id, ip, version = _local_device(metadata)
             status = dev.status()
             dps = _extract_dps(status)
-            onoff_dp = _onoff_dp_from_dps(dps)
+            onoff_dp = _resolve_local_toggle_dp(channel, dps)
 
             if state in ("on", "off", "toggle"):
                 target = state == "on"
@@ -311,7 +358,7 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
     if isinstance(payload.get("commands"), list):
         commands = [c for c in payload.get("commands", []) if isinstance(c, dict)]
     elif state in ("on", "off", "toggle"):
-        power_code = _pick_cloud_power_code(status_values, functions)
+        power_code = _resolve_cloud_power_code(channel, status_values, functions)
         if not power_code:
             raise ValueError("Could not resolve Tuya cloud power code")
         target = state == "on"

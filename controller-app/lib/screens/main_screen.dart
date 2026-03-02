@@ -76,14 +76,19 @@ class _MainScreenState extends State<MainScreen> {
     return result ?? false;
   }
 
-  Future<void> _toggleDevice(String refId, {required bool cloudMode, required String label}) async {
+  Future<void> _toggleDevice(
+    String refId, {
+    required bool cloudMode,
+    required String label,
+    required String channel,
+  }) async {
     if (cloudMode) {
       final ok = await _confirmCloudWarning(label);
       if (!ok) return;
     }
     await widget.api.sendDeviceCommand(
       deviceId: refId,
-      channel: 'relay1',
+      channel: channel,
       state: 'toggle',
     );
     await _load();
@@ -94,6 +99,7 @@ class _MainScreenState extends State<MainScreen> {
     final label = (tile['label'] ?? '').toString();
     final refId = (tile['ref_id'] ?? '').toString();
     final data = (tile['data'] as Map<String, dynamic>?) ?? <String, dynamic>{};
+    final payload = (tile['payload'] as Map<String, dynamic>?) ?? <String, dynamic>{};
     final error = tile['error']?.toString();
 
     Widget content;
@@ -135,6 +141,9 @@ class _MainScreenState extends State<MainScreen> {
       final provider = (data['provider'] ?? '').toString();
       final mode = (data['mode'] ?? 'local_lan').toString();
       final source = (data['source_name'] ?? provider).toString();
+      final channelKey = (payload['channel'] ?? 'relay1').toString();
+      final channelName = (payload['channel_name'] ?? channelKey).toString();
+      final channelValue = outputs[channelKey] ?? outputs['relay1'] ?? outputs['light'] ?? outputs['power'] ?? '--';
       final cloudMode = mode.toLowerCase().contains('cloud') || provider == 'tuya_cloud';
       content = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -142,16 +151,22 @@ class _MainScreenState extends State<MainScreen> {
           Text('Type: ${(data['type'] ?? data['device_type'] ?? '').toString()}'),
           Text('Source: $source'),
           Text('Mode: $mode'),
+          Text('Channel: $channelName'),
           if (cloudMode)
             const Text(
               'Warning: cloud dependent',
               style: TextStyle(color: Colors.orange),
             ),
-          Text('State: ${(outputs['relay1'] ?? outputs['light'] ?? outputs['power'] ?? '--').toString()}'),
+          Text('State: ${channelValue.toString()}'),
           const SizedBox(height: 8),
           if (refId.isNotEmpty)
             FilledButton.tonal(
-              onPressed: () => _toggleDevice(refId, cloudMode: cloudMode, label: label),
+              onPressed: () => _toggleDevice(
+                refId,
+                cloudMode: cloudMode,
+                label: label,
+                channel: channelKey,
+              ),
               child: const Text('Toggle'),
             ),
         ],

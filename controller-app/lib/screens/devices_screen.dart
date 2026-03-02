@@ -16,12 +16,29 @@ class DevicesScreen extends StatefulWidget {
   State<DevicesScreen> createState() => _DevicesScreenState();
 }
 
+class _QuickChannel {
+  final String key;
+  final String name;
+  final String kind;
+  final bool? state;
+
+  const _QuickChannel({
+    required this.key,
+    required this.name,
+    required this.kind,
+    required this.state,
+  });
+}
+
 class _DevicesScreenState extends State<DevicesScreen> {
   bool _loading = true;
   bool _scanning = false;
   String? _error;
   List<SmartDevice> _devices = [];
   List<Map<String, dynamic>> _scanResults = [];
+  final Map<String, Map<String, dynamic>> _deviceStatusCache = <String, Map<String, dynamic>>{};
+  final Set<String> _statusLoading = <String>{};
+  final Set<String> _channelCommandBusy = <String>{};
   final TextEditingController _subnetCtl = TextEditingController();
   String _statusOutput = '';
 
@@ -134,6 +151,210 @@ class _DevicesScreenState extends State<DevicesScreen> {
     final mode = _modeOf(device).toLowerCase();
     final provider = _providerOf(device);
     return mode.contains('cloud') || provider == 'tuya_cloud';
+  }
+
+  int _suffixNumber(String key) {
+    final m = RegExp(r'(\d+)$').firstMatch(key);
+    if (m == null) return -1;
+    return int.tryParse(m.group(1) ?? '') ?? -1;
+  }
+
+  bool _isLikelyRelayKey(String key) {
+    final k = key.toLowerCase().trim();
+    if (k.isEmpty) return false;
+    if (RegExp(r'^(relay|switch|channel|out|gang|dp)[_-]?\d+$').hasMatch(k)) return true;
+    if (k == 'power') return true;
+    return false;
+  }
+
+  bool _isLikelyRelayKind(String kind) {
+    final k = kind.toLowerCase().trim();
+    return k.contains('relay') ||
+        k.contains('switch') ||
+        k.contains('toggle') ||
+        k.contains('power') ||
+        k.contains('channel');
+  }
+
+  bool? _asBoolState(dynamic value) {
+    if (value == null) return null;
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    final text = value.toString().trim().toLowerCase();
+    if (text.isEmpty) return null;
+    if (text == 'on' || text == 'true' || text == '1' || text == 'yes') return true;
+    if (text == 'off' || text == 'false' || text == '0' || text == 'no') return false;
+    return null;
+  }
+
+  String _fallbackChannelName(String key) {
+    final idx = _suffixNumber(key);
+    if (key.toLowerCase().startsWith('relay') && idx > 0) return 'Relay $idx';
+    if (key.toLowerCase().startsWith('switch') && idx > 0) return 'Switch $idx';
+    if (key.toLowerCase().startsWith('channel') && idx > 0) return 'Channel $idx';
+    if (key.toLowerCase().startsWith('out') && idx > 0) return 'Output $idx';
+    if (key.toLowerCase().startsWith('dp_') && idx > 0) return 'Channel $idx';
+    if (key.toLowerCase() == 'power') return 'Power';
+    return key;
+  }
+
+  int _relayCountFromDevice(SmartDevice device, Map<String, dynamic>? status) {
+    final rawCandidates = <dynamic>[
+      status?['relay_count'],
+      device.metadata['relay_count'],
+      device.metadata['switch_count'],
+      device.metadata['channel_count'],
+    ];
+    for (final raw in rawCandidates) {
+      final value = int.tryParse(raw?.toString() ?? '');
+      if (value != null && value > 0 && value <= 16) {
+        return value;
+      }
+    }
+    if (device.type == 'relay_switch') return 4;
+    return 1;
+  }
+
+  List<String> _defaultRelayKeys(SmartDevice device, Map<String, dynamic>? status) {
+    final count = _relayCountFromDevice(device, status);
+    return List<String>.generate(count, (i) => 'relay${i + 1}');
+  }
+
+  List<_QuickChannel> _inferQuickChannels(SmartDevice device) {
+    final status = _deviceStatusCache[device.id];
+    final outputs = (status?['outputs'] as Map<String, dynamic>?) ?? <String, dynamic>{};
+
+    final channelNameByKey = <String, String>{};
+    final channelKindByKey = <String, String>{};
+    for (final ch in device.channels) {
+      channelNameByKey[ch.channelKey] = ch.channelName;
+      channelKindByKey[ch.channelKey] = ch.channelKind;
+    }
+
+    final discoveredKeys = <String>{};
+    for (final ch in device.channels) {
+      if (_isLikelyRelayKind(ch.channelKind) || _isLikelyRelayKey(ch.channelKey)) {
+        discoveredKeys.add(ch.channelKey);
+      }
+    }
+    for (final key in outputs.keys) {
+      if (_isLikelyRelayKey(key)) {
+        discoveredKeys.add(key);
+      }
+    }
+
+    if (discoveredKeys.isEmpty) {
+      for (final key in _defaultRelayKeys(device, status)) {
+        discoveredKeys.add(key);
+      }
+    }
+
+    final sorted = discoveredKeys.toList(growable: false)
+      ..sort((a, b) {
+        final an = _suffixNumber(a);
+        final bn = _suffixNumber(b);
+        if (an != -1 && bn != -1) return an.compareTo(bn);
+        if (an != -1) return -1;
+        if (bn != -1) return 1;
+        return a.compareTo(b);
+      });
+
+    return sorted.map((key) {
+      final state = _asBoolState(outputs[key]);
+      return _QuickChannel(
+        key: key,
+        name: channelNameByKey[key]?.trim().isNotEmpty == true
+            ? channelNameByKey[key]!
+            : _fallbackChannelName(key),
+        kind: channelKindByKey[key] ?? 'relay',
+        state: state,
+      );
+    }).toList(growable: false);
+  }
+
+  Future<void> _loadDeviceStatus(SmartDevice device, {bool showOutput = false}) async {
+    if (_statusLoading.contains(device.id)) return;
+    setState(() {
+      _statusLoading.add(device.id);
+    });
+    try {
+      final status = await widget.api.getDeviceStatus(device.id);
+      if (!mounted) return;
+      setState(() {
+        _deviceStatusCache[device.id] = status;
+        if (showOutput) {
+          _statusOutput = const JsonEncoder.withIndent('  ').convert(status);
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      if (showOutput) {
+        setState(() {
+          _statusOutput = _friendlyError(e);
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _statusLoading.remove(device.id);
+        });
+      }
+    }
+  }
+
+  Future<void> _toggleQuickChannel(SmartDevice device, _QuickChannel channel) async {
+    final busyKey = '${device.id}:${channel.key}';
+    if (_channelCommandBusy.contains(busyKey)) return;
+    if (_isCloudMode(device)) {
+      final ok = await _confirmCloudUse('Controlling this channel', device);
+      if (!ok) return;
+    }
+    setState(() {
+      _channelCommandBusy.add(busyKey);
+    });
+    try {
+      await widget.api.sendDeviceCommand(
+        deviceId: device.id,
+        channel: channel.key,
+        state: 'toggle',
+      );
+      if (!mounted) return;
+      await _loadDeviceStatus(device, showOutput: false);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _channelCommandBusy.remove(busyKey);
+        });
+      }
+    }
+  }
+
+  Future<void> _addChannelToMain(SmartDevice device, _QuickChannel channel) async {
+    if (_isCloudMode(device)) {
+      final ok = await _confirmCloudUse('Adding this channel to Main', device);
+      if (!ok) return;
+    }
+    try {
+      await widget.api.addTile(
+        tileType: 'device',
+        refId: device.id,
+        label: '${device.name} - ${channel.name}',
+        payload: {
+          'channel': channel.key,
+          'channel_name': channel.name,
+        },
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Added "${channel.name}" to Main')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    }
   }
 
   Future<bool> _confirmCloudUse(String action, SmartDevice device) async {
@@ -302,16 +523,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
   }
 
   Future<void> _runStatus(SmartDevice device) async {
-    try {
-      final status = await widget.api.getDeviceStatus(device.id);
-      setState(() {
-        _statusOutput = const JsonEncoder.withIndent('  ').convert(status);
-      });
-    } catch (e) {
-      setState(() {
-        _statusOutput = e.toString();
-      });
-    }
+    await _loadDeviceStatus(device, showOutput: true);
   }
 
   Future<void> _runControlDialog(SmartDevice device) async {
@@ -475,6 +687,82 @@ class _DevicesScreenState extends State<DevicesScreen> {
     );
   }
 
+  Widget _buildQuickControls(SmartDevice device) {
+    final statusLoading = _statusLoading.contains(device.id);
+    final channels = _inferQuickChannels(device);
+    if (statusLoading && !_deviceStatusCache.containsKey(device.id)) {
+      return const Padding(
+        padding: EdgeInsets.all(8),
+        child: Row(
+          children: [
+            SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+            SizedBox(width: 8),
+            Text('Loading relay status...'),
+          ],
+        ),
+      );
+    }
+
+    if (channels.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(8),
+        child: Text('No relay/switch channels detected yet. Tap Status once to detect channels.'),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(top: 8, bottom: 4),
+          child: Text('Relay / Switch Controls', style: TextStyle(fontWeight: FontWeight.w600)),
+        ),
+        ...channels.map((channel) {
+          final busy = _channelCommandBusy.contains('${device.id}:${channel.key}');
+          final stateText = channel.state == null ? 'Unknown' : (channel.state! ? 'On' : 'Off');
+          final stateColor = channel.state == null
+              ? Colors.grey
+              : (channel.state! ? Colors.green : Colors.redAccent);
+          return Card(
+            margin: const EdgeInsets.symmetric(vertical: 4),
+            child: Padding(
+              padding: const EdgeInsets.all(8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(channel.name, style: const TextStyle(fontWeight: FontWeight.w600)),
+                        Text('Key: ${channel.key}'),
+                      ],
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Text(
+                      stateText,
+                      style: TextStyle(color: stateColor, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  FilledButton.tonal(
+                    onPressed: busy ? null : () => _toggleQuickChannel(device, channel),
+                    child: Text(busy ? '...' : 'Toggle'),
+                  ),
+                  const SizedBox(width: 6),
+                  OutlinedButton(
+                    onPressed: () => _addChannelToMain(device, channel),
+                    child: const Text('Add to Main'),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Row(
@@ -529,6 +817,11 @@ class _DevicesScreenState extends State<DevicesScreen> {
                               final mode = _modeOf(d);
                               final isEspFirmware = provider == 'esp_firmware';
                               return ExpansionTile(
+                                onExpansionChanged: (expanded) {
+                                  if (expanded) {
+                                    _loadDeviceStatus(d, showOutput: false);
+                                  }
+                                },
                                 title: Text('${d.name} (${d.type})'),
                                 subtitle: Text(
                                   '${d.host ?? d.mac ?? 'No host yet'}\nSource: $source  Mode: $mode',
@@ -536,53 +829,60 @@ class _DevicesScreenState extends State<DevicesScreen> {
                                 children: [
                                   Padding(
                                     padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                                    child: Wrap(
-                                      spacing: 8,
-                                      runSpacing: 8,
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
-                                        OutlinedButton(onPressed: () => _renameDevice(d), child: const Text('Rename')),
-                                        OutlinedButton(onPressed: () => _setPasscode(d), child: const Text('Set Passcode')),
-                                        OutlinedButton(
-                                          onPressed: () async {
-                                            if (_isCloudMode(d)) {
-                                              final ok = await _confirmCloudUse('Adding this to Main', d);
-                                              if (!ok) return;
-                                            }
-                                            await widget.api.addTile(tileType: 'device', refId: d.id, label: d.name);
-                                            if (!context.mounted) return;
-                                            ScaffoldMessenger.of(context)
-                                                .showSnackBar(const SnackBar(content: Text('Added to Main tiles')));
-                                          },
-                                          child: const Text('Add to Main'),
+                                        Wrap(
+                                          spacing: 8,
+                                          runSpacing: 8,
+                                          children: [
+                                            OutlinedButton(onPressed: () => _renameDevice(d), child: const Text('Rename')),
+                                            OutlinedButton(onPressed: () => _setPasscode(d), child: const Text('Set Passcode')),
+                                            OutlinedButton(
+                                              onPressed: () async {
+                                                if (_isCloudMode(d)) {
+                                                  final ok = await _confirmCloudUse('Adding this to Main', d);
+                                                  if (!ok) return;
+                                                }
+                                                await widget.api.addTile(tileType: 'device', refId: d.id, label: d.name);
+                                                if (!context.mounted) return;
+                                                ScaffoldMessenger.of(context)
+                                                    .showSnackBar(const SnackBar(content: Text('Added full device tile to Main')));
+                                              },
+                                              child: const Text('Add Device to Main'),
+                                            ),
+                                            OutlinedButton(onPressed: () => _runStatus(d), child: const Text('Status')),
+                                            OutlinedButton(
+                                              onPressed: () async {
+                                                if (_isCloudMode(d)) {
+                                                  final ok = await _confirmCloudUse('Advanced control', d);
+                                                  if (!ok) return;
+                                                }
+                                                await _runControlDialog(d);
+                                              },
+                                              child: const Text('Advanced Control'),
+                                            ),
+                                            OutlinedButton(onPressed: () => _editChannelDialog(d), child: const Text('Name Buttons')),
+                                            if (isEspFirmware) OutlinedButton(onPressed: () => _pushOtaDialog(d), child: const Text('Push OTA')),
+                                            OutlinedButton(onPressed: () => _showAdvancedDetails(d), child: const Text('Advanced')),
+                                            OutlinedButton(
+                                              onPressed: () async {
+                                                await widget.api.rescanDevice(d.id);
+                                                await _refresh();
+                                              },
+                                              child: const Text('Rescan'),
+                                            ),
+                                            FilledButton.tonal(
+                                              onPressed: () async {
+                                                await widget.api.deleteDevice(d.id);
+                                                await _refresh();
+                                              },
+                                              child: const Text('Remove'),
+                                            ),
+                                          ],
                                         ),
-                                        OutlinedButton(onPressed: () => _runStatus(d), child: const Text('Status')),
-                                        OutlinedButton(
-                                          onPressed: () async {
-                                            if (_isCloudMode(d)) {
-                                              final ok = await _confirmCloudUse('Controlling this device', d);
-                                              if (!ok) return;
-                                            }
-                                            await _runControlDialog(d);
-                                          },
-                                          child: const Text('Control'),
-                                        ),
-                                        OutlinedButton(onPressed: () => _editChannelDialog(d), child: const Text('Name Buttons')),
-                                        if (isEspFirmware) OutlinedButton(onPressed: () => _pushOtaDialog(d), child: const Text('Push OTA')),
-                                        OutlinedButton(onPressed: () => _showAdvancedDetails(d), child: const Text('Advanced')),
-                                        OutlinedButton(
-                                          onPressed: () async {
-                                            await widget.api.rescanDevice(d.id);
-                                            await _refresh();
-                                          },
-                                          child: const Text('Rescan'),
-                                        ),
-                                        FilledButton.tonal(
-                                          onPressed: () async {
-                                            await widget.api.deleteDevice(d.id);
-                                            await _refresh();
-                                          },
-                                          child: const Text('Remove'),
-                                        ),
+                                        const SizedBox(height: 8),
+                                        _buildQuickControls(d),
                                       ],
                                     ),
                                   )

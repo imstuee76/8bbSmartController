@@ -751,12 +751,27 @@ def get_device_status(device_id: str) -> dict[str, Any]:
 @app.post("/api/devices/{device_id}/command", dependencies=[Depends(require_auth_if_configured)])
 def post_device_command(device_id: str, payload: DeviceCommandRequest) -> dict[str, Any]:
     conn, row = _require_device(device_id)
+    channel_row = conn.execute(
+        "SELECT payload_json FROM device_channels WHERE device_id=? AND channel_key=?",
+        (device_id, payload.channel),
+    ).fetchone()
     host = (row["host"] or "").strip()
     passcode = decrypt_secret(row["passcode_enc"] or "")
     metadata = _parse_metadata(row)
     conn.close()
 
     cmd = payload.model_dump()
+    if channel_row:
+        try:
+            channel_payload = json.loads(channel_row["payload_json"])
+        except Exception:
+            channel_payload = {}
+        if isinstance(channel_payload, dict):
+            existing_payload = cmd.get("payload", {})
+            if not isinstance(existing_payload, dict):
+                existing_payload = {}
+            # Channel payload acts as defaults; explicit command payload overrides.
+            cmd["payload"] = {**channel_payload, **existing_payload}
     provider = str(metadata.get("provider", "")).strip().lower()
     if provider == "moes_bhubw":
         try:
