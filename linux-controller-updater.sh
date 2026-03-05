@@ -608,6 +608,17 @@ detect_idf_script_path() {
 }
 
 detect_idf_python_path() {
+  local env_py_path="${IDF_PYTHON_ENV_PATH:-}"
+  if [[ -n "$env_py_path" ]]; then
+    if [[ -x "$env_py_path/bin/python" ]]; then
+      printf '%s\n' "$env_py_path/bin/python"
+      return 0
+    fi
+    if [[ -x "$env_py_path/Scripts/python.exe" ]]; then
+      printf '%s\n' "$env_py_path/Scripts/python.exe"
+      return 0
+    fi
+  fi
   local found
   found="$(find "$HOME/.espressif/python_env" -type f -path "*/bin/python" 2>/dev/null | head -n 1 || true)"
   if [[ -n "$found" ]]; then
@@ -616,6 +627,23 @@ detect_idf_python_path() {
   fi
   if command -v python3 >/dev/null 2>&1; then
     command -v python3
+    return 0
+  fi
+  return 1
+}
+
+detect_idf_python_via_export() {
+  local script_path="$1"
+  local idf_root
+  idf_root="$(cd "$(dirname "$script_path")/.." && pwd)"
+  if [[ ! -f "$idf_root/export.sh" ]]; then
+    return 1
+  fi
+  local out
+  out="$(bash -lc "source \"$idf_root/export.sh\" >/dev/null 2>&1 && python -c 'import sys; print(sys.executable)'" 2>/dev/null || true)"
+  out="$(printf '%s' "$out" | head -n 1 | tr -d '\r')"
+  if [[ -n "$out" && -x "$out" ]]; then
+    printf '%s\n' "$out"
     return 0
   fi
   return 1
@@ -692,13 +720,21 @@ ensure_esp_idf_ready() {
   fi
 
   local py_path
-  py_path="$(detect_idf_python_path || true)"
+  py_path="$(detect_idf_python_via_export "$script_path" || true)"
+  if [[ -z "$py_path" ]]; then
+    py_path="$(detect_idf_python_path || true)"
+  fi
   if [[ -z "$py_path" ]]; then
     py_path="python3"
   fi
   local idf_cmd="$py_path $script_path"
   export IDF_CMD="$idf_cmd"
   export IDF_PY_PATH="$script_path"
+  local py_env_dir
+  py_env_dir="$(dirname "$(dirname "$py_path")")"
+  if [[ -d "$py_env_dir" ]]; then
+    export IDF_PYTHON_ENV_PATH="$py_env_dir"
+  fi
   if [[ -d "$HOME/.espressif" ]]; then
     export IDF_TOOLS_PATH="$HOME/.espressif"
   fi
@@ -707,6 +743,9 @@ ensure_esp_idf_ready() {
   env_file="$(resolve_env_file_for_updates)"
   set_env_value "$env_file" "IDF_CMD" "$idf_cmd"
   set_env_value "$env_file" "IDF_PY_PATH" "$script_path"
+  if [[ -d "$py_env_dir" ]]; then
+    set_env_value "$env_file" "IDF_PYTHON_ENV_PATH" "$py_env_dir"
+  fi
   if [[ -d "$HOME/.espressif" ]]; then
     set_env_value "$env_file" "IDF_TOOLS_PATH" "$HOME/.espressif"
   fi

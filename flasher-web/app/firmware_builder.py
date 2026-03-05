@@ -418,6 +418,15 @@ def _pick_idf_python() -> str:
     if env_python and Path(env_python).exists():
         return env_python
 
+    idf_py_env = os.environ.get("IDF_PYTHON_ENV_PATH", "").strip()
+    if idf_py_env:
+        linux_py = Path(idf_py_env) / "bin" / "python"
+        win_py = Path(idf_py_env) / "Scripts" / "python.exe"
+        if linux_py.exists() and linux_py.is_file():
+            return str(linux_py)
+        if win_py.exists() and win_py.is_file():
+            return str(win_py)
+
     patterns = [
         "C:/Espressif/python_env/*/Scripts/python.exe",
         "C:/Espressif/tools/idf-python/*/python.exe",
