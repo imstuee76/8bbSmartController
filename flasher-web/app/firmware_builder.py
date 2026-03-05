@@ -278,9 +278,9 @@ def _prepend_path(env: dict[str, str], entries: list[str]) -> None:
             path_key = key
             break
     current = env.get(path_key, "")
-    parts = [p for p in current.split(";") if p]
+    parts = [p for p in current.split(os.pathsep) if p]
     merged = _dedupe_keep_order(entries + parts)
-    env[path_key] = ";".join(merged)
+    env[path_key] = os.pathsep.join(merged)
 
 
 def _extract_idf_script_path(cmd: list[str]) -> Path | None:
@@ -359,10 +359,15 @@ def _candidate_idf_scripts() -> list[Path]:
         candidates.append(p)
 
     user_profile = Path(os.environ.get("USERPROFILE", "C:\\Users\\Public"))
+    home = Path(os.environ.get("HOME", str(Path.home())))
     patterns = [
         "C:/Espressif/frameworks/*/tools/idf.py",
         str(user_profile / ".espressif" / "frameworks" / "*" / "tools" / "idf.py"),
         str(user_profile / "Espressif" / "frameworks" / "*" / "tools" / "idf.py"),
+        str(home / "esp" / "esp-idf" / "tools" / "idf.py"),
+        str(home / "esp-idf" / "tools" / "idf.py"),
+        str(home / ".espressif" / "frameworks" / "*" / "tools" / "idf.py"),
+        "/opt/esp-idf/tools/idf.py",
     ]
     for pattern in patterns:
         for raw in sorted(glob.glob(pattern)):
@@ -390,6 +395,8 @@ def _pick_idf_python() -> str:
     patterns = [
         "C:/Espressif/python_env/*/Scripts/python.exe",
         "C:/Espressif/tools/idf-python/*/python.exe",
+        str(Path.home() / ".espressif" / "python_env" / "*" / "bin" / "python"),
+        str(Path.home() / "esp" / "python_env" / "*" / "bin" / "python"),
     ]
     found: list[Path] = []
     for pattern in patterns:
@@ -450,9 +457,9 @@ def _find_idf_cmd() -> list[str]:
         return [*eim_cmd, "run", "--", "idf.py"]
 
     raise RuntimeError(
-        "ESP-IDF command not found. Set one of these and restart backend: "
-        "IDF_CMD='idf.py' (or full command), "
-        "or IDF_PY_PATH='C:\\path\\to\\idf.py' and optional ESP_IDF_PYTHON='C:\\path\\to\\python.exe'."
+        "ESP-IDF command not found. Set and restart backend, for example:\n"
+        "Linux: IDF_CMD='python3 /home/<user>/esp/esp-idf/tools/idf.py'\n"
+        "Windows: IDF_CMD='idf.py' or IDF_PY_PATH='C:\\path\\to\\idf.py' and optional ESP_IDF_PYTHON='C:\\path\\to\\python.exe'."
     )
 
 
