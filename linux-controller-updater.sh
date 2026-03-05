@@ -411,7 +411,18 @@ ensure_backend_runtime() {
     return 1
   fi
 
-  run python3 -m pip install --user --upgrade -r "$req_file"
+  if run python3 -m pip install --user --upgrade -r "$req_file"; then
+    return 0
+  fi
+
+  log "pip install failed (likely PEP 668 externally-managed environment)."
+  log "Retrying with --break-system-packages (still installs to --user site)."
+  if run python3 -m pip install --user --break-system-packages --upgrade -r "$req_file"; then
+    return 0
+  fi
+
+  log_error "Backend Python dependency install failed after PEP 668 fallback."
+  return 1
 }
 
 ensure_firewall_rule() {
