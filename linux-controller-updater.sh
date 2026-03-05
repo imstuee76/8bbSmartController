@@ -448,8 +448,9 @@ install_deps() {
   ensure_cmd curl curl
   ensure_cmd tar tar
   ensure_cmd rsync rsync
+  ensure_cmd git git
   if command -v apt-get >/dev/null 2>&1; then
-    local -a pkgs=(clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-12-dev python3-pip)
+    local -a pkgs=(clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-12-dev python3-pip python3-venv python3-serial dfu-util libusb-1.0-0)
     local -a missing=()
     for p in "${pkgs[@]}"; do
       if ! dpkg -s "$p" >/dev/null 2>&1; then
@@ -620,7 +621,64 @@ detect_idf_python_path() {
   return 1
 }
 
+is_truthy() {
+  local v
+  v="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  [[ "$v" == "1" || "$v" == "true" || "$v" == "yes" || "$v" == "on" ]]
+}
+
+install_esp_idf_if_missing() {
+  local script_path
+  script_path="$(detect_idf_script_path || true)"
+  if [[ -n "$script_path" ]]; then
+    return 0
+  fi
+
+  local auto_install="${IDF_AUTO_INSTALL:-1}"
+  if ! is_truthy "$auto_install"; then
+    log "ESP-IDF missing and auto-install disabled (IDF_AUTO_INSTALL=$auto_install)."
+    return 0
+  fi
+
+  if ! command -v git >/dev/null 2>&1; then
+    ensure_cmd git git || true
+  fi
+  if ! command -v git >/dev/null 2>&1; then
+    log "WARNING: Cannot auto-install ESP-IDF because git is not available."
+    return 0
+  fi
+
+  local idf_root="${IDF_INSTALL_DIR:-$HOME/esp/esp-idf}"
+  local idf_parent
+  idf_parent="$(dirname "$idf_root")"
+  mkdir -p "$idf_parent"
+
+  if [[ ! -d "$idf_root/.git" ]]; then
+    if [[ -e "$idf_root" ]]; then
+      log "WARNING: $idf_root exists but is not a git checkout. Skipping auto-clone."
+      return 0
+    fi
+    log "ESP-IDF not found. Auto-installing to: $idf_root"
+    run git clone --recursive https://github.com/espressif/esp-idf.git "$idf_root"
+  else
+    log "ESP-IDF checkout found at $idf_root"
+  fi
+
+  if [[ ! -x "$idf_root/install.sh" ]]; then
+    log "WARNING: ESP-IDF install script not found at $idf_root/install.sh"
+    return 0
+  fi
+
+  log "Running ESP-IDF installer (esp32 target). This may take a while..."
+  (
+    cd "$idf_root"
+    run ./install.sh esp32
+  )
+}
+
 ensure_esp_idf_ready() {
+  install_esp_idf_if_missing
+
   local script_path
   script_path="$(detect_idf_script_path || true)"
   if [[ -z "$script_path" ]]; then
@@ -790,8 +848,8 @@ main() {
   ensure_permissions
   create_desktop_shortcut
   ensure_runtime_writable_paths
-  ensure_esp_idf_ready
   install_deps
+  ensure_esp_idf_ready
   ensure_serial_port_access
   ensure_firewall_rule
   show_version
