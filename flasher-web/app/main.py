@@ -185,6 +185,14 @@ def web_root() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> Response:
+    icon = STATIC_DIR / "favicon.ico"
+    if icon.exists():
+        return FileResponse(icon)
+    return Response(status_code=204)
+
+
 def _device_to_dict(row: Any, conn: Any) -> dict[str, Any]:
     channels = conn.execute(
         "SELECT channel_key, channel_name, channel_kind, payload_json FROM device_channels WHERE device_id=? ORDER BY id ASC",
