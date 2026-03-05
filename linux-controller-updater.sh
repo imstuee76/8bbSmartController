@@ -646,7 +646,7 @@ detect_idf_python_via_export() {
     return 1
   fi
   local out
-  out="$(bash -lc "source \"$idf_root/export.sh\" >/dev/null 2>&1 && python -c 'import sys; print(sys.executable)'" 2>/dev/null || true)"
+  out="$(bash -lc "unset IDF_PYTHON_ENV_PATH IDF_CMD IDF_PY_PATH ESP_IDF_PYTHON IDF_PATH; source \"$idf_root/export.sh\" >/dev/null 2>&1 && python -c 'import sys; print(sys.executable)'" 2>/dev/null || true)"
   out="$(printf '%s' "$out" | head -n 1 | tr -d '\r')"
   if [[ -n "$out" && -x "$out" ]]; then
     printf '%s\n' "$out"
@@ -749,6 +749,7 @@ install_esp_idf_if_missing() {
   log "Running ESP-IDF installer (esp32 target, ref=$idf_ref). This may take a while..."
   (
     cd "$idf_root"
+    unset IDF_PYTHON_ENV_PATH IDF_CMD IDF_PY_PATH ESP_IDF_PYTHON IDF_PATH
     run ./install.sh esp32
   )
 }

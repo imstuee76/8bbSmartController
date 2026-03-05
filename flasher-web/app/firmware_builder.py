@@ -401,12 +401,15 @@ def _run_idf_install_repair(idf_cmd: list[str], log_file: Path) -> bool:
 
     cmd = [str(install_script), "esp32"]
     _append_log(log_file, f"$ {' '.join(cmd)}")
+    clean_env = os.environ.copy()
+    for key in ("IDF_PYTHON_ENV_PATH", "IDF_CMD", "IDF_PY_PATH", "ESP_IDF_PYTHON", "IDF_PATH"):
+        clean_env.pop(key, None)
     proc = subprocess.run(
         cmd,
         cwd=str(idf_root),
         capture_output=True,
         text=True,
-        env=os.environ.copy(),
+        env=clean_env,
         check=False,
     )
     raw = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
