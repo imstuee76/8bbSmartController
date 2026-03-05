@@ -455,6 +455,57 @@ def _parse_env_cmd(raw: str) -> list[str]:
     return shlex.split(text, posix=False)
 
 
+def _extract_mm_from_text(raw: str) -> str | None:
+    m = re.search(r"(\d+)\.(\d+)", str(raw or ""))
+    if not m:
+        return None
+    return f"{m.group(1)}.{m.group(2)}"
+
+
+def _guess_mm_from_python_path(raw: str) -> str | None:
+    token = str(raw or "").strip().strip('"')
+    if not token:
+        return None
+    m = re.search(r"idf(\d+\.\d+)", token, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r"idf[-_]?v?(\d+\.\d+)", token, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _guess_idf_mm_from_script(script_path: Path) -> str | None:
+    script = script_path.resolve()
+    root = script.parent.parent
+
+    from_path = _extract_mm_from_text(str(root))
+    if from_path:
+        return from_path
+
+    version_txt = root / "version.txt"
+    if version_txt.exists():
+        try:
+            txt = version_txt.read_text(encoding="utf-8", errors="ignore")
+            mm = _extract_mm_from_text(txt)
+            if mm:
+                return mm
+        except Exception:
+            pass
+
+    version_cmake = root / "tools" / "cmake" / "version.cmake"
+    if version_cmake.exists():
+        try:
+            txt = version_cmake.read_text(encoding="utf-8", errors="ignore")
+            major = re.search(r"IDF_VERSION_MAJOR\s+(\d+)", txt)
+            minor = re.search(r"IDF_VERSION_MINOR\s+(\d+)", txt)
+            if major and minor:
+                return f"{major.group(1)}.{minor.group(1)}"
+        except Exception:
+            pass
+    return None
+
+
 def _token_is_probably_windows_path(token: str) -> bool:
     t = str(token or "").strip().strip('"')
     if not t:
@@ -481,18 +532,30 @@ def _is_cmd_runnable(cmd: list[str]) -> bool:
     return False
 
 
-def _pick_idf_python() -> str:
+def _pick_idf_python(preferred_mm: str | None = None) -> str:
+    preferred_mm = _extract_mm_from_text(preferred_mm or "")
+
+    def _score(path_text: str) -> int:
+        if not preferred_mm:
+            return 0
+        mm = _guess_mm_from_python_path(path_text) or ""
+        if mm == preferred_mm:
+            return 3
+        if preferred_mm.replace(".", "") in path_text.replace(".", ""):
+            return 2
+        return 0
+
     env_python = os.environ.get("ESP_IDF_PYTHON", "").strip()
-    if env_python and Path(env_python).exists():
+    if env_python and Path(env_python).exists() and (_score(env_python) > 0 or not preferred_mm):
         return env_python
 
     idf_py_env = os.environ.get("IDF_PYTHON_ENV_PATH", "").strip()
     if idf_py_env:
         linux_py = Path(idf_py_env) / "bin" / "python"
         win_py = Path(idf_py_env) / "Scripts" / "python.exe"
-        if linux_py.exists() and linux_py.is_file():
+        if linux_py.exists() and linux_py.is_file() and (_score(str(linux_py)) > 0 or not preferred_mm):
             return str(linux_py)
-        if win_py.exists() and win_py.is_file():
+        if win_py.exists() and win_py.is_file() and (_score(str(win_py)) > 0 or not preferred_mm):
             return str(win_py)
 
     patterns = [
@@ -508,7 +571,7 @@ def _pick_idf_python() -> str:
             if p.exists() and p.is_file():
                 found.append(p)
     if found:
-        found.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        found.sort(key=lambda p: (_score(str(p)), p.stat().st_mtime), reverse=True)
         return str(found[0])
 
     return sys.executable
@@ -541,6 +604,12 @@ def _find_idf_cmd() -> list[str]:
         if os.name != "nt" and any(_token_is_probably_windows_path(tok) for tok in env_cmd):
             env_cmd = []
         elif _is_cmd_runnable(env_cmd):
+            script = _extract_idf_script_path(env_cmd)
+            if script and len(env_cmd) >= 2:
+                preferred_mm = _guess_idf_mm_from_script(script)
+                current_mm = _guess_mm_from_python_path(env_cmd[0])
+                if preferred_mm and current_mm and preferred_mm != current_mm:
+                    return [_pick_idf_python(preferred_mm), str(script)]
             return env_cmd
         else:
             env_cmd = []
@@ -554,11 +623,13 @@ def _find_idf_cmd() -> list[str]:
     if env_script:
         script_path = Path(env_script)
         if script_path.exists():
-            idf_python = _pick_idf_python()
+            preferred_mm = _guess_idf_mm_from_script(script_path)
+            idf_python = _pick_idf_python(preferred_mm)
             return [idf_python, str(script_path)]
 
     for script_path in _candidate_idf_scripts():
-        idf_python = _pick_idf_python()
+        preferred_mm = _guess_idf_mm_from_script(script_path)
+        idf_python = _pick_idf_python(preferred_mm)
         return [idf_python, str(script_path)]
 
     eim_cmd = _find_eim_cmd()
@@ -570,6 +641,20 @@ def _find_idf_cmd() -> list[str]:
         "Linux: IDF_CMD='python3 /home/<user>/esp/esp-idf/tools/idf.py'\n"
         "Windows: IDF_CMD='idf.py' or IDF_PY_PATH='C:\\path\\to\\idf.py' and optional ESP_IDF_PYTHON='C:\\path\\to\\python.exe'."
     )
+
+
+def _resolve_idf_cmd_and_env(log_file: Path, *, context: str) -> tuple[list[str], dict[str, str]]:
+    idf_cmd = _find_idf_cmd()
+    _append_log(log_file, f"idf_cmd[{context}]={' '.join(idf_cmd)}")
+    idf_env = _infer_idf_env(idf_cmd)
+    if idf_env:
+        _append_log(
+            log_file,
+            "idf_env_overrides"
+            + f"[{context}]="
+            + ", ".join(f"{k}={v}" for k, v in idf_env.items()),
+        )
+    return idf_cmd, idf_env
 
 
 def build_firmware(
@@ -607,11 +692,7 @@ def build_firmware(
 
         _write_generated_defaults(defaults or {}, log_file)
 
-        idf_cmd = _find_idf_cmd()
-        _append_log(log_file, f"idf_cmd={' '.join(idf_cmd)}")
-        idf_env = _infer_idf_env(idf_cmd)
-        if idf_env:
-            _append_log(log_file, "idf_env_overrides=" + ", ".join(f"{k}={v}" for k, v in idf_env.items()))
+        idf_cmd, idf_env = _resolve_idf_cmd_and_env(log_file, context="initial")
 
         constraints_file = _detect_constraints_file_for_idf_cmd(idf_cmd, log_file)
         if constraints_file and not constraints_file.exists():
@@ -619,6 +700,7 @@ def build_firmware(
             repaired_pre = _run_idf_install_repair(idf_cmd, log_file)
             if repaired_pre:
                 _append_log(log_file, "repair_install=success (pre-build)")
+                idf_cmd, idf_env = _resolve_idf_cmd_and_env(log_file, context="post-repair-pre")
             else:
                 _append_log(log_file, "repair_install=failed (pre-build)")
 
@@ -630,6 +712,7 @@ def build_firmware(
             repaired = _run_idf_install_repair(idf_cmd, log_file)
             if repaired:
                 _append_log(log_file, "repair_install=success retrying_build")
+                idf_cmd, idf_env = _resolve_idf_cmd_and_env(log_file, context="post-repair-retry")
                 build = _run_idf([*idf_cmd, "build"], log_file, env_extra=idf_env)
                 build_raw = ((build.stdout or "") + "\n" + (build.stderr or "")).strip()
             else:
