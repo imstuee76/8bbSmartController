@@ -20,6 +20,8 @@ FastAPI backend + local web UI for:
 The flasher UI is profile-first and split into clear steps:
 
 1. New profile: name, version, firmware, notes, and device type.
+   - Save current form as profile package.
+   - Load a saved profile to recall all form values.
 2. Device options: common options + dynamic options by type (relay, fan, single light, dimmer, RGB, RGBW).
 3. Network setup: Wi-Fi, fallback AP, and DHCP/static IP fields.
 4. Actions:
@@ -92,6 +94,10 @@ Tuya scan notes:
 - `GET /api/firmware/profiles/{profile_id}` recall full profile details
 - `POST /api/firmware/profiles/{profile_id}/push/{device_id}` push selected saved profile OTA to a device
 - `POST /api/firmware/profiles/{profile_id}/push-direct` push selected saved profile OTA to `host + passcode` without pre-registering device
+
+Profile package naming notes:
+- Saved profile firmware copy and manifest are stored with profile-based names (`<profile>_<device>_v<version>.*`).
+- Build-from-source firmware outputs already include profile name in filenames under `data/firmware`.
 
 ## Serial monitor endpoints
 

@@ -53,20 +53,23 @@ def create_firmware_profile(
     if source_firmware.suffix.lower() != ".bin":
         raise ValueError(f"Firmware must be a .bin file: {firmware_filename}")
 
-    signed = sign_firmware(source_firmware, version, device_type, shared_key)
-    signed_manifest_path = Path(signed["manifest_path"])
-    if not signed_manifest_path.exists():
-        raise FileNotFoundError(f"Signed manifest not found: {signed_manifest_path}")
-
     profile_id = str(uuid.uuid4())
     created_at = _utc_ts()
     folder_name = _profile_folder_name(profile_name, created_at, profile_id)
     profile_dir = PROFILES_DIR / folder_name
     profile_dir.mkdir(parents=True, exist_ok=False)
 
-    profile_firmware_name = source_firmware.name
-    profile_manifest_name = signed_manifest_path.name
-    shutil.copy2(source_firmware, profile_dir / profile_firmware_name)
+    base_name = f"{_safe_slug(profile_name)}_{_safe_slug(device_type)}_v{_safe_slug(version)}"
+    profile_firmware_name = f"{base_name}.bin"
+    profile_firmware_path = profile_dir / profile_firmware_name
+    shutil.copy2(source_firmware, profile_firmware_path)
+
+    # Sign the profile copy so manifest and firmware names stay profile-based.
+    signed = sign_firmware(profile_firmware_path, version, device_type, shared_key)
+    signed_manifest_path = Path(signed["manifest_path"])
+    if not signed_manifest_path.exists():
+        raise FileNotFoundError(f"Signed manifest not found: {signed_manifest_path}")
+    profile_manifest_name = f"{base_name}.manifest.json"
     shutil.copy2(signed_manifest_path, profile_dir / profile_manifest_name)
 
     metadata = {
@@ -74,6 +77,7 @@ def create_firmware_profile(
         "profile_name": profile_name,
         "created_at": created_at,
         "firmware_filename": profile_firmware_name,
+        "source_firmware_filename": source_firmware.name,
         "version": version,
         "device_type": device_type,
         "settings": settings,
@@ -94,6 +98,7 @@ def create_firmware_profile(
             "profile_name": profile_name,
             "folder": folder_name,
             "firmware": profile_firmware_name,
+            "source_firmware": source_firmware.name,
             "version": version,
         },
     )

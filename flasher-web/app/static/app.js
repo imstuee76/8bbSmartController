@@ -636,6 +636,170 @@ function collectWorkflowPayload() {
   };
 }
 
+function toBool(value, fallback = false) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  const text = String(value == null ? "" : value).trim().toLowerCase();
+  if (!text) return fallback;
+  if (["1", "true", "yes", "on"].includes(text)) return true;
+  if (["0", "false", "no", "off"].includes(text)) return false;
+  return fallback;
+}
+
+function setIfPresent(id, value) {
+  const el = getEl(id);
+  if (!el) return;
+  if (el.type === "checkbox") {
+    el.checked = toBool(value, false);
+    return;
+  }
+  el.value = value == null ? "" : String(value);
+}
+
+function applyTypeSettingsFromProfile(deviceType, deviceSettings = {}) {
+  const settings = deviceSettings && typeof deviceSettings === "object" ? deviceSettings : {};
+  if (deviceType === "relay_switch") {
+    const relayCount = clampInt(settings.relay_count, 1, 8, 2);
+    const state = {
+      relayCount,
+      buttonCount: clampInt(settings.button_count, 0, 8, relayCount),
+      relayBootState: settings.boot_state || "off",
+    };
+    const relays = Array.isArray(settings.relays) ? settings.relays : [];
+    const relayGpio = Array.isArray(settings.relay_gpio) ? settings.relay_gpio : [];
+    for (let idx = 1; idx <= relayCount; idx += 1) {
+      const relayRow = relays.find((r) => Number(r?.index) === idx) || {};
+      state[`relayName${idx}`] = relayRow.name || `Relay ${idx}`;
+      const gpioFromRow = relayRow.gpio;
+      const gpioFromList = relayGpio[idx - 1];
+      const gpio = gpioFromRow != null ? gpioFromRow : gpioFromList;
+      state[`relayGpio${idx}`] = gpio == null ? defaultRelayGpioForIndex(idx) : gpio;
+      state[`relayInvert${idx}`] = toBool(relayRow.invert, false);
+    }
+    setIfPresent("relayCount", relayCount);
+    renderRelayRows(state);
+    applyFormState(state);
+    return;
+  }
+
+  if (deviceType === "fan") {
+    const speedCount = clampInt(settings.speed_count, 2, 8, 3);
+    const state = {
+      fanSpeedCount: speedCount,
+      fanPwmGpio: clampInt(settings.pwm_gpio, 0, 39, 18),
+      fanEnableGpio: clampInt(settings.enable_gpio, 0, 39, 19),
+      fanOscillation: toBool(settings.oscillation, false),
+    };
+    const speeds = Array.isArray(settings.speeds) ? settings.speeds : [];
+    for (let idx = 1; idx <= speedCount; idx += 1) {
+      const row = speeds.find((s) => Number(s?.index) === idx) || {};
+      state[`fanSpeedLabel${idx}`] = row.label || `Speed ${idx}`;
+      state[`fanSpeedPct${idx}`] = clampInt(row.percent, 1, 100, Math.round((idx / speedCount) * 100));
+    }
+    setIfPresent("fanSpeedCount", speedCount);
+    renderFanRows(state);
+    applyFormState(state);
+    return;
+  }
+
+  if (deviceType === "light_single") {
+    setIfPresent("singleLightGpio", clampInt(settings.gpio, 0, 39, 23));
+    setIfPresent("singleLightDefaultState", settings.default_state || "off");
+    return;
+  }
+  if (deviceType === "light_dimmer") {
+    setIfPresent("dimmerPwmGpio", clampInt(settings.pwm_gpio, 0, 39, 23));
+    setIfPresent("dimmerCurve", settings.curve || "linear");
+    setIfPresent("dimmerMin", clampInt(settings.min_brightness_pct, 1, 100, 5));
+    setIfPresent("dimmerMax", clampInt(settings.max_brightness_pct, 1, 100, 100));
+    return;
+  }
+  if (deviceType === "light_rgb") {
+    setIfPresent("rgbPinR", clampInt(settings.pin_r, 0, 39, 25));
+    setIfPresent("rgbPinG", clampInt(settings.pin_g, 0, 39, 26));
+    setIfPresent("rgbPinB", clampInt(settings.pin_b, 0, 39, 27));
+    setIfPresent("rgbOrder", settings.color_order || "RGB");
+    setIfPresent("rgbEffects", toBool(settings.effects_enabled, true));
+    return;
+  }
+  if (deviceType === "light_rgbw") {
+    setIfPresent("rgbwPinR", clampInt(settings.pin_r, 0, 39, 25));
+    setIfPresent("rgbwPinG", clampInt(settings.pin_g, 0, 39, 26));
+    setIfPresent("rgbwPinB", clampInt(settings.pin_b, 0, 39, 27));
+    setIfPresent("rgbwPinW", clampInt(settings.pin_w, 0, 39, 14));
+    setIfPresent("rgbwOrder", settings.color_order || "RGBW");
+    setIfPresent("rgbwColorTempBlend", toBool(settings.color_temp_blend, true));
+  }
+}
+
+async function loadSelectedProfile() {
+  requireLoggedIn();
+  const profileId = getEl("profileSelect").value.trim();
+  if (!profileId) {
+    throw new Error("Select a profile to load.");
+  }
+  const profile = await api(`/api/firmware/profiles/${encodeURIComponent(profileId)}`);
+  const settings = profile.settings && typeof profile.settings === "object" ? profile.settings : {};
+  const general = settings.general && typeof settings.general === "object" ? settings.general : {};
+  const network = settings.network && typeof settings.network === "object" ? settings.network : {};
+  const wifi = network.wifi && typeof network.wifi === "object" ? network.wifi : {};
+  const fallbackAp = network.fallback_ap && typeof network.fallback_ap === "object" ? network.fallback_ap : {};
+  const ip = network.ip && typeof network.ip === "object" ? network.ip : {};
+  const deviceSettings = settings.device && typeof settings.device === "object" ? settings.device : {};
+
+  setIfPresent("profileName", profile.profile_name || "");
+  setIfPresent("profileVersion", profile.version || "");
+  setIfPresent("profileDeviceType", profile.device_type || "relay_switch");
+  renderDeviceTypeOptions();
+
+  setIfPresent("profileNotes", profile.notes || "");
+  setIfPresent("deviceName", general.device_name || "");
+  setIfPresent("devicePasscode", general.device_passcode || "");
+  setIfPresent("deviceHostname", general.mdns_hostname || "");
+  setIfPresent("otaChannel", general.ota_channel || "stable");
+
+  setIfPresent("wifiSsid", wifi.ssid || "");
+  setIfPresent("wifiPassword", wifi.password || "");
+  setIfPresent("fallbackApSsid", fallbackAp.ssid || "8bb-setup");
+  setIfPresent("fallbackApPassword", fallbackAp.password || "");
+  setIfPresent("fallbackApTimeout", clampInt(fallbackAp.timeout_sec, 30, 3600, 300));
+
+  setIfPresent("ipMode", ip.mode || "dhcp");
+  toggleStaticIpFields();
+  setIfPresent("staticIp", ip.static_ip || "");
+  setIfPresent("gatewayIp", ip.gateway || "");
+  setIfPresent("subnetMask", ip.subnet_mask || "");
+  setIfPresent("dns1", ip.dns1 || "");
+  setIfPresent("dns2", ip.dns2 || "");
+
+  applyTypeSettingsFromProfile(profile.device_type || "relay_switch", deviceSettings);
+
+  const firmwareName = String(profile.firmware_filename || "").trim();
+  if (firmwareName) {
+    const firmwareSelectEl = getEl("firmwareSelect");
+    const hasOption = Array.from(firmwareSelectEl.options).some((o) => o.value === firmwareName);
+    if (!hasOption) {
+      const opt = document.createElement("option");
+      opt.value = firmwareName;
+      opt.textContent = firmwareName;
+      firmwareSelectEl.appendChild(opt);
+    }
+    firmwareSelectEl.value = firmwareName;
+  }
+
+  if (!getEl("diagExpectedHostname").value.trim()) {
+    getEl("diagExpectedHostname").value = getEl("deviceHostname").value.trim();
+  }
+  saveDraft();
+  print(actionOut, "Load Profile", {
+    profile_id: profile.profile_id,
+    profile_name: profile.profile_name,
+    firmware_filename: profile.firmware_filename,
+    profile_folder: profile.profile_folder,
+    loaded: true,
+  });
+}
+
 async function bootAuth() {
   await loadSystemVersion();
   const status = await api("/api/auth/status");
@@ -978,7 +1142,7 @@ async function flashToPort() {
 async function buildProfilePackage() {
   await ensureFirmwareForAction("ota");
   const payload = collectWorkflowPayload();
-  print(actionOut, "Build OTA File", "Creating profile package...");
+  print(actionOut, "Save Profile", "Saving current form as profile package...");
   const result = await api("/api/firmware/profiles", {
     method: "POST",
     body: JSON.stringify(payload),
@@ -986,7 +1150,7 @@ async function buildProfilePackage() {
 
   await loadProfiles();
   getEl("profileSelect").value = result.profile_id || "";
-  print(actionOut, "Build OTA File", {
+  print(actionOut, "Save Profile", {
     profile_id: result.profile_id,
     profile_name: result.profile_name,
     profile_folder: result.profile_folder,
@@ -1386,6 +1550,8 @@ getEl("diagStatusBtn").addEventListener("click", () => guarded(runStatusTest));
 getEl("diagPairBtn").addEventListener("click", () => guarded(runPairTest));
 getEl("diagAllBtn").addEventListener("click", () => guarded(runAllTests));
 getEl("buildProfileBtn").addEventListener("click", () => guarded(buildProfilePackage));
+getEl("loadProfileBtn").addEventListener("click", () => guarded(loadSelectedProfile));
+getEl("profileSelect").addEventListener("change", () => guarded(loadSelectedProfile));
 getEl("flashOtaBtn").addEventListener("click", () => guarded(flashOta));
 
 bootAuth().catch((err) => {

@@ -219,9 +219,9 @@
           </div>
 
           <div class="action-box">
-            <h4>Build OTA File (Profile Package)</h4>
-            <p class="small-note">Creates signed OTA manifest + firmware copy under <code>data/firmware_profiles/&lt;profile-folder&gt;</code>.</p>
-            <button id="buildProfileBtn">Build OTA File</button>
+            <h4>Save Profile (OTA Package)</h4>
+            <p class="small-note">Saves current form as a profile package with profile-based firmware/manifest names under <code>data/firmware_profiles/&lt;profile-folder&gt;</code>.</p>
+            <button id="buildProfileBtn">Save Profile</button>
           </div>
 
           <div class="action-box">
@@ -243,6 +243,9 @@
             <p class="small-note">
               If no registered devices are listed, enter Direct Host + Passcode and click Flash OTA.
             </p>
+            <div class="inline-actions">
+              <button id="loadProfileBtn" class="secondary">Load Selected Profile</button>
+            </div>
             <button id="flashOtaBtn">Flash OTA</button>
           </div>
         </section>
