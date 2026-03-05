@@ -426,6 +426,7 @@ def _start_profile_push_job(
     manifest_url: str,
     passcode: str,
     mode: str,
+    precheck: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     job_id = str(uuid.uuid4())
     created_at = utc_now()
@@ -444,6 +445,7 @@ def _start_profile_push_job(
         "ended_at": "",
         "error": "",
         "result": {},
+        "precheck": precheck or {},
         "output": "",
     }
     with _profile_push_jobs_lock:
@@ -451,6 +453,8 @@ def _start_profile_push_job(
 
     def _runner() -> None:
         _profile_push_job_update(job_id, status="running", started_at=utc_now())
+        if precheck:
+            _profile_push_job_append_output(job_id, "Pre-check passed (ping/status/pair).")
         _profile_push_job_append_output(job_id, f"Starting profile OTA push ({mode})")
         _profile_push_job_append_output(job_id, f"host={host}")
         _profile_push_job_append_output(job_id, f"profile={profile_name} ({profile_id})")
@@ -503,6 +507,21 @@ def _start_profile_push_job(
 
     _profile_push_executor.submit(_runner)
     return dict(job)
+
+
+def _run_ota_precheck(host: str, passcode: str) -> dict[str, Any]:
+    ping = ping_host(host, timeout_ms=1500)
+    status = probe_status_quick(host, timeout=2.0)
+    pair = test_device_pair(host, passcode)
+    ok = bool(ping.get("ok")) and bool(status.get("ok")) and bool(pair.get("ok"))
+    return {
+        "ok": ok,
+        "host": host,
+        "ping": ping,
+        "status": status,
+        "pair": pair,
+        "checked_at": utc_now(),
+    }
 
 
 def _is_single_ipv4_host_hint(value: str) -> bool:
@@ -1754,6 +1773,17 @@ def push_profile_to_device(profile_id: str, device_id: str, request: Request) ->
     firmware_url = f"{base}/downloads/profiles/{profile_folder}/{firmware_name}"
     manifest_url = f"{base}/downloads/profiles/{profile_folder}/{manifest_name}"
 
+    precheck = _run_ota_precheck(host, passcode)
+    if not precheck.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "OTA pre-check failed. Device is not ready for OTA push.",
+                "precheck": precheck,
+                "hint": "Confirm host/passcode and that /api/status and /api/pair are reachable.",
+            },
+        )
+
     return _start_profile_push_job(
         profile_id=profile_id,
         profile_name=str(profile.get("profile_name", profile_id)),
@@ -1763,6 +1793,7 @@ def push_profile_to_device(profile_id: str, device_id: str, request: Request) ->
         manifest_url=manifest_url,
         passcode=passcode,
         mode="registered_device",
+        precheck=precheck,
     )
 
 
@@ -1791,6 +1822,17 @@ def push_profile_to_host(profile_id: str, payload: dict[str, Any], request: Requ
     firmware_url = f"{base}/downloads/profiles/{profile_folder}/{firmware_name}"
     manifest_url = f"{base}/downloads/profiles/{profile_folder}/{manifest_name}"
 
+    precheck = _run_ota_precheck(host, passcode)
+    if not precheck.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "OTA pre-check failed. Device is not ready for OTA push.",
+                "precheck": precheck,
+                "hint": "Confirm host/passcode and that /api/status and /api/pair are reachable.",
+            },
+        )
+
     return _start_profile_push_job(
         profile_id=profile_id,
         profile_name=str(profile.get("profile_name", profile_id)),
@@ -1800,6 +1842,7 @@ def push_profile_to_host(profile_id: str, payload: dict[str, Any], request: Requ
         manifest_url=manifest_url,
         passcode=passcode,
         mode="direct_host",
+        precheck=precheck,
     )
 
 

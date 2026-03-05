@@ -102,6 +102,10 @@ async function api(path, opts = {}) {
         if (d.hint) {
           lines.push(`hint: ${d.hint}`);
         }
+        if (d.precheck) {
+          lines.push("precheck:");
+          lines.push(JSON.stringify(d.precheck, null, 2));
+        }
         message = lines.length ? lines.join("\n") : JSON.stringify(d, null, 2);
       }
     }
@@ -1233,12 +1237,17 @@ async function flashOta() {
 
   const renderJob = (job) => {
     const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
+    const pre = job.precheck && typeof job.precheck === "object" ? job.precheck : null;
+    const preSummary = pre
+      ? `Pre-check: ping=${pre.ping?.ok ? "ok" : "fail"} | status=${pre.status?.ok ? "ok" : "fail"} | pair=${pre.pair?.ok ? "ok" : "fail"}`
+      : "";
     const lines = [
       `OTA Job: ${job.job_id || jobId}`,
       `Status: ${job.status || "unknown"}`,
       `Mode: ${job.mode || mode}`,
       `Host: ${job.host || directHost || "-"}`,
       `Profile: ${job.profile_name || profileId}`,
+      preSummary,
       `Elapsed: ${elapsedSec}s`,
       "",
       job.output || "",
@@ -1268,6 +1277,9 @@ async function flashOta() {
     }
   };
 
+  if (result.precheck) {
+    print(actionOut, "Flash OTA Pre-check", result.precheck);
+  }
   await poll();
   otaPushPollTimer = setInterval(() => {
     guarded(poll);
