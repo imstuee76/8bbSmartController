@@ -85,13 +85,13 @@ is_backend_ready() {
   if ! command -v curl >/dev/null 2>&1; then
     return 0
   fi
-  if curl -fsS "${base_url}api/auth/status" >/dev/null 2>&1; then
+  if curl -fsS --connect-timeout 1 --max-time 2 "${base_url}api/auth/status" >/dev/null 2>&1; then
     return 0
   fi
-  if curl -fsS "${base_url}" >/dev/null 2>&1; then
+  if curl -fsS --connect-timeout 1 --max-time 2 "${base_url}" >/dev/null 2>&1; then
     return 0
   fi
-  if curl -fsS "${base_url}ui/" >/dev/null 2>&1; then
+  if curl -fsS --connect-timeout 1 --max-time 2 "${base_url}ui/" >/dev/null 2>&1; then
     return 0
   fi
   return 1
@@ -161,6 +161,7 @@ wait_for_server() {
 
 wait_for_any_server() {
   local preferred="$1"
+  local max_loops="${2:-120}"
   local host="${CONTROLLER_SERVER_HOST:-127.0.0.1}"
   host="$(printf '%s' "$host" | tr -d '[:space:]')"
   if [[ -z "$host" || "$host" == "0.0.0.0" || "$host" == "::" ]]; then
@@ -184,7 +185,7 @@ wait_for_any_server() {
   )
 
   local i=0
-  while ((i < 120)); do
+  while ((i < max_loops)); do
     local u
     for u in "${urls[@]}"; do
       if is_backend_ready "$u"; then
@@ -253,13 +254,15 @@ main() {
 
   local base_url
   base_url="$(detect_backend_url)"
-  if base_url="$(wait_for_any_server "$base_url")"; then
+  log "Checking for existing backend..."
+  if base_url="$(wait_for_any_server "$base_url" 8)"; then
     log "Flasher backend ready: $base_url"
     open_browser "$base_url"
     log "Opened flasher UI (existing backend): $base_url"
     return 0
   fi
 
+  log "No existing backend found quickly; starting temporary backend."
   start_transient_backend
   base_url="$(resolve_browser_url)"
   if ! base_url="$(wait_for_any_server "$base_url")"; then
