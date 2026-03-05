@@ -91,6 +91,15 @@ run_maybe_sudo() {
   run "$@"
 }
 
+effective_owner_user() {
+  local candidate="${SUDO_USER:-${USER:-}}"
+  if [[ -n "$candidate" ]] && id "$candidate" >/dev/null 2>&1; then
+    echo "$candidate"
+    return 0
+  fi
+  id -un 2>/dev/null || echo "arcade"
+}
+
 can_run_privileged_noninteractive() {
   if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
     return 0
@@ -886,6 +895,26 @@ ensure_runtime_writable_paths() {
   fi
 }
 
+normalize_project_owner_after_sudo() {
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    return 0
+  fi
+  local owner
+  owner="$(effective_owner_user)"
+  if [[ -z "$owner" ]]; then
+    return 0
+  fi
+  if [[ "$owner" == "root" ]]; then
+    return 0
+  fi
+  if ! id "$owner" >/dev/null 2>&1; then
+    return 0
+  fi
+  log "Restoring project ownership to user '$owner'..."
+  chown -R "$owner:$owner" "$APP_ROOT" || true
+  chmod -R u+rwX "$APP_ROOT" || true
+}
+
 ensure_serial_port_access() {
   local target_owner
   target_owner="$(resolve_target_owner)"
@@ -983,6 +1012,7 @@ main() {
   ensure_cmd rsync rsync
   sync_controller_files
   ensure_permissions
+  normalize_project_owner_after_sudo
   create_desktop_shortcut
   ensure_runtime_writable_paths
   install_deps
