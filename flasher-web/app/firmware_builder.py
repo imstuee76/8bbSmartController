@@ -295,6 +295,10 @@ def _extract_idf_script_path(cmd: list[str]) -> Path | None:
 
 def _infer_idf_env(cmd: list[str]) -> dict[str, str]:
     env: dict[str, str] = {}
+    for k in ("IDF_PATH", "IDF_TOOLS_PATH", "IDF_PYTHON_ENV_PATH", "ESP_ROM_ELF_DIR"):
+        v = os.environ.get(k, "").strip()
+        if v:
+            env[k] = v
     script = _extract_idf_script_path(cmd)
     tools_root_hint: Path | None = None
     if script:
@@ -307,12 +311,17 @@ def _infer_idf_env(cmd: list[str]) -> dict[str, str]:
                     env["IDF_TOOLS_PATH"] = str(tools_root)
                     tools_root_hint = tools_root
                 break
+        if not env.get("IDF_TOOLS_PATH"):
+            home_tools = Path.home() / ".espressif"
+            if home_tools.exists():
+                env["IDF_TOOLS_PATH"] = str(home_tools)
+                tools_root_hint = home_tools
 
     if cmd:
         py = Path(str(cmd[0]).strip().strip('"'))
         if py.exists() and py.name.lower() in ("python.exe", "python"):
             scripts_dir = py.parent
-            if scripts_dir.name.lower() == "scripts":
+            if scripts_dir.name.lower() in ("scripts", "bin"):
                 py_env = scripts_dir.parent
                 env["IDF_PYTHON_ENV_PATH"] = str(py_env)
 
