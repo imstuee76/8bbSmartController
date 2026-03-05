@@ -547,6 +547,57 @@ show_version() {
   fi
 }
 
+resolve_target_owner() {
+  local candidate="${SUDO_USER:-${USER:-}}"
+  if [[ -z "$candidate" ]]; then
+    candidate="$(id -un 2>/dev/null || true)"
+  fi
+  if [[ -z "$candidate" ]]; then
+    echo "arcade"
+    return 0
+  fi
+  echo "$candidate"
+}
+
+ensure_runtime_writable_paths() {
+  local target_owner
+  target_owner="$(resolve_target_owner)"
+  local -a paths=(
+    "$DATA_DIR"
+    "$DATA_DIR/firmware"
+    "$DATA_DIR/ota"
+    "$DATA_DIR/logs"
+    "$APP_ROOT/esp32-firmware"
+    "$APP_ROOT/flasher-web"
+  )
+
+  for p in "${paths[@]}"; do
+    mkdir -p "$p"
+  done
+
+  local need_fix="false"
+  local p
+  for p in "${paths[@]}"; do
+    if [[ ! -w "$p" ]]; then
+      need_fix="true"
+      break
+    fi
+  done
+
+  if [[ "$need_fix" == "true" ]]; then
+    log "Detected non-writable runtime paths. Attempting ownership/permission repair..."
+    if id "$target_owner" >/dev/null 2>&1 && run_maybe_sudo_noninteractive chown -R "$target_owner:$target_owner" "$DATA_DIR" "$APP_ROOT/esp32-firmware" "$APP_ROOT/flasher-web"; then
+      run_maybe_sudo_noninteractive chmod -R u+rwX "$DATA_DIR" "$APP_ROOT/esp32-firmware" "$APP_ROOT/flasher-web" || true
+      log "Runtime path permissions repaired for user: $target_owner"
+    else
+      log "WARNING: Could not auto-repair permissions without sudo prompt."
+      log "Run once manually:"
+      log "  sudo chown -R $target_owner:$target_owner \"$DATA_DIR\" \"$APP_ROOT/esp32-firmware\" \"$APP_ROOT/flasher-web\""
+      log "  sudo chmod -R u+rwX \"$DATA_DIR\" \"$APP_ROOT/esp32-firmware\" \"$APP_ROOT/flasher-web\""
+    fi
+  fi
+}
+
 main() {
   log "Session: $SESSION_ID"
   log "App root: $APP_ROOT"
@@ -561,6 +612,7 @@ main() {
   sync_controller_files
   ensure_permissions
   create_desktop_shortcut
+  ensure_runtime_writable_paths
   install_deps
   ensure_firewall_rule
   show_version
