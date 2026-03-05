@@ -3,6 +3,7 @@ from __future__ import annotations
 import glob
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -146,12 +147,47 @@ def _find_esptool_cmd() -> tuple[list[str] | None, str]:
         return [direct], f"direct:{direct}"
 
     candidates: list[str] = []
+
+    def add_candidate(value: str) -> None:
+        py = (value or "").strip().strip('"')
+        if not py:
+            return
+        p = Path(py)
+        if p.exists() and p.is_file():
+            candidates.append(str(p))
+
     env_py = os.environ.get("ESP_IDF_PYTHON", "").strip()
-    if env_py:
-        candidates.append(env_py)
+    add_candidate(env_py)
+
+    idf_py_env = os.environ.get("IDF_PYTHON_ENV_PATH", "").strip()
+    if idf_py_env:
+        add_candidate(str(Path(idf_py_env) / "bin" / "python"))
+        add_candidate(str(Path(idf_py_env) / "Scripts" / "python.exe"))
+
+    idf_cmd_raw = os.environ.get("IDF_CMD", "").strip()
+    if idf_cmd_raw:
+        try:
+            parsed = shlex.split(idf_cmd_raw, posix=(os.name != "nt"))
+            if parsed:
+                add_candidate(parsed[0])
+        except Exception:
+            pass
+
     candidates.extend(sorted(glob.glob("C:/Espressif/python_env/*/Scripts/python.exe")))
     candidates.extend(sorted(glob.glob("C:/Espressif/tools/idf-python/*/python.exe")))
+    candidates.extend(sorted(glob.glob(str(Path.home() / ".espressif" / "python_env" / "*" / "bin" / "python"))))
+    candidates.extend(sorted(glob.glob(str(Path.home() / "esp" / "python_env" / "*" / "bin" / "python"))))
     candidates.append(sys.executable)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for py in candidates:
+        key = str(py).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(py)
+    candidates = deduped
 
     tried: list[str] = []
     for py in candidates:
