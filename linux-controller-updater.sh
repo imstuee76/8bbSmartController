@@ -598,6 +598,72 @@ ensure_runtime_writable_paths() {
   fi
 }
 
+ensure_serial_port_access() {
+  local target_owner
+  target_owner="$(resolve_target_owner)"
+  if ! id "$target_owner" >/dev/null 2>&1; then
+    log "WARNING: serial access setup skipped (user not found: $target_owner)"
+    return 0
+  fi
+
+  local current_groups
+  current_groups="$(id -nG "$target_owner" 2>/dev/null || true)"
+  local -a required_groups=("dialout" "tty")
+  local -a missing_groups=()
+  local g
+  for g in "${required_groups[@]}"; do
+    if [[ " $current_groups " != *" $g "* ]]; then
+      missing_groups+=("$g")
+    fi
+  done
+
+  if ((${#missing_groups[@]} > 0)); then
+    local group_csv
+    group_csv="$(IFS=,; echo "${missing_groups[*]}")"
+    if run_maybe_sudo_noninteractive usermod -aG "$group_csv" "$target_owner"; then
+      log "Added '$target_owner' to serial groups: $group_csv"
+      log "NOTE: Logout/login (or reboot) may be required for new group membership."
+    else
+      log "WARNING: Could not update serial groups without sudo prompt."
+      log "Run once manually: sudo usermod -aG $group_csv $target_owner"
+    fi
+  else
+    log "Serial groups already configured for $target_owner: $current_groups"
+  fi
+
+  local rule_path="/etc/udev/rules.d/99-8bb-serial.rules"
+  local tmp_rule="$TMP_ROOT/99-8bb-serial.rules"
+  cat >"$tmp_rule" <<'EOF'
+SUBSYSTEM=="tty", KERNEL=="ttyUSB[0-9]*", MODE="0660", GROUP="dialout"
+SUBSYSTEM=="tty", KERNEL=="ttyACM[0-9]*", MODE="0660", GROUP="dialout"
+EOF
+  if run_maybe_sudo_noninteractive install -m 0644 "$tmp_rule" "$rule_path"; then
+    log "Installed serial udev rule: $rule_path"
+    run_maybe_sudo_noninteractive udevadm control --reload-rules || true
+    run_maybe_sudo_noninteractive udevadm trigger --subsystem-match=tty || true
+  else
+    log "WARNING: Could not install udev serial rule without sudo prompt."
+    log "Run once manually:"
+    log "  sudo install -m 0644 \"$tmp_rule\" \"$rule_path\""
+    log "  sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=tty"
+  fi
+
+  local found_any="false"
+  local dev
+  for dev in /dev/ttyUSB* /dev/ttyACM*; do
+    if [[ -e "$dev" ]]; then
+      found_any="true"
+      run_maybe_sudo_noninteractive chgrp dialout "$dev" || true
+      run_maybe_sudo_noninteractive chmod g+rw "$dev" || true
+    fi
+  done
+  if [[ "$found_any" == "true" ]]; then
+    log "Applied immediate group/write access to connected serial ports."
+  else
+    log "No /dev/ttyUSB* or /dev/ttyACM* devices currently connected."
+  fi
+}
+
 main() {
   log "Session: $SESSION_ID"
   log "App root: $APP_ROOT"
@@ -614,6 +680,7 @@ main() {
   create_desktop_shortcut
   ensure_runtime_writable_paths
   install_deps
+  ensure_serial_port_access
   ensure_firewall_rule
   show_version
   log "Update complete. Preserved: $DATA_DIR and .env files."

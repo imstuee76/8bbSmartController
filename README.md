@@ -139,6 +139,7 @@ Behavior:
 - Updater also creates `8bb Flasher Stop` shortcut.
 - `linux-flasher-web.sh` works like a one-shot launcher: it opens existing backend if running, otherwise starts a temporary backend in that terminal and opens browser. Closing that terminal stops the temporary backend.
 - Updater auto-adds a UFW firewall allow rule for `CONTROLLER_SERVER_PORT` (default `1111`) when UFW is active.
+- Updater also configures Linux serial access (dialout/tty groups + udev rule for `ttyUSB*`/`ttyACM*`) for ESP flashing.
 
 ## Split deployment model
 
