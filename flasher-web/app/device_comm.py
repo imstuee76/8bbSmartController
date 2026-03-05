@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import httpx
@@ -42,13 +43,15 @@ def push_ota_to_device(
     firmware_url: str,
     manifest_url: str,
 ) -> dict[str, Any]:
+    timeout_s = float(os.environ.get("OTA_PUSH_HTTP_TIMEOUT_SECONDS", "180"))
     base = normalize_device_host(host)
     payload = {
         "passcode": passcode,
         "firmware_url": firmware_url,
         "manifest_url": manifest_url,
     }
-    with httpx.Client(timeout=20) as client:
+    timeout = httpx.Timeout(connect=10.0, read=timeout_s, write=20.0, pool=20.0)
+    with httpx.Client(timeout=timeout) as client:
         res = client.post(f"{base}/api/ota/apply", json=payload)
     res.raise_for_status()
     try:

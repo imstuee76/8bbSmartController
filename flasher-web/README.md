@@ -130,3 +130,12 @@ Windows option (recommended):
    - `eim install --non-interactive true --target esp32 --path C:\Espressif`
 3. Verify:
    - `eim list`
+
+## OTA push networking notes
+
+- OTA push sends `firmware_url` and `manifest_url` for the ESP32 to download.
+- If browser access is via `127.0.0.1/localhost`, backend now auto-tries a LAN IP for those URLs.
+- You can force the exact OTA download base URL via env:
+  - `OTA_PUBLIC_BASE_URL=http://192.168.x.y:1111`
+- OTA push HTTP timeout can be tuned with:
+  - `OTA_PUSH_HTTP_TIMEOUT_SECONDS=180`

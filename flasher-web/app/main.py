@@ -5,12 +5,14 @@ import hashlib
 import ipaddress
 import os
 import re
+import socket
 import time
 import traceback
 import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
@@ -233,6 +235,66 @@ def _safe_filename(value: str, label: str = "filename") -> str:
     if name != raw:
         raise ValueError(f"{label} must not include path separators")
     return name
+
+
+def _is_loopback_or_unspecified_host(host: str) -> bool:
+    value = (host or "").strip().lower()
+    if not value:
+        return True
+    if value in ("localhost", "0.0.0.0", "::", "::1"):
+        return True
+    try:
+        ip = ipaddress.ip_address(value)
+        return ip.is_loopback or ip.is_unspecified
+    except ValueError:
+        return False
+
+
+def _guess_lan_ip() -> str:
+    # Best effort: asks OS which source IP would be used for outbound traffic.
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            ip = str(s.getsockname()[0]).strip()
+            if ip and not _is_loopback_or_unspecified_host(ip):
+                return ip
+    except Exception:
+        pass
+    try:
+        _, _, addrs = socket.gethostbyname_ex(socket.gethostname())
+        for ip in addrs:
+            ip = str(ip).strip()
+            if ip and not _is_loopback_or_unspecified_host(ip):
+                return ip
+    except Exception:
+        pass
+    return ""
+
+
+def _resolve_download_base_url(request: Request) -> str:
+    explicit = (
+        os.environ.get("OTA_PUBLIC_BASE_URL", "").strip()
+        or os.environ.get("DOWNLOAD_BASE_URL", "").strip()
+        or os.environ.get("PUBLIC_BASE_URL", "").strip()
+    )
+    if explicit:
+        return explicit.rstrip("/")
+
+    base = str(request.base_url).rstrip("/")
+    parsed = urlparse(base)
+    host = (parsed.hostname or "").strip()
+    if not _is_loopback_or_unspecified_host(host):
+        return base
+
+    lan_ip = _guess_lan_ip()
+    if not lan_ip:
+        return base
+
+    # Keep original scheme/port but replace host with LAN-reachable IP.
+    port = f":{parsed.port}" if parsed.port else ""
+    netloc = f"{lan_ip}{port}"
+    replaced = parsed._replace(netloc=netloc)
+    return urlunparse(replaced).rstrip("/")
 
 
 def _parse_metadata(row: Any) -> dict[str, Any]:
@@ -901,7 +963,7 @@ def push_device_ota(device_id: str, payload: DeviceOTAPushRequest, request: Requ
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    base = str(request.base_url).rstrip("/")
+    base = _resolve_download_base_url(request)
     firmware_url = f"{base}/downloads/firmware/{firmware_filename}"
     manifest_name = Path(signed["manifest_path"]).name
     manifest_url = f"{base}/downloads/ota/{manifest_name}"
@@ -1563,7 +1625,7 @@ def push_profile_to_device(profile_id: str, device_id: str, request: Request) ->
     profile_folder = profile.get("profile_folder", "")
     firmware_name = firmware_path.name
     manifest_name = manifest_path.name
-    base = str(request.base_url).rstrip("/")
+    base = _resolve_download_base_url(request)
     firmware_url = f"{base}/downloads/profiles/{profile_folder}/{firmware_name}"
     manifest_url = f"{base}/downloads/profiles/{profile_folder}/{manifest_name}"
 
@@ -1596,7 +1658,7 @@ def push_profile_to_host(profile_id: str, payload: dict[str, Any], request: Requ
     profile_folder = profile.get("profile_folder", "")
     firmware_name = firmware_path.name
     manifest_name = manifest_path.name
-    base = str(request.base_url).rstrip("/")
+    base = _resolve_download_base_url(request)
     firmware_url = f"{base}/downloads/profiles/{profile_folder}/{firmware_name}"
     manifest_url = f"{base}/downloads/profiles/{profile_folder}/{manifest_name}"
 
