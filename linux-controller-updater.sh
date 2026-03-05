@@ -23,6 +23,7 @@ CONTROLLER_SYNC_PATHS=(
   "linux-controller-build-web.sh"
   "linux-controller-server.sh"
   "linux-controller-server-control.sh"
+  "linux-flasher-web.sh"
   "linux-controller-install-service.sh"
   "linux-controller-updater.sh"
   ".env.example"
@@ -219,6 +220,9 @@ ensure_permissions() {
   if [[ -f "$APP_ROOT/linux-controller-server-control.sh" ]]; then
     chmod +x "$APP_ROOT/linux-controller-server-control.sh"
   fi
+  if [[ -f "$APP_ROOT/linux-flasher-web.sh" ]]; then
+    chmod +x "$APP_ROOT/linux-flasher-web.sh"
+  fi
   if [[ -f "$APP_ROOT/linux-controller-install-service.sh" ]]; then
     chmod +x "$APP_ROOT/linux-controller-install-service.sh"
   fi
@@ -310,6 +314,13 @@ EOF
     "8bb Stop Server" \
     "Stop local 8bb server process/service" \
     "$APP_ROOT/linux-controller-server-control.sh stop" \
+    "true"
+
+  create_one_shortcut \
+    "8bb-flasher-web.desktop" \
+    "8bb Flasher Web" \
+    "Start flasher backend and open browser UI" \
+    "$APP_ROOT/linux-flasher-web.sh" \
     "true"
 }
 

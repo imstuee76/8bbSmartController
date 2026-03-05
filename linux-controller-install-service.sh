@@ -89,6 +89,7 @@ main() {
   run chmod +x \
     "$APP_ROOT/linux-controller-server.sh" \
     "$APP_ROOT/linux-controller-server-control.sh" \
+    "$APP_ROOT/linux-flasher-web.sh" \
     "$APP_ROOT/linux-controller-build-web.sh" \
     "$APP_ROOT/linux-controller-mobile.sh" \
     "$APP_ROOT/linux-controller-run.sh" \

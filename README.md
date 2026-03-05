@@ -135,6 +135,7 @@ Behavior:
 - Writes controller run logs to `/data/logs/controller/sessions/<session>/`.
 - Local backend logs are also written in each controller session folder (`backend-*.log`, `backend-errors-*.log`).
 - Updater creates desktop shortcuts for app launch, updater, and server stop control.
+- Updater also creates `8bb Flasher Web` shortcut (starts backend + opens browser UI).
 
 ## Split deployment model
 
