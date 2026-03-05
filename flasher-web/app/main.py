@@ -88,6 +88,7 @@ _PROFILE_PUSH_JOB_WORKERS = max(1, min(6, int(os.environ.get("PROFILE_PUSH_JOB_W
 _profile_push_executor = ThreadPoolExecutor(max_workers=_PROFILE_PUSH_JOB_WORKERS)
 _profile_push_jobs_lock = threading.Lock()
 _profile_push_jobs: dict[str, dict[str, Any]] = {}
+OTA_PUSH_LOG_DIR = DATA_DIR / "logs" / "ota_push_jobs"
 
 app.add_middleware(
     CORSMiddleware,
@@ -414,6 +415,15 @@ def _profile_push_job_append_output(job_id: str, line: str) -> None:
         output = str(item.get("output", ""))
         chunk = f"[{now}] {message}"
         item["output"] = f"{output}\n{chunk}".strip() if output else chunk
+        log_file = str(item.get("log_file", "")).strip()
+    if log_file:
+        try:
+            log_path = Path(log_file)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as fp:
+                fp.write(chunk + "\n")
+        except Exception:
+            pass
 
 
 def _start_profile_push_job(
@@ -430,6 +440,9 @@ def _start_profile_push_job(
 ) -> dict[str, Any]:
     job_id = str(uuid.uuid4())
     created_at = utc_now()
+    day = time.strftime("%Y%m%d")
+    OTA_PUSH_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_file = OTA_PUSH_LOG_DIR / f"{day}_{job_id[:8]}.log"
     job = {
         "job_id": job_id,
         "status": "queued",
@@ -446,6 +459,7 @@ def _start_profile_push_job(
         "error": "",
         "result": {},
         "precheck": precheck or {},
+        "log_file": str(log_file),
         "output": "",
     }
     with _profile_push_jobs_lock:
@@ -470,7 +484,13 @@ def _start_profile_push_job(
             },
         )
         try:
-            result = push_ota_to_device(host, passcode, firmware_url, manifest_url)
+            result = push_ota_to_device(
+                host,
+                passcode,
+                firmware_url,
+                manifest_url,
+                progress_cb=lambda msg: _profile_push_job_append_output(job_id, msg),
+            )
             _profile_push_job_append_output(job_id, "Device accepted OTA request.")
             _profile_push_job_update(
                 job_id,

@@ -1247,6 +1247,7 @@ async function flashOta() {
       `Mode: ${job.mode || mode}`,
       `Host: ${job.host || directHost || "-"}`,
       `Profile: ${job.profile_name || profileId}`,
+      `Log File: ${job.log_file || "-"}`,
       preSummary,
       `Elapsed: ${elapsedSec}s`,
       "",
