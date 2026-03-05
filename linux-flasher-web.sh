@@ -25,11 +25,7 @@ run() {
   "$@"
 }
 
-is_truthy() {
-  local v
-  v="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
-  [[ "$v" == "1" || "$v" == "true" || "$v" == "yes" || "$v" == "on" ]]
-}
+TRANSIENT_PID=""
 
 load_env_file() {
   local env_file=""
@@ -214,44 +210,68 @@ print_server_debug() {
   log "  ./linux-flasher-web.sh"
 }
 
+start_transient_backend() {
+  local host="${CONTROLLER_SERVER_HOST:-0.0.0.0}"
+  local port="${CONTROLLER_SERVER_PORT:-1111}"
+  local web_dir="${CONTROLLER_WEB_DIR:-$APP_ROOT/controller-app/build/web}"
+  host="$(printf '%s' "$host" | tr -d '[:space:]')"
+  port="$(printf '%s' "$port" | tr -d '[:space:]')"
+  if [[ -z "$host" ]]; then
+    host="0.0.0.0"
+  fi
+  if [[ -z "$port" ]]; then
+    port="1111"
+  fi
+
+  export SMART_CONTROLLER_DATA_DIR="$DATA_DIR"
+  export SMART_CONTROLLER_APP_ROOT="$APP_ROOT"
+  export CONTROLLER_WEB_DIR="$web_dir"
+
+  log "Starting transient backend in this terminal (host=$host port=$port)"
+  run python3 -m uvicorn app.main:app --app-dir "$APP_ROOT/flasher-web" --host "$host" --port "$port" &
+  TRANSIENT_PID="$!"
+  log "Transient backend pid=$TRANSIENT_PID"
+}
+
+stop_transient_backend() {
+  if [[ -n "${TRANSIENT_PID:-}" ]] && kill -0 "$TRANSIENT_PID" >/dev/null 2>&1; then
+    log "Stopping transient backend pid=$TRANSIENT_PID"
+    kill "$TRANSIENT_PID" >/dev/null 2>&1 || true
+    sleep 0.5
+    if kill -0 "$TRANSIENT_PID" >/dev/null 2>&1; then
+      kill -9 "$TRANSIENT_PID" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
 main() {
   log "Session: $SESSION_ID"
   log "App root: $APP_ROOT"
   log "Data dir: $DATA_DIR"
   load_env_file
-
-  if [[ ! -x "$APP_ROOT/linux-controller-server-control.sh" ]]; then
-    log "ERROR: Missing server control script: $APP_ROOT/linux-controller-server-control.sh"
-    exit 1
-  fi
+  trap stop_transient_backend EXIT INT TERM
 
   local base_url
   base_url="$(detect_backend_url)"
   if base_url="$(wait_for_any_server "$base_url")"; then
     log "Flasher backend ready: $base_url"
     open_browser "$base_url"
-    log "Opened flasher UI: $base_url"
+    log "Opened flasher UI (existing backend): $base_url"
     return 0
   fi
 
-  if is_truthy "${FLASHER_AUTO_START_BACKEND:-0}"; then
-    log "Backend not reachable. Auto-start enabled, starting backend now..."
-    run "$APP_ROOT/linux-controller-server-control.sh" start
-    base_url="$(detect_backend_url)"
-    if base_url="$(wait_for_any_server "$base_url")"; then
-      log "Flasher backend ready: $base_url"
-      open_browser "$base_url"
-      log "Opened flasher UI: $base_url"
-      return 0
-    fi
-  else
-    log "Backend is not running (auto-start disabled)."
-    log "Start it with:"
-    log "  ./linux-controller-server-control.sh start"
+  start_transient_backend
+  base_url="$(resolve_browser_url)"
+  if ! base_url="$(wait_for_any_server "$base_url")"; then
+    print_server_debug
+    exit 1
   fi
 
-  print_server_debug
-  exit 1
+  log "Flasher backend ready: $base_url"
+  open_browser "$base_url"
+  log "Opened flasher UI: $base_url"
+  log "Close this terminal (or press Ctrl+C) to stop flasher backend."
+  wait "$TRANSIENT_PID"
 }
 
 main "$@"

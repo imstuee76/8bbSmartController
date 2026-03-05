@@ -331,7 +331,7 @@ EOF
   create_one_shortcut \
     "8bb-flasher-web.desktop" \
     "8bb Flasher Web" \
-    "Open flasher web UI (uses running local backend)" \
+    "Open flasher web UI (starts temporary backend if needed)" \
     "$APP_ROOT/linux-flasher-web.sh" \
     "true"
 }
