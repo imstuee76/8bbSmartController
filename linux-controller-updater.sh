@@ -578,6 +578,11 @@ set_env_value() {
 }
 
 detect_idf_script_path() {
+  local preferred_root="${IDF_INSTALL_DIR:-$HOME/esp/esp-idf-v5.5.3}"
+  if [[ -f "$preferred_root/tools/idf.py" ]]; then
+    printf '%s\n' "$preferred_root/tools/idf.py"
+    return 0
+  fi
   if command -v idf.py >/dev/null 2>&1; then
     local cmd_path
     cmd_path="$(command -v idf.py)"
@@ -587,6 +592,7 @@ detect_idf_script_path() {
     fi
   fi
   local -a candidates=(
+    "$HOME/esp/esp-idf-v5.5.3/tools/idf.py"
     "$HOME/esp/esp-idf/tools/idf.py"
     "$HOME/esp-idf/tools/idf.py"
     "/opt/esp-idf/tools/idf.py"
@@ -674,7 +680,7 @@ install_esp_idf_if_missing() {
   fi
 
   local idf_ref="${IDF_INSTALL_REF:-v5.5.3}"
-  local idf_root="${IDF_INSTALL_DIR:-$HOME/esp/esp-idf}"
+  local idf_root="${IDF_INSTALL_DIR:-$HOME/esp/esp-idf-v5.5.3}"
   local idf_parent
   idf_parent="$(dirname "$idf_root")"
   mkdir -p "$idf_parent"
@@ -693,11 +699,13 @@ install_esp_idf_if_missing() {
     if [[ "$current_ref" != "$idf_ref" ]]; then
       log "Switching ESP-IDF checkout to $idf_ref (current: ${current_ref:-unknown})"
       run git -C "$idf_root" fetch --tags --prune
-      if ! run git -C "$idf_root" checkout "$idf_ref"; then
+      if ! run git -C "$idf_root" checkout -f "$idf_ref"; then
         run git -C "$idf_root" fetch origin "$idf_ref"
-        run git -C "$idf_root" checkout "$idf_ref"
+        run git -C "$idf_root" checkout -f "$idf_ref"
       fi
     fi
+    run git -C "$idf_root" reset --hard
+    run git -C "$idf_root" clean -fd
     run git -C "$idf_root" submodule update --init --recursive
   fi
 
@@ -717,7 +725,12 @@ ensure_esp_idf_ready() {
   install_esp_idf_if_missing
 
   local script_path
-  script_path="$(detect_idf_script_path || true)"
+  local preferred_root="${IDF_INSTALL_DIR:-$HOME/esp/esp-idf-v5.5.3}"
+  if [[ -f "$preferred_root/tools/idf.py" ]]; then
+    script_path="$preferred_root/tools/idf.py"
+  else
+    script_path="$(detect_idf_script_path || true)"
+  fi
   if [[ -z "$script_path" ]]; then
     log "WARNING: ESP-IDF not found on this Linux machine."
     log "Install once with:"

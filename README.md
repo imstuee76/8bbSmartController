@@ -141,7 +141,7 @@ Behavior:
 - Updater auto-adds a UFW firewall allow rule for `CONTROLLER_SERVER_PORT` (default `1111`) when UFW is active.
 - Updater also configures Linux serial access (dialout/tty groups + udev rule for `ttyUSB*`/`ttyACM*`) for ESP flashing.
 - Updater auto-installs/configures ESP-IDF on Linux when missing (`IDF_AUTO_INSTALL=1` default) and writes `IDF_CMD` to `.env`.
-- Updater pins ESP-IDF install to `IDF_INSTALL_REF` (default `v5.5.3`) for firmware compatibility.
+- Updater pins ESP-IDF install to `IDF_INSTALL_REF` (default `v5.5.3`) in `IDF_INSTALL_DIR` (default `~/esp/esp-idf-v5.5.3`) for firmware compatibility.
 
 ## Split deployment model
 
