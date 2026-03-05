@@ -387,6 +387,32 @@ def _parse_env_cmd(raw: str) -> list[str]:
     return shlex.split(text, posix=False)
 
 
+def _token_is_probably_windows_path(token: str) -> bool:
+    t = str(token or "").strip().strip('"')
+    if not t:
+        return False
+    if re.match(r"^[A-Za-z]:\\", t):
+        return True
+    if "\\" in t and "/" not in t:
+        return True
+    if t.lower().endswith(".exe"):
+        return True
+    return False
+
+
+def _is_cmd_runnable(cmd: list[str]) -> bool:
+    if not cmd:
+        return False
+    first = str(cmd[0]).strip().strip('"')
+    if not first:
+        return False
+    if Path(first).exists():
+        return True
+    if shutil.which(first):
+        return True
+    return False
+
+
 def _pick_idf_python() -> str:
     env_python = os.environ.get("ESP_IDF_PYTHON", "").strip()
     if env_python and Path(env_python).exists():
@@ -434,7 +460,13 @@ def _find_eim_cmd() -> list[str]:
 def _find_idf_cmd() -> list[str]:
     env_cmd = _parse_env_cmd(os.environ.get("IDF_CMD", ""))
     if env_cmd:
-        return env_cmd
+        # Avoid stale Windows-only command strings when backend is running on Linux.
+        if os.name != "nt" and any(_token_is_probably_windows_path(tok) for tok in env_cmd):
+            env_cmd = []
+        elif _is_cmd_runnable(env_cmd):
+            return env_cmd
+        else:
+            env_cmd = []
 
     for tool_name in ("idf.py", "idf.py.exe", "idf.bat", "idf"):
         tool = shutil.which(tool_name)
