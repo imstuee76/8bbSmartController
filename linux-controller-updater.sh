@@ -547,6 +547,117 @@ show_version() {
   fi
 }
 
+resolve_env_file_for_updates() {
+  if [[ -f "$DATA_DIR/.env" ]]; then
+    echo "$DATA_DIR/.env"
+    return 0
+  fi
+  if [[ -f "$APP_ROOT/.env" ]]; then
+    echo "$APP_ROOT/.env"
+    return 0
+  fi
+  echo "$APP_ROOT/.env"
+}
+
+set_env_value() {
+  local env_file="$1"
+  local key="$2"
+  local value="$3"
+  mkdir -p "$(dirname "$env_file")"
+  touch "$env_file"
+  local escaped
+  escaped="${value//\\/\\\\}"
+  escaped="${escaped//\"/\\\"}"
+  local line="${key}=\"${escaped}\""
+  if grep -Eq "^[[:space:]]*${key}=" "$env_file"; then
+    sed -i "s|^[[:space:]]*${key}=.*$|${line}|g" "$env_file"
+  else
+    printf '%s\n' "$line" >>"$env_file"
+  fi
+}
+
+detect_idf_script_path() {
+  if command -v idf.py >/dev/null 2>&1; then
+    local cmd_path
+    cmd_path="$(command -v idf.py)"
+    if [[ -n "$cmd_path" ]]; then
+      printf '%s\n' "$cmd_path"
+      return 0
+    fi
+  fi
+  local -a candidates=(
+    "$HOME/esp/esp-idf/tools/idf.py"
+    "$HOME/esp-idf/tools/idf.py"
+    "/opt/esp-idf/tools/idf.py"
+  )
+  local c
+  for c in "${candidates[@]}"; do
+    if [[ -f "$c" ]]; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done
+  local found
+  found="$(find "$HOME" -type f -path "*/esp-idf/tools/idf.py" 2>/dev/null | head -n 1 || true)"
+  if [[ -n "$found" ]]; then
+    printf '%s\n' "$found"
+    return 0
+  fi
+  return 1
+}
+
+detect_idf_python_path() {
+  local found
+  found="$(find "$HOME/.espressif/python_env" -type f -path "*/bin/python" 2>/dev/null | head -n 1 || true)"
+  if [[ -n "$found" ]]; then
+    printf '%s\n' "$found"
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    command -v python3
+    return 0
+  fi
+  return 1
+}
+
+ensure_esp_idf_ready() {
+  local script_path
+  script_path="$(detect_idf_script_path || true)"
+  if [[ -z "$script_path" ]]; then
+    log "WARNING: ESP-IDF not found on this Linux machine."
+    log "Install once with:"
+    log "  mkdir -p \$HOME/esp && cd \$HOME/esp"
+    log "  git clone --recursive https://github.com/espressif/esp-idf.git"
+    log "  cd esp-idf && ./install.sh esp32"
+    log "Then rerun updater."
+    return 0
+  fi
+
+  local py_path
+  py_path="$(detect_idf_python_path || true)"
+  if [[ -z "$py_path" ]]; then
+    py_path="python3"
+  fi
+  local idf_cmd="$py_path $script_path"
+  export IDF_CMD="$idf_cmd"
+  export IDF_PY_PATH="$script_path"
+  if [[ -d "$HOME/.espressif" ]]; then
+    export IDF_TOOLS_PATH="$HOME/.espressif"
+  fi
+
+  local env_file
+  env_file="$(resolve_env_file_for_updates)"
+  set_env_value "$env_file" "IDF_CMD" "$idf_cmd"
+  set_env_value "$env_file" "IDF_PY_PATH" "$script_path"
+  if [[ -d "$HOME/.espressif" ]]; then
+    set_env_value "$env_file" "IDF_TOOLS_PATH" "$HOME/.espressif"
+  fi
+  log "ESP-IDF detected and configured:"
+  log " - IDF_PY_PATH=$script_path"
+  log " - IDF_CMD=$idf_cmd"
+  log " - Env file updated: $env_file"
+}
+
 resolve_target_owner() {
   local candidate="${SUDO_USER:-${USER:-}}"
   if [[ -z "$candidate" ]]; then
@@ -679,6 +790,7 @@ main() {
   ensure_permissions
   create_desktop_shortcut
   ensure_runtime_writable_paths
+  ensure_esp_idf_ready
   install_deps
   ensure_serial_port_access
   ensure_firewall_rule
