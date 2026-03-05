@@ -142,7 +142,7 @@ open_browser() {
 wait_for_server() {
   local url="$1"
   local i=0
-  while ((i < 50)); do
+  while ((i < 120)); do
     if is_backend_ready "$url"; then
       log "Flasher backend ready: $url"
       return 0
@@ -154,7 +154,58 @@ wait_for_server() {
     sleep 0.25
     i=$((i + 1))
   done
-  log "Flasher readiness check timed out; opening browser anyway."
+  return 1
+}
+
+wait_for_any_server() {
+  local preferred="$1"
+  local host="${CONTROLLER_SERVER_HOST:-127.0.0.1}"
+  host="$(printf '%s' "$host" | tr -d '[:space:]')"
+  if [[ -z "$host" || "$host" == "0.0.0.0" || "$host" == "::" ]]; then
+    host="127.0.0.1"
+  fi
+  local port="${CONTROLLER_SERVER_PORT:-1111}"
+  port="$(printf '%s' "$port" | tr -d '[:space:]')"
+  if [[ -z "$port" ]]; then
+    port="1111"
+  fi
+
+  local -a urls=(
+    "$preferred"
+    "http://${host}:${port}/"
+    "http://127.0.0.1:${port}/"
+    "http://localhost:${port}/"
+    "http://${host}:1111/"
+    "http://${host}:8088/"
+    "http://127.0.0.1:1111/"
+    "http://127.0.0.1:8088/"
+  )
+
+  local i=0
+  while ((i < 120)); do
+    local u
+    for u in "${urls[@]}"; do
+      if is_backend_ready "$u"; then
+        printf '%s\n' "$u"
+        return 0
+      fi
+    done
+    sleep 0.25
+    i=$((i + 1))
+  done
+  return 1
+}
+
+print_server_debug() {
+  log "Backend did not become ready."
+  if [[ -x "$APP_ROOT/linux-controller-server-control.sh" ]]; then
+    "$APP_ROOT/linux-controller-server-control.sh" status || true
+    "$APP_ROOT/linux-controller-server-control.sh" logs 80 || true
+  fi
+  log "Check dependencies were installed by updater:"
+  log "  ./linux-controller-updater.sh"
+  log "Then retry:"
+  log "  ./linux-flasher-web.sh"
 }
 
 main() {
@@ -172,7 +223,11 @@ main() {
 
   local base_url
   base_url="$(detect_backend_url)"
-  wait_for_server "$base_url"
+  if ! base_url="$(wait_for_any_server "$base_url")"; then
+    print_server_debug
+    exit 1
+  fi
+  log "Flasher backend ready: $base_url"
   open_browser "$base_url"
   log "Opened flasher UI: $base_url"
 }
