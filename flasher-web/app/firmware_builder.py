@@ -365,6 +365,29 @@ def _is_missing_constraints_error(output: str) -> bool:
     return "espidf.constraints" in text and "doesn't exist" in text
 
 
+def _detect_constraints_file_for_idf_cmd(idf_cmd: list[str], log_file: Path) -> Path | None:
+    if not idf_cmd:
+        return None
+    probe_cmd = [*idf_cmd, "--version"]
+    _append_log(log_file, f"$ {' '.join(probe_cmd)}")
+    proc = subprocess.run(
+        probe_cmd,
+        cwd=str(ESP_FW_DIR),
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+        check=False,
+    )
+    raw = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    _append_log(log_file, f"idf_version_probe_return_code={proc.returncode}")
+    _append_log(log_file, f"idf_version_probe_output={(raw[-400:] if raw else '<empty>')}")
+    m = re.search(r"v(\d+)\.(\d+)(?:\.\d+)?", raw, flags=re.IGNORECASE)
+    if not m:
+        return None
+    mm = f"{m.group(1)}.{m.group(2)}"
+    return Path.home() / ".espressif" / f"espidf.constraints.v{mm}.txt"
+
+
 def _run_idf_install_repair(idf_cmd: list[str], log_file: Path) -> bool:
     script = _extract_idf_script_path(idf_cmd)
     if not script:
@@ -586,6 +609,15 @@ def build_firmware(
         idf_env = _infer_idf_env(idf_cmd)
         if idf_env:
             _append_log(log_file, "idf_env_overrides=" + ", ".join(f"{k}={v}" for k, v in idf_env.items()))
+
+        constraints_file = _detect_constraints_file_for_idf_cmd(idf_cmd, log_file)
+        if constraints_file and not constraints_file.exists():
+            _append_log(log_file, f"repair_install_detected=missing_constraints_file path={constraints_file}")
+            repaired_pre = _run_idf_install_repair(idf_cmd, log_file)
+            if repaired_pre:
+                _append_log(log_file, "repair_install=success (pre-build)")
+            else:
+                _append_log(log_file, "repair_install=failed (pre-build)")
 
         build = _run_idf([*idf_cmd, "build"], log_file, env_extra=idf_env)
         build_raw = ((build.stdout or "") + "\n" + (build.stderr or "")).strip()
