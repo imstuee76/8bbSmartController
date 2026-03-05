@@ -10,7 +10,7 @@ import threading
 import time
 import traceback
 import uuid
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, TimeoutError as FuturesTimeoutError, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -472,7 +472,7 @@ def _start_profile_push_job(
         _profile_push_job_append_output(job_id, f"Starting profile OTA push ({mode})")
         _profile_push_job_append_output(job_id, f"host={host}")
         _profile_push_job_append_output(job_id, f"profile={profile_name} ({profile_id})")
-        _profile_push_job_append_output(job_id, "Sending /api/ota/apply to device...")
+        _profile_push_job_append_output(job_id, "Preflight: checking manifest/firmware URLs from server...")
         append_event(
             "firmware_profile_push_started",
             {
@@ -484,13 +484,34 @@ def _start_profile_push_job(
             },
         )
         try:
-            result = push_ota_to_device(
-                host,
-                passcode,
-                firmware_url,
-                manifest_url,
-                progress_cb=lambda msg: _profile_push_job_append_output(job_id, msg),
-            )
+            preflight = _preflight_download_targets(manifest_url, firmware_url)
+            _profile_push_job_append_output(job_id, f"Preflight manifest: {json.dumps(preflight.get('manifest', {}))}")
+            _profile_push_job_append_output(job_id, f"Preflight firmware: {json.dumps(preflight.get('firmware', {}))}")
+            if not preflight.get("ok"):
+                raise RuntimeError(f"OTA preflight failed: {preflight.get('error', 'download url check failed')}")
+
+            _profile_push_job_append_output(job_id, "Sending /api/ota/apply to device...")
+            wait_step_s = 3
+            waited_s = 0
+            with ThreadPoolExecutor(max_workers=1) as push_exec:
+                future = push_exec.submit(
+                    push_ota_to_device,
+                    host,
+                    passcode,
+                    firmware_url,
+                    manifest_url,
+                    lambda msg: _profile_push_job_append_output(job_id, msg),
+                )
+                while True:
+                    try:
+                        result = future.result(timeout=wait_step_s)
+                        break
+                    except FuturesTimeoutError:
+                        waited_s += wait_step_s
+                        _profile_push_job_append_output(
+                            job_id,
+                            f"Waiting for device OTA response... {waited_s}s (device may be downloading/writing image).",
+                        )
             _profile_push_job_append_output(job_id, "Device accepted OTA request.")
             _profile_push_job_update(
                 job_id,
@@ -542,6 +563,37 @@ def _run_ota_precheck(host: str, passcode: str) -> dict[str, Any]:
         "pair": pair,
         "checked_at": utc_now(),
     }
+
+
+def _preflight_download_targets(manifest_url: str, firmware_url: str) -> dict[str, Any]:
+    timeout = httpx.Timeout(connect=4.0, read=10.0, write=10.0, pool=10.0)
+    out: dict[str, Any] = {"ok": False, "manifest": {}, "firmware": {}}
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        manifest_res = client.get(manifest_url)
+        out["manifest"] = {
+            "ok": manifest_res.status_code < 400,
+            "status_code": manifest_res.status_code,
+            "bytes": len(manifest_res.content or b""),
+            "content_type": manifest_res.headers.get("content-type", ""),
+        }
+        if manifest_res.status_code >= 400:
+            out["error"] = f"Manifest URL returned HTTP {manifest_res.status_code}"
+            return out
+
+        firmware_res = client.get(firmware_url, headers={"Range": "bytes=0-0"})
+        out["firmware"] = {
+            "ok": firmware_res.status_code < 400,
+            "status_code": firmware_res.status_code,
+            "content_range": firmware_res.headers.get("content-range", ""),
+            "content_length": firmware_res.headers.get("content-length", ""),
+            "content_type": firmware_res.headers.get("content-type", ""),
+        }
+        if firmware_res.status_code >= 400:
+            out["error"] = f"Firmware URL returned HTTP {firmware_res.status_code}"
+            return out
+
+    out["ok"] = bool(out["manifest"].get("ok")) and bool(out["firmware"].get("ok"))
+    return out
 
 
 def _is_single_ipv4_host_hint(value: str) -> bool:
