@@ -17,6 +17,7 @@ FLUTTER_BIN=""
 CONTROLLER_SYNC_PATHS=(
   "controller-app"
   "flasher-web"
+  "esp32-firmware"
   "shared"
   "linux-controller-run.sh"
   "linux-controller-mobile.sh"
