@@ -871,7 +871,7 @@ async function loadDevices() {
   if (!devices.length) {
     const opt = document.createElement("option");
     opt.value = "";
-    opt.textContent = "No devices registered";
+    opt.textContent = "No devices registered (use Direct Host below)";
     select.appendChild(opt);
   }
   if (current) {
@@ -998,19 +998,43 @@ async function buildProfilePackage() {
 async function flashOta() {
   const profileId = getEl("profileSelect").value.trim();
   const deviceId = getEl("otaDeviceSelect").value.trim();
+  const directHost = getEl("otaDirectHost").value.trim();
+  const directPasscode = getEl("otaDirectPasscode").value;
   if (!profileId) {
     throw new Error("Select a saved profile first.");
   }
-  if (!deviceId) {
-    throw new Error("Select a target device first.");
+  if (!deviceId && !directHost) {
+    throw new Error("Select a target device, or enter Direct Host + Passcode.");
   }
 
-  print(actionOut, "Flash OTA", "Pushing profile OTA to device...");
-  const result = await api(`/api/firmware/profiles/${encodeURIComponent(profileId)}/push/${encodeURIComponent(deviceId)}`, {
+  if (deviceId) {
+    print(actionOut, "Flash OTA", "Pushing profile OTA to registered device...");
+    const result = await api(`/api/firmware/profiles/${encodeURIComponent(profileId)}/push/${encodeURIComponent(deviceId)}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    print(actionOut, "Flash OTA", {
+      mode: "registered_device",
+      ...result,
+    });
+    return;
+  }
+
+  if (!directPasscode) {
+    throw new Error("Direct Device Passcode is required for direct-host OTA.");
+  }
+  print(actionOut, "Flash OTA", `Pushing profile OTA directly to ${directHost}...`);
+  const result = await api(`/api/firmware/profiles/${encodeURIComponent(profileId)}/push-direct`, {
     method: "POST",
-    body: JSON.stringify({}),
+    body: JSON.stringify({
+      host: directHost,
+      passcode: directPasscode,
+    }),
   });
-  print(actionOut, "Flash OTA", result);
+  print(actionOut, "Flash OTA", {
+    mode: "direct_host",
+    ...result,
+  });
 }
 
 async function pollSerialMonitor() {

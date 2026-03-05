@@ -27,7 +27,7 @@ The flasher UI is profile-first and split into clear steps:
    - Flash to serial port (live flash output)
    - Live serial monitor (start/stop, selected COM port + baud)
    - Build OTA file (creates a profile package folder)
-   - Flash OTA (push selected saved profile to selected registered device)
+   - Flash OTA (push selected saved profile to selected registered device, or direct host/passcode mode)
 
 Draft form values are auto-saved in browser storage so incomplete setup work is not lost if the page is refreshed.
 
@@ -44,13 +44,16 @@ Or manual (no venv):
 
 ```bash
 python -m pip install --user --upgrade -r requirements.txt
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8088 --reload
+python -m uvicorn app.main:app --host 0.0.0.0 --port 1111 --reload
 ```
 
 Open:
 
-- Web UI: `http://localhost:8088/`
-- API docs: `http://localhost:8088/docs`
+- Web UI: `http://localhost:1111/`
+- API docs: `http://localhost:1111/docs`
+- Controller mobile web app (when built): `http://localhost:1111/controller/`
+
+`/controller/` is served from `controller-app/build/web` when that build folder exists.
 
 ## Data
 
@@ -76,6 +79,11 @@ All runtime state is stored under `../data` and not auto-deleted:
 - `POST /api/integrations/moes/discover-local`
 - `POST /api/integrations/moes/discover-lights` (local hub query via `hub_ip` + `hub_local_key` + `hub_version`)
 
+Tuya scan notes:
+
+- Local scan can accept Tuya cloud credentials (`cloud_region`, `client_id`, `client_secret`, `api_device_id`) to enrich LAN results with `local_key` and cloud metadata.
+- Cloud scan also accepts the same credential payload and returns normalized fields (`id`, `name`, `ip`, `local_key`, `category`, `product_name`, `online`).
+
 ## Firmware profile endpoints
 
 - `POST /api/firmware/build` compile firmware from `esp32-firmware` and save `.bin` files under `data/firmware`
@@ -83,6 +91,7 @@ All runtime state is stored under `../data` and not auto-deleted:
 - `GET /api/firmware/profiles` list saved profiles
 - `GET /api/firmware/profiles/{profile_id}` recall full profile details
 - `POST /api/firmware/profiles/{profile_id}/push/{device_id}` push selected saved profile OTA to a device
+- `POST /api/firmware/profiles/{profile_id}/push-direct` push selected saved profile OTA to `host + passcode` without pre-registering device
 
 ## Serial monitor endpoints
 

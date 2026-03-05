@@ -233,7 +233,16 @@
               <label>Target Device
                 <select id="otaDeviceSelect"></select>
               </label>
+              <label>Direct Host / IP (optional)
+                <input id="otaDirectHost" placeholder="192.168.50.165" />
+              </label>
+              <label>Direct Device Passcode (optional)
+                <input id="otaDirectPasscode" type="password" placeholder="device passcode" />
+              </label>
             </div>
+            <p class="small-note">
+              If no registered devices are listed, enter Direct Host + Passcode and click Flash OTA.
+            </p>
             <button id="flashOtaBtn">Flash OTA</button>
           </div>
         </section>

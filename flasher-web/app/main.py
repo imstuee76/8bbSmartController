@@ -1575,6 +1575,39 @@ def push_profile_to_device(profile_id: str, device_id: str, request: Request) ->
     return {"ok": True, "profile_id": profile_id, "device_id": device_id, "device_response": result}
 
 
+@app.post("/api/firmware/profiles/{profile_id}/push-direct", dependencies=[Depends(require_auth_if_configured)])
+def push_profile_to_host(profile_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    profile = get_firmware_profile(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    host = str(payload.get("host", "")).strip() if isinstance(payload, dict) else ""
+    passcode = str(payload.get("passcode", "")).strip() if isinstance(payload, dict) else ""
+    if not host:
+        raise HTTPException(status_code=400, detail="host is required")
+    if not passcode:
+        raise HTTPException(status_code=400, detail="passcode is required")
+
+    try:
+        firmware_path, manifest_path = get_profile_file_paths(profile)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    profile_folder = profile.get("profile_folder", "")
+    firmware_name = firmware_path.name
+    manifest_name = manifest_path.name
+    base = str(request.base_url).rstrip("/")
+    firmware_url = f"{base}/downloads/profiles/{profile_folder}/{firmware_name}"
+    manifest_url = f"{base}/downloads/profiles/{profile_folder}/{manifest_name}"
+
+    try:
+        result = push_ota_to_device(host, passcode, firmware_url, manifest_url)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Profile OTA push failed: {exc}") from exc
+    append_event("firmware_profile_pushed_direct", {"profile_id": profile_id, "host": host})
+    return {"ok": True, "profile_id": profile_id, "host": host, "device_response": result}
+
+
 @app.post("/api/firmware/build", dependencies=[Depends(require_auth_if_configured)])
 def post_build_firmware(payload: dict[str, Any]) -> dict[str, Any]:
     profile_name = str(payload.get("profile_name", "profile")).strip() if isinstance(payload, dict) else "profile"
