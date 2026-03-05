@@ -360,6 +360,39 @@ def _run_idf(cmd: list[str], log_file: Path, env_extra: dict[str, str] | None = 
     )
 
 
+def _is_missing_constraints_error(output: str) -> bool:
+    text = (output or "").lower()
+    return "espidf.constraints" in text and "doesn't exist" in text
+
+
+def _run_idf_install_repair(idf_cmd: list[str], log_file: Path) -> bool:
+    script = _extract_idf_script_path(idf_cmd)
+    if not script:
+        _append_log(log_file, "repair_install=skipped reason=idf_script_not_resolved")
+        return False
+    idf_root = script.parent.parent
+    install_script = idf_root / "install.sh"
+    if not install_script.exists():
+        _append_log(log_file, f"repair_install=skipped reason=missing_install_script path={install_script}")
+        return False
+
+    cmd = [str(install_script), "esp32"]
+    _append_log(log_file, f"$ {' '.join(cmd)}")
+    proc = subprocess.run(
+        cmd,
+        cwd=str(idf_root),
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+        check=False,
+    )
+    raw = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    _append_log(log_file, "--- idf install repair stdout/stderr ---")
+    _append_log(log_file, raw or "<empty>")
+    _append_log(log_file, f"repair_install_return_code={proc.returncode}")
+    return proc.returncode == 0
+
+
 def _candidate_idf_scripts() -> list[Path]:
     candidates: list[Path] = []
     idf_path = os.environ.get("IDF_PATH", "").strip()
@@ -556,6 +589,16 @@ def build_firmware(
 
         build = _run_idf([*idf_cmd, "build"], log_file, env_extra=idf_env)
         build_raw = ((build.stdout or "") + "\n" + (build.stderr or "")).strip()
+        repaired = False
+        if build.returncode != 0 and _is_missing_constraints_error(build_raw):
+            _append_log(log_file, "repair_install_detected=missing_constraints")
+            repaired = _run_idf_install_repair(idf_cmd, log_file)
+            if repaired:
+                _append_log(log_file, "repair_install=success retrying_build")
+                build = _run_idf([*idf_cmd, "build"], log_file, env_extra=idf_env)
+                build_raw = ((build.stdout or "") + "\n" + (build.stderr or "")).strip()
+            else:
+                _append_log(log_file, "repair_install=failed")
         build_log = _summarize_command_output(
             step="build",
             return_code=build.returncode,
