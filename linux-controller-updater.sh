@@ -19,23 +19,25 @@ CONTROLLER_SYNC_PATHS=(
   "flasher-web"
   "esp32-firmware"
   "shared"
+  "run.py"
+  "run.cmd"
   "linux-controller-run.sh"
-  "linux-controller-mobile.sh"
-  "linux-controller-build-web.sh"
-  "linux-controller-server.sh"
   "linux-controller-server-control.sh"
   "linux-flasher-web.sh"
   "linux-controller-install-service.sh"
   "linux-controller-updater.sh"
+  "windows-controller-updater.ps1"
+  "windows-controller-updater.cmd"
   ".env.example"
   "README.md"
 )
 
 mkdir -p "$SESSION_DIR"
 mkdir -p "$DATA_DIR/logs/controller"
+: >"$ERROR_LOG"
 
 exec > >(tee -a "$ACTIVITY_LOG")
-exec 2> >(tee -a "$ERROR_LOG" >&2)
+exec 2> >(tee -a "$ACTIVITY_LOG" >&2)
 
 cleanup() {
   rm -rf "$TMP_ROOT" >/dev/null 2>&1 || true
@@ -44,6 +46,11 @@ trap cleanup EXIT
 
 log() {
   printf '[8bb-updater] %s\n' "$*"
+}
+
+log_error() {
+  local msg="$*"
+  printf '[8bb-updater] ERROR: %s\n' "$msg" | tee -a "$ERROR_LOG" >&2
 }
 
 sanitize_log_text() {
@@ -60,6 +67,16 @@ run() {
   log "\$ $safe_cmd"
   "$@"
 }
+
+on_err() {
+  local rc="$1"
+  local line="$2"
+  local cmd="$3"
+  local safe_cmd
+  safe_cmd="$(sanitize_log_text "$cmd")"
+  log_error "line=${line} exit=${rc} cmd=${safe_cmd}"
+}
+trap 'on_err "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
 run_maybe_sudo() {
   if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
@@ -186,7 +203,7 @@ download_archive() {
   local branch="$2"
   local out="$3"
   local url="https://api.github.com/repos/${repo_slug}/tarball/${branch}"
-  local -a curl_cmd=(curl -fL --retry 3 --retry-delay 2 -o "$out")
+  local -a curl_cmd=(curl -fsSL --retry 3 --retry-delay 2 -o "$out")
   if [[ -n "${GITHUB_TOKEN:-}" ]]; then
     curl_cmd+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
   fi
@@ -277,10 +294,9 @@ create_desktop_shortcut() {
   fi
 
   local launcher_dir="$HOME/.local/share/applications"
-  local -a target_dirs=("$desktop_dir" "$HOME/Desktop" "$HOME/desktop")
+  local target_dir="$desktop_dir"
 
   mkdir -p "$launcher_dir"
-  local seen_dirs="|"
 
   create_one_shortcut() {
     local file_name="$1"
@@ -306,22 +322,16 @@ EOF
     chmod +x "$launcher_file"
 
     local copied_any="false"
-    for dir in "${target_dirs[@]}"; do
-      if [[ -z "$dir" ]]; then
-        continue
-      fi
-      if [[ "$seen_dirs" != *"|$dir|"* ]]; then
-        seen_dirs="${seen_dirs}${dir}|"
-        mkdir -p "$dir"
-      fi
-      local desktop_launcher="$dir/$file_name"
+    if [[ -n "$target_dir" ]]; then
+      mkdir -p "$target_dir"
+      local desktop_launcher="$target_dir/$file_name"
       install -m 0755 "$launcher_file" "$desktop_launcher"
       if command -v gio >/dev/null 2>&1; then
         gio set "$desktop_launcher" metadata::trusted true >/dev/null 2>&1 || true
       fi
       copied_any="true"
       log " - Desktop: $desktop_launcher"
-    done
+    fi
 
     log "Desktop shortcut updated:"
     log " - App menu: $launcher_file"
@@ -965,6 +975,8 @@ main() {
   ensure_serial_port_access
   ensure_firewall_rule
   show_version
+  log "Updater errors (if any): $ERROR_LOG"
+  log "App runtime logs: $DATA_DIR/logs"
   log "Update complete. Preserved: $DATA_DIR and .env files."
 }
 
