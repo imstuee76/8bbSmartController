@@ -19,6 +19,11 @@ CONTROLLER_SYNC_PATHS=(
   "flasher-web"
   "shared"
   "linux-controller-run.sh"
+  "linux-controller-mobile.sh"
+  "linux-controller-build-web.sh"
+  "linux-controller-server.sh"
+  "linux-controller-server-control.sh"
+  "linux-controller-install-service.sh"
   "linux-controller-updater.sh"
   ".env.example"
   "README.md"
@@ -201,6 +206,21 @@ ensure_permissions() {
   fi
   if [[ -f "$APP_ROOT/linux-controller-run.sh" ]]; then
     chmod +x "$APP_ROOT/linux-controller-run.sh"
+  fi
+  if [[ -f "$APP_ROOT/linux-controller-mobile.sh" ]]; then
+    chmod +x "$APP_ROOT/linux-controller-mobile.sh"
+  fi
+  if [[ -f "$APP_ROOT/linux-controller-build-web.sh" ]]; then
+    chmod +x "$APP_ROOT/linux-controller-build-web.sh"
+  fi
+  if [[ -f "$APP_ROOT/linux-controller-server.sh" ]]; then
+    chmod +x "$APP_ROOT/linux-controller-server.sh"
+  fi
+  if [[ -f "$APP_ROOT/linux-controller-server-control.sh" ]]; then
+    chmod +x "$APP_ROOT/linux-controller-server-control.sh"
+  fi
+  if [[ -f "$APP_ROOT/linux-controller-install-service.sh" ]]; then
+    chmod +x "$APP_ROOT/linux-controller-install-service.sh"
   fi
   if [[ -d "$APP_ROOT/scripts" ]]; then
     find "$APP_ROOT/scripts" -type f -name "*.py" -exec chmod +x {} \; || true

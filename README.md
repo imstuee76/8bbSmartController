@@ -33,6 +33,8 @@ Run flasher backend only (Windows machine):
 run.cmd
 # or
 python run.py --mode backend
+# mobile/LAN preset (host 0.0.0.0, port 1111)
+run-mobile.cmd
 ```
 
 Useful options:
@@ -124,6 +126,7 @@ Behavior:
 - Loads `.env` from `/data/.env` first.
 - Does not require `.git`; downloads latest GitHub archive and syncs controller runtime files.
 - Overwrites controller app files each update, but preserves `.env` and `/data` storage.
+- Syncs both controller and local server runtime (`flasher-web`) files.
 - Installs missing controller deps, local backend Python deps, and local Flutter SDK bootstrap to `.tools/flutter` if Flutter is not in PATH.
 - `linux-controller-run.sh` auto-starts local backend (`flasher-web`) by default, then starts controller.
 - Auto-creates missing Flutter Linux desktop scaffolding (`controller-app/linux`) when needed.
@@ -136,8 +139,53 @@ Behavior:
 - Recommended default: Linux controller runs both `controller-app` and local `flasher-web` backend (standalone mode).
 - Optional: disable local backend and use remote Windows backend by setting:
   - `CONTROLLER_USE_LOCAL_BACKEND=0`
-  - `CONTROLLER_BACKEND_URL=http://<windows-ip>:8088`
+  - `CONTROLLER_BACKEND_URL=http://<windows-ip>:1111`
 - Windows flasher can still be used as a separate machine for occasional serial flashing workflows.
+
+## Mobile controller (Chrome/Android install)
+
+Linux one-command mobile host (builds Flutter web + serves API/UI on LAN `:1111`):
+
+```bash
+chmod +x linux-controller-mobile.sh
+./linux-controller-mobile.sh
+```
+
+Always-on Linux service (auto-start on boot):
+
+```bash
+chmod +x linux-controller-build-web.sh linux-controller-server.sh linux-controller-install-service.sh
+sudo ./linux-controller-install-service.sh
+```
+
+Service controls:
+
+```bash
+sudo systemctl status 8bb-controller-server.service
+sudo systemctl restart 8bb-controller-server.service
+sudo systemctl stop 8bb-controller-server.service
+```
+
+Unified server control helper (service or manual):
+
+```bash
+./linux-controller-server-control.sh status
+./linux-controller-server-control.sh stop
+./linux-controller-server-control.sh start
+./linux-controller-server-control.sh logs 120
+```
+
+Windows one-command backend host on LAN `:1111`:
+
+```bash
+run-mobile.cmd
+```
+
+Phone URL:
+
+`http://<machine-ip>:1111/controller/`
+
+Install from Chrome using **Add to Home Screen**.
 
 ## Legacy manual start
 
@@ -146,10 +194,10 @@ Behavior:
 ```bash
 # from repo root
 python -m pip install --user --upgrade -r requirements.txt
-python -m uvicorn app.main:app --app-dir flasher-web --host 0.0.0.0 --port 8088 --reload
+python -m uvicorn app.main:app --app-dir flasher-web --host 0.0.0.0 --port 1111 --reload
 ```
 
-Web UI: `http://localhost:8088/`
+Web UI: `http://localhost:1111/`
 
 ### Docker backend
 
@@ -164,6 +212,32 @@ cd controller-app
 flutter pub get
 flutter run -d linux
 ```
+
+## BLE tester GUI (standalone)
+
+Use this to test direct Bluetooth light controllers from the server machine:
+
+```bash
+python RGBLightBluetoothscanner.py
+```
+
+If needed, install BLE dependency first:
+
+```bash
+python -m pip install --user bleak
+```
+
+Features:
+- BLE scan
+- connect/disconnect
+- services/characteristics capability list
+- read/write characteristic values
+- notification subscribe/unsubscribe
+- per-session structured logs under `data/logs/ble-scanner/sessions/`
+  - `activity-YYYYMMDD.jsonl`
+  - `errors-YYYYMMDD.jsonl`
+  - `artifacts/ble_devices_latest.json`
+  - `artifacts/ble_characteristics_latest.json`
 
 ### ESP-IDF firmware
 
