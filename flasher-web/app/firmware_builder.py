@@ -21,6 +21,7 @@ ESP_FW_GENERATED_DEFAULTS = ESP_FW_DIR / "main" / "generated_defaults.h"
 FIRMWARE_DIR = DATA_DIR / "firmware"
 BUILD_LOG_DIR = DATA_DIR / "logs" / "firmware_builds"
 APP_BIN_NAME = "esp32_smart_device.bin"
+MSYS_WARNING_TEXT = "MSys/Mingw is no longer supported."
 
 
 def _safe_slug(value: str, fallback: str) -> str:
@@ -35,6 +36,41 @@ class FirmwareBuildError(RuntimeError):
         super().__init__(f"{message} (build_id={build_id}, log={log_file})")
         self.build_id = build_id
         self.log_file = log_file
+
+
+def _summarize_command_output(
+    *,
+    step: str,
+    return_code: int,
+    raw_output: str,
+    success_hint: str = "",
+) -> str:
+    lines = [ln.strip() for ln in str(raw_output or "").splitlines() if ln.strip()]
+    kept: list[str] = []
+    warnings: list[str] = []
+    for line in lines:
+        if MSYS_WARNING_TEXT.lower() in line.lower():
+            warnings.append(line)
+            continue
+        kept.append(line)
+
+    tail_lines = kept[-24:] if kept else []
+    summary: list[str] = [f"{step}_return_code={return_code}"]
+    if return_code == 0:
+        summary.append(f"{step}_status=success")
+    else:
+        summary.append(f"{step}_status=failed")
+    if success_hint:
+        summary.append(success_hint)
+    if warnings:
+        summary.append("warning=ESP-IDF printed MSys/Mingw warning; build can still succeed with return_code=0")
+    if tail_lines:
+        summary.append("--- tail ---")
+        summary.extend(tail_lines)
+    elif warnings:
+        summary.append("--- tail ---")
+        summary.append(warnings[-1])
+    return "\n".join(summary).strip()
 
 
 def _utc_compact() -> str:
@@ -462,9 +498,15 @@ def build_firmware(
             _append_log(log_file, "idf_env_overrides=" + ", ".join(f"{k}={v}" for k, v in idf_env.items()))
 
         build = _run_idf([*idf_cmd, "build"], log_file, env_extra=idf_env)
-        build_log = ((build.stdout or "") + "\n" + (build.stderr or "")).strip()
+        build_raw = ((build.stdout or "") + "\n" + (build.stderr or "")).strip()
+        build_log = _summarize_command_output(
+            step="build",
+            return_code=build.returncode,
+            raw_output=build_raw,
+            success_hint="idf.py build finished",
+        )
         _append_log(log_file, "--- idf.py build stdout/stderr ---")
-        _append_log(log_file, build_log or "<empty>")
+        _append_log(log_file, build_raw or "<empty>")
         _append_log(log_file, f"build_return_code={build.returncode}")
         if build.returncode != 0:
             raise RuntimeError(f"idf.py build failed with exit code {build.returncode}")
@@ -487,9 +529,15 @@ def build_firmware(
         merge_log = ""
         merge_output = ESP_FW_BUILD_DIR / "merged-flash.bin"
         merge = _run_idf([*idf_cmd, "merge-bin", "-o", str(merge_output)], log_file, env_extra=idf_env)
-        merge_log = ((merge.stdout or "") + "\n" + (merge.stderr or "")).strip()
+        merge_raw = ((merge.stdout or "") + "\n" + (merge.stderr or "")).strip()
+        merge_log = _summarize_command_output(
+            step="merge",
+            return_code=merge.returncode,
+            raw_output=merge_raw,
+            success_hint="idf.py merge-bin finished",
+        )
         _append_log(log_file, "--- idf.py merge-bin stdout/stderr ---")
-        _append_log(log_file, merge_log or "<empty>")
+        _append_log(log_file, merge_raw or "<empty>")
         _append_log(log_file, f"merge_return_code={merge.returncode}")
         if merge.returncode == 0 and merge_output.exists():
             serial_name = f"{base}_full.bin"
