@@ -136,6 +136,7 @@ Behavior:
 - Local backend logs are also written in each controller session folder (`backend-*.log`, `backend-errors-*.log`).
 - Updater creates desktop shortcuts for app launch, updater, and server stop control.
 - Updater also creates `8bb Flasher Web` shortcut.
+- Updater also creates `8bb Flasher Stop` shortcut.
 - `linux-flasher-web.sh` works like a one-shot launcher: it opens existing backend if running, otherwise starts a temporary backend in that terminal and opens browser. Closing that terminal stops the temporary backend.
 - Updater auto-adds a UFW firewall allow rule for `CONTROLLER_SERVER_PORT` (default `1111`) when UFW is active.
 

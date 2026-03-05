@@ -356,6 +356,13 @@ EOF
     "Open flasher web UI (starts temporary backend if needed)" \
     "$APP_ROOT/linux-flasher-web.sh" \
     "true"
+
+  create_one_shortcut \
+    "8bb-flasher-stop.desktop" \
+    "8bb Flasher Stop" \
+    "Stop flasher/backend server process" \
+    "$APP_ROOT/linux-controller-server-control.sh stop" \
+    "true"
 }
 
 ensure_linux_desktop_project() {
