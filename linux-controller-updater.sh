@@ -661,6 +661,21 @@ is_truthy() {
   [[ "$v" == "1" || "$v" == "true" || "$v" == "yes" || "$v" == "on" ]]
 }
 
+idf_constraints_file_for_ref() {
+  local idf_ref="$1"
+  local mm=""
+  if [[ "$idf_ref" =~ ^v([0-9]+)\.([0-9]+)(\..*)?$ ]]; then
+    mm="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+  elif [[ "$idf_ref" =~ ^release/v([0-9]+)\.([0-9]+)$ ]]; then
+    mm="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+  fi
+  if [[ -z "$mm" ]]; then
+    echo ""
+    return 0
+  fi
+  echo "$HOME/.espressif/espidf.constraints.v${mm}.txt"
+}
+
 install_esp_idf_if_missing() {
   local script_path
   script_path="$(detect_idf_script_path || true)"
@@ -718,10 +733,16 @@ install_esp_idf_if_missing() {
   if ! is_truthy "$force_install"; then
     local existing_py
     existing_py="$(detect_idf_python_via_export "$idf_root/tools/idf.py" || true)"
-    if [[ -n "$existing_py" ]]; then
+    local constraints_file
+    constraints_file="$(idf_constraints_file_for_ref "$idf_ref")"
+    if [[ -n "$existing_py" ]] && [[ -n "$constraints_file" ]] && [[ -f "$constraints_file" ]]; then
       log "ESP-IDF tools already available ($existing_py). Skipping install.sh."
       log "Set IDF_FORCE_INSTALL=1 to force re-install."
       return 0
+    fi
+    if [[ -n "$existing_py" ]] && [[ -n "$constraints_file" ]] && [[ ! -f "$constraints_file" ]]; then
+      log "ESP-IDF python found but constraints missing: $constraints_file"
+      log "Running install.sh to repair ESP-IDF tool environment."
     fi
   fi
 

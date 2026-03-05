@@ -143,6 +143,7 @@ Behavior:
 - Updater auto-installs/configures ESP-IDF on Linux when missing (`IDF_AUTO_INSTALL=1` default) and writes `IDF_CMD` to `.env`.
 - Updater pins ESP-IDF install to `IDF_INSTALL_REF` (default `v5.5.3`) in `IDF_INSTALL_DIR` (default `~/esp/esp-idf-v5.5.3`) for firmware compatibility.
 - Updater skips `install.sh` when ESP-IDF tools are already healthy; set `IDF_FORCE_INSTALL=1` to force reinstall.
+- Updater validates ESP-IDF constraints file for the pinned ref and auto-runs `install.sh` if the env is incomplete/corrupted.
 
 ## Split deployment model
 
