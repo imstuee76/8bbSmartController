@@ -252,5 +252,8 @@ idf.py build
 ## Notes
 
 - Data persistence defaults to `../data` from each component (configurable via env vars).
+- Tuya fallback files supported in `/data`:
+  - `.app_keys` (or `.pp_keys`, `app_keys.json`) for cloud credentials fallback
+  - `devices.json` for known Tuya device/local-key enrichment during scans
 - OTA signing uses HMAC-SHA256 signature manifests under `data/ota`.
 - For production use, add HTTPS/TLS and controller authentication.

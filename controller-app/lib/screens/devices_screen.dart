@@ -6,6 +6,8 @@ import '../models/device_models.dart';
 import '../services/api_service.dart';
 import '../services/local_store.dart';
 
+enum _DeviceSection { esp32, tuya, moes }
+
 class DevicesScreen extends StatefulWidget {
   const DevicesScreen({super.key, required this.api, required this.store});
 
@@ -33,6 +35,7 @@ class _QuickChannel {
 class _DevicesScreenState extends State<DevicesScreen> {
   bool _loading = true;
   bool _scanning = false;
+  _DeviceSection _activeSection = _DeviceSection.esp32;
   String? _error;
   List<SmartDevice> _devices = [];
   List<Map<String, dynamic>> _scanResults = [];
@@ -47,7 +50,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
     final lower = text.toLowerCase();
     if (lower.contains('connection refused') || lower.contains('socketexception')) {
       return 'Backend unreachable at ${widget.api.baseUrl}.\n'
-          'Check: backend is running on Windows, URL/port are correct, and firewall allows TCP 8088.';
+          'Check: backend is running on Windows/Linux server, URL/port are correct, and firewall allows TCP 1111.';
     }
     return text;
   }
@@ -90,19 +93,17 @@ class _DevicesScreenState extends State<DevicesScreen> {
     if (_scanning) return;
     setState(() {
       _scanning = true;
-      _statusOutput = 'Scanning LAN...';
+      _statusOutput = 'Scanning ${_sectionLabel(_activeSection)} devices...';
     });
     try {
       await widget.store.saveDevicesScanHint(_subnetCtl.text.trim());
-      final results = await widget.api.scanNetwork(
-        subnetHint: _subnetCtl.text.trim(),
-        automationOnly: true,
-      );
-      setState(() {
-        _scanResults = results;
-        _error = null;
-        _statusOutput = 'Automation scan found ${results.length} candidate device(s).';
-      });
+      if (_activeSection == _DeviceSection.esp32) {
+        await _scanEsp32();
+      } else if (_activeSection == _DeviceSection.tuya) {
+        await _scanTuya();
+      } else {
+        await _scanMoes();
+      }
     } catch (e) {
       setState(() {
         _error = _friendlyError(e);
@@ -117,6 +118,145 @@ class _DevicesScreenState extends State<DevicesScreen> {
         });
       }
     }
+  }
+
+  Future<void> _scanEsp32() async {
+    final results = await widget.api.scanNetwork(
+      subnetHint: _subnetCtl.text.trim(),
+      automationOnly: true,
+    );
+    final filtered = results.where((item) {
+      final provider = _scanProviderOf(item);
+      return _sectionFromScanProvider(provider) == _DeviceSection.esp32;
+    }).toList(growable: false);
+    setState(() {
+      _scanResults = filtered;
+      _error = null;
+      _statusOutput = 'ESP32 scan found ${filtered.length} candidate device(s).';
+    });
+  }
+
+  Future<void> _scanTuya() async {
+    final subnetHint = _subnetCtl.text.trim();
+    final merged = <Map<String, dynamic>>[];
+    String cloudError = '';
+
+    final local = await widget.api.tuyaLocalScan(subnetHint: subnetHint);
+    final localDevices = (local['devices'] as List<dynamic>? ?? const <dynamic>[])
+        .whereType<Map<String, dynamic>>()
+        .toList(growable: false);
+    for (final row in localDevices) {
+      merged.add({
+        'name': row['name'] ?? 'Tuya Local',
+        'ip': row['ip'] ?? '',
+        'hostname': '',
+        'mac': row['mac'] ?? '',
+        'device_hint': row['category'] ?? row['product_name'] ?? 'tuya_local',
+        'provider_hint': 'tuya_local',
+        'mode': 'local_lan',
+        'score': 10,
+        'tuya_device_id': row['id'] ?? '',
+        'tuya_version': row['version'] ?? '',
+        'tuya_local_key': row['local_key'] ?? '',
+        'tuya_product_key': row['product_key'] ?? '',
+      });
+    }
+
+    try {
+      final cloud = await widget.api.tuyaCloudDevices();
+      final cloudDevices = (cloud['devices'] as List<dynamic>? ?? const <dynamic>[])
+          .whereType<Map<String, dynamic>>()
+          .toList(growable: false);
+      final localIds = localDevices
+          .map((e) => (e['id'] ?? '').toString().trim())
+          .where((id) => id.isNotEmpty)
+          .toSet();
+      for (final row in cloudDevices) {
+        final id = (row['id'] ?? '').toString().trim();
+        if (id.isNotEmpty && localIds.contains(id)) continue;
+        merged.add({
+          'name': row['name'] ?? 'Tuya Cloud',
+          'ip': row['ip'] ?? '',
+          'hostname': '',
+          'mac': row['mac'] ?? '',
+          'device_hint': row['category'] ?? row['product_name'] ?? 'tuya_cloud',
+          'provider_hint': 'tuya_cloud',
+          'mode': 'cloud',
+          'score': 8,
+          'tuya_device_id': id,
+          'tuya_version': row['version'] ?? '',
+          'tuya_product_key': row['product_key'] ?? '',
+        });
+      }
+    } catch (e) {
+      cloudError = _friendlyError(e);
+    }
+
+    setState(() {
+      _scanResults = merged;
+      _error = null;
+      _statusOutput =
+          'Tuya scan found ${merged.length} device(s). Local: ${localDevices.length}.'
+          '${cloudError.isNotEmpty ? '\nCloud query failed: $cloudError' : ''}';
+    });
+  }
+
+  Future<void> _scanMoes() async {
+    final subnetHint = _subnetCtl.text.trim();
+    final merged = <Map<String, dynamic>>[];
+    String lightsError = '';
+
+    final hubs = await widget.api.moesDiscoverLocal(subnetHint: subnetHint);
+    final hubRows = (hubs['hubs'] as List<dynamic>? ?? const <dynamic>[])
+        .whereType<Map<String, dynamic>>()
+        .toList(growable: false);
+    for (final row in hubRows) {
+      merged.add({
+        'name': row['name'] ?? 'MOES BHUB-W',
+        'ip': row['ip'] ?? '',
+        'hostname': row['hostname'] ?? '',
+        'mac': row['mac'] ?? '',
+        'device_hint': 'moes_hub',
+        'provider_hint': 'moes_bhubw',
+        'mode': 'local_lan',
+        'score': row['score'] ?? 9,
+        'moes_hub_id': row['id'] ?? '',
+        'moes_hub_version': row['version'] ?? '',
+      });
+    }
+
+    try {
+      final lights = await widget.api.moesDiscoverLights(subnetHint: subnetHint);
+      final lightRows = (lights['lights'] as List<dynamic>? ?? const <dynamic>[])
+          .whereType<Map<String, dynamic>>()
+          .toList(growable: false);
+      for (final row in lightRows) {
+        merged.add({
+          'name': row['name'] ?? 'MOES Light',
+          'ip': row['hub_ip'] ?? lights['selected_hub_ip'] ?? '',
+          'hostname': '',
+          'mac': '',
+          'device_hint': row['category'] ?? 'light_rgb',
+          'provider_hint': 'moes_bhubw',
+          'mode': 'local_lan',
+          'score': 10,
+          'moes_cid': row['cid'] ?? row['id'] ?? '',
+          'moes_hub_id': row['gateway_id'] ?? lights['selected_hub_device_id'] ?? '',
+          'moes_hub_version': row['hub_version'] ?? lights['selected_hub_version'] ?? '',
+          'moes_hub_ip': row['hub_ip'] ?? lights['selected_hub_ip'] ?? '',
+        });
+      }
+    } catch (e) {
+      lightsError = _friendlyError(e);
+    }
+
+    setState(() {
+      _scanResults = merged;
+      _error = null;
+      _statusOutput =
+          'MOES scan found ${merged.length} item(s). Hubs: ${hubRows.length}.'
+          '${lightsError.isNotEmpty ? '\nLight discovery failed: $lightsError' : ''}';
+    });
   }
 
   @override
@@ -151,6 +291,74 @@ class _DevicesScreenState extends State<DevicesScreen> {
     final mode = _modeOf(device).toLowerCase();
     final provider = _providerOf(device);
     return mode.contains('cloud') || provider == 'tuya_cloud';
+  }
+
+  String _sectionLabel(_DeviceSection section) {
+    switch (section) {
+      case _DeviceSection.esp32:
+        return 'ESP32';
+      case _DeviceSection.tuya:
+        return 'Tuya';
+      case _DeviceSection.moes:
+        return 'Moes';
+    }
+  }
+
+  bool _matchesSection(SmartDevice device, _DeviceSection section) {
+    final provider = _providerOf(device);
+    switch (section) {
+      case _DeviceSection.esp32:
+        return provider.isEmpty ||
+            provider == 'esp_firmware' ||
+            (!provider.startsWith('tuya') && provider != 'moes_bhubw');
+      case _DeviceSection.tuya:
+        return provider.startsWith('tuya');
+      case _DeviceSection.moes:
+        return provider == 'moes_bhubw';
+    }
+  }
+
+  IconData _connectionIconForDevice(SmartDevice device) {
+    return _isCloudMode(device) ? Icons.cloud : Icons.lan;
+  }
+
+  Color _connectionColorForDevice(SmartDevice device) {
+    return _isCloudMode(device) ? Colors.orange : Colors.green;
+  }
+
+  String _scanProviderOf(Map<String, dynamic> item) {
+    final provider = (item['provider_hint'] ?? item['provider'] ?? '').toString().trim().toLowerCase();
+    if (provider.isNotEmpty) return provider;
+    final mode = (item['mode'] ?? '').toString().trim().toLowerCase();
+    if (mode.contains('cloud')) return 'tuya_cloud';
+    return 'esp_firmware';
+  }
+
+  bool _scanIsCloud(Map<String, dynamic> item) {
+    final mode = (item['mode'] ?? '').toString().trim().toLowerCase();
+    if (mode.contains('cloud')) return true;
+    final provider = _scanProviderOf(item);
+    return provider == 'tuya_cloud';
+  }
+
+  IconData _connectionIconForScan(Map<String, dynamic> item) {
+    return _scanIsCloud(item) ? Icons.cloud : Icons.lan;
+  }
+
+  _DeviceSection _sectionFromScanProvider(String provider) {
+    final p = provider.toLowerCase().trim();
+    if (p == 'moes_bhubw') return _DeviceSection.moes;
+    if (p.startsWith('tuya')) return _DeviceSection.tuya;
+    return _DeviceSection.esp32;
+  }
+
+  bool _scanMatchesActiveSection(Map<String, dynamic> item) {
+    final provider = _scanProviderOf(item);
+    return _sectionFromScanProvider(provider) == _activeSection;
+  }
+
+  List<SmartDevice> _visibleDevices() {
+    return _devices.where((d) => _matchesSection(d, _activeSection)).toList(growable: false);
   }
 
   int _suffixNumber(String key) {
@@ -734,6 +942,93 @@ class _DevicesScreenState extends State<DevicesScreen> {
     );
   }
 
+  String _guessDeviceType(Map<String, dynamic> scanItem) {
+    final hint = (scanItem['device_hint'] ?? '').toString().toLowerCase();
+    final name = (scanItem['name'] ?? '').toString().toLowerCase();
+    final blob = '$hint $name';
+    if (blob.contains('fan')) return 'fan';
+    if (blob.contains('rgbw')) return 'light_rgbw';
+    if (blob.contains('rgb') || blob.contains('colour') || blob.contains('color')) return 'light_rgb';
+    if (blob.contains('dimmer')) return 'light_dimmer';
+    if (blob.contains('light') || blob.contains('bulb') || blob.contains('lamp')) return 'light_single';
+    if (blob.contains('switch') || blob.contains('relay') || blob.contains('plug') || blob.contains('socket')) {
+      return 'relay_switch';
+    }
+    return 'relay_switch';
+  }
+
+  Future<void> _addScannedDevice(Map<String, dynamic> item) async {
+    final provider = _scanProviderOf(item);
+    final section = _sectionFromScanProvider(provider);
+    if (section != _activeSection) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Scan item is from another provider section.')),
+      );
+      return;
+    }
+
+    final host = (item['ip'] ?? '').toString().trim();
+    final nameRaw = (item['name'] ?? '').toString().trim();
+    final displayName = nameRaw.isNotEmpty
+        ? nameRaw
+        : (host.isNotEmpty ? host : '${_sectionLabel(_activeSection)} Device');
+
+    if (provider == 'moes_bhubw' && (item['moes_cid'] ?? '').toString().trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('This is a MOES hub. Add MOES lights (with CID) for direct control.')),
+      );
+      return;
+    }
+
+    final connectionMode = _scanIsCloud(item) ? 'cloud' : 'local_lan';
+    final metadata = <String, dynamic>{
+      'provider': provider,
+      'source_name': provider == 'moes_bhubw'
+          ? 'MOES BHUB-W'
+          : (provider == 'tuya_cloud'
+              ? 'Tuya Cloud'
+              : (provider == 'tuya_local' ? 'Tuya Local' : '8bb Firmware')),
+      'connection_mode': connectionMode,
+    };
+
+    if (provider.startsWith('tuya')) {
+      metadata['tuya_device_id'] = (item['tuya_device_id'] ?? '').toString().trim();
+      metadata['id'] = (item['tuya_device_id'] ?? '').toString().trim();
+      metadata['tuya_ip'] = host;
+      metadata['ip'] = host;
+      metadata['tuya_version'] = (item['tuya_version'] ?? '').toString().trim();
+      metadata['version'] = (item['tuya_version'] ?? '').toString().trim();
+      metadata['tuya_product_key'] = (item['tuya_product_key'] ?? '').toString().trim();
+      metadata['product_key'] = (item['tuya_product_key'] ?? '').toString().trim();
+      metadata['tuya_local_key'] = (item['tuya_local_key'] ?? '').toString().trim();
+      metadata['local_key'] = (item['tuya_local_key'] ?? '').toString().trim();
+    } else if (provider == 'moes_bhubw') {
+      metadata['moes_cid'] = (item['moes_cid'] ?? '').toString().trim();
+      metadata['cid'] = (item['moes_cid'] ?? '').toString().trim();
+      metadata['tuya_device_id'] = (item['moes_cid'] ?? '').toString().trim();
+      metadata['hub_device_id'] = (item['moes_hub_id'] ?? '').toString().trim();
+      metadata['hub_ip'] = (item['moes_hub_ip'] ?? host).toString().trim();
+      metadata['hub_version'] = (item['moes_hub_version'] ?? '').toString().trim();
+      metadata['hub_mac'] = (item['mac'] ?? '').toString().trim();
+    }
+
+    try {
+      await widget.api.createDevice(
+        name: displayName,
+        type: _guessDeviceType(item),
+        host: host.isEmpty ? null : host,
+        passcode: null,
+        metadata: metadata,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added device: $displayName')));
+      await _refresh();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    }
+  }
+
   Widget _buildQuickControls(SmartDevice device) {
     final statusLoading = _statusLoading.contains(device.id);
     final channels = _inferQuickChannels(device);
@@ -839,24 +1134,56 @@ class _DevicesScreenState extends State<DevicesScreen> {
                 children: [
                   Padding(
                     padding: const EdgeInsets.all(12),
-                    child: Row(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        FilledButton(onPressed: () => _openCreateDialog(), child: const Text('Add Device')),
-                        const SizedBox(width: 8),
-                        OutlinedButton(onPressed: _refresh, child: const Text('Refresh')),
-                        const Spacer(),
-                        SizedBox(
-                          width: 220,
-                          child: TextField(
-                            controller: _subnetCtl,
-                            decoration: const InputDecoration(labelText: 'Subnet or IP hint'),
-                            onSubmitted: (value) => widget.store.saveDevicesScanHint(value),
-                          ),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: _DeviceSection.values
+                              .map(
+                                (section) => ChoiceChip(
+                                  label: Text(_sectionLabel(section)),
+                                  selected: _activeSection == section,
+                                  onSelected: (selected) {
+                                    if (!selected) return;
+                                    setState(() {
+                                      _activeSection = section;
+                                      _scanResults = _scanResults
+                                          .where((item) => _scanMatchesActiveSection(item))
+                                          .toList(growable: false);
+                                    });
+                                  },
+                                ),
+                              )
+                              .toList(growable: false),
                         ),
-                        const SizedBox(width: 8),
-                        FilledButton.tonal(
-                          onPressed: _scanning ? null : _scan,
-                          child: Text(_scanning ? 'Scanning...' : 'Scan LAN'),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            FilledButton(onPressed: () => _openCreateDialog(), child: const Text('Add Device')),
+                            const SizedBox(width: 8),
+                            OutlinedButton(onPressed: _refresh, child: const Text('Refresh')),
+                            const Spacer(),
+                            SizedBox(
+                              width: 220,
+                              child: TextField(
+                                controller: _subnetCtl,
+                                decoration: const InputDecoration(labelText: 'Subnet or IP hint'),
+                                onSubmitted: (value) => widget.store.saveDevicesScanHint(value),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            FilledButton.tonal(
+                              onPressed: _scanning ? null : _scan,
+                              child: Text(_scanning ? 'Scanning...' : 'Scan ${_sectionLabel(_activeSection)}'),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          'Showing: ${_sectionLabel(_activeSection)} devices',
+                          style: Theme.of(context).textTheme.bodySmall,
                         ),
                       ],
                     ),
@@ -871,88 +1198,102 @@ class _DevicesScreenState extends State<DevicesScreen> {
                                   child: Text(_error!),
                                 ),
                               )
-                            : ListView.builder(
-                            itemCount: _devices.length,
-                            itemBuilder: (context, index) {
-                              final d = _devices[index];
-                              final provider = _providerOf(d);
-                              final source = _sourceOf(d);
-                              final mode = _modeOf(d);
-                              final isEspFirmware = provider == 'esp_firmware';
-                              return ExpansionTile(
-                                onExpansionChanged: (expanded) {
-                                  if (expanded) {
-                                    _loadDeviceStatus(d, showOutput: false);
+                            : Builder(
+                                builder: (context) {
+                                  final visibleDevices = _visibleDevices();
+                                  if (visibleDevices.isEmpty) {
+                                    return Center(
+                                      child: Text('No ${_sectionLabel(_activeSection)} devices yet.'),
+                                    );
                                   }
-                                },
-                                title: Text('${d.name} (${d.type})'),
-                                subtitle: Text(
-                                  '${d.host ?? d.mac ?? 'No host yet'}\nSource: $source  Mode: $mode',
-                                ),
-                                children: [
-                                  Padding(
-                                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Wrap(
-                                          spacing: 8,
-                                          runSpacing: 8,
-                                          children: [
-                                            OutlinedButton(onPressed: () => _renameDevice(d), child: const Text('Rename')),
-                                            OutlinedButton(onPressed: () => _setPasscode(d), child: const Text('Set Passcode')),
-                                            OutlinedButton(
-                                              onPressed: () async {
-                                                if (_isCloudMode(d)) {
-                                                  final ok = await _confirmCloudUse('Adding this to Main', d);
-                                                  if (!ok) return;
-                                                }
-                                                await widget.api.addTile(tileType: 'device', refId: d.id, label: d.name);
-                                                if (!context.mounted) return;
-                                                ScaffoldMessenger.of(context)
-                                                    .showSnackBar(const SnackBar(content: Text('Added full device tile to Main')));
-                                              },
-                                              child: const Text('Add Device to Main'),
-                                            ),
-                                            OutlinedButton(onPressed: () => _runStatus(d), child: const Text('Status')),
-                                            OutlinedButton(
-                                              onPressed: () async {
-                                                if (_isCloudMode(d)) {
-                                                  final ok = await _confirmCloudUse('Advanced control', d);
-                                                  if (!ok) return;
-                                                }
-                                                await _runControlDialog(d);
-                                              },
-                                              child: const Text('Advanced Control'),
-                                            ),
-                                            OutlinedButton(onPressed: () => _editChannelDialog(d), child: const Text('Name Buttons')),
-                                            if (isEspFirmware) OutlinedButton(onPressed: () => _pushOtaDialog(d), child: const Text('Push OTA')),
-                                            OutlinedButton(onPressed: () => _showAdvancedDetails(d), child: const Text('Advanced')),
-                                            OutlinedButton(
-                                              onPressed: () async {
-                                                await widget.api.rescanDevice(d.id);
-                                                await _refresh();
-                                              },
-                                              child: const Text('Rescan'),
-                                            ),
-                                            FilledButton.tonal(
-                                              onPressed: () async {
-                                                await widget.api.deleteDevice(d.id);
-                                                await _refresh();
-                                              },
-                                              child: const Text('Remove'),
-                                            ),
-                                          ],
+                                  return ListView.builder(
+                                    itemCount: visibleDevices.length,
+                                    itemBuilder: (context, index) {
+                                      final d = visibleDevices[index];
+                                      final provider = _providerOf(d);
+                                      final source = _sourceOf(d);
+                                      final mode = _modeOf(d);
+                                      final isEspFirmware = provider == 'esp_firmware';
+                                      return ExpansionTile(
+                                        leading: Icon(
+                                          _connectionIconForDevice(d),
+                                          color: _connectionColorForDevice(d),
                                         ),
-                                        const SizedBox(height: 8),
-                                        _buildQuickControls(d),
-                                      ],
-                                    ),
-                                  )
-                                ],
-                              );
-                            },
-                          ),
+                                        onExpansionChanged: (expanded) {
+                                          if (expanded) {
+                                            _loadDeviceStatus(d, showOutput: false);
+                                          }
+                                        },
+                                        title: Text('${d.name} (${d.type})'),
+                                        subtitle: Text(
+                                          '${d.host ?? d.mac ?? 'No host yet'}\nSource: $source  Mode: $mode',
+                                        ),
+                                        children: [
+                                          Padding(
+                                            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                Wrap(
+                                                  spacing: 8,
+                                                  runSpacing: 8,
+                                                  children: [
+                                                    OutlinedButton(onPressed: () => _renameDevice(d), child: const Text('Rename')),
+                                                    OutlinedButton(onPressed: () => _setPasscode(d), child: const Text('Set Passcode')),
+                                                    OutlinedButton(
+                                                      onPressed: () async {
+                                                        if (_isCloudMode(d)) {
+                                                          final ok = await _confirmCloudUse('Adding this to Main', d);
+                                                          if (!ok) return;
+                                                        }
+                                                        await widget.api.addTile(tileType: 'device', refId: d.id, label: d.name);
+                                                        if (!context.mounted) return;
+                                                        ScaffoldMessenger.of(context)
+                                                            .showSnackBar(const SnackBar(content: Text('Added full device tile to Main')));
+                                                      },
+                                                      child: const Text('Add Device to Main'),
+                                                    ),
+                                                    OutlinedButton(onPressed: () => _runStatus(d), child: const Text('Status')),
+                                                    OutlinedButton(
+                                                      onPressed: () async {
+                                                        if (_isCloudMode(d)) {
+                                                          final ok = await _confirmCloudUse('Advanced control', d);
+                                                          if (!ok) return;
+                                                        }
+                                                        await _runControlDialog(d);
+                                                      },
+                                                      child: const Text('Advanced Control'),
+                                                    ),
+                                                    OutlinedButton(onPressed: () => _editChannelDialog(d), child: const Text('Name Buttons')),
+                                                    if (isEspFirmware) OutlinedButton(onPressed: () => _pushOtaDialog(d), child: const Text('Push OTA')),
+                                                    OutlinedButton(onPressed: () => _showAdvancedDetails(d), child: const Text('Advanced')),
+                                                    OutlinedButton(
+                                                      onPressed: () async {
+                                                        await widget.api.rescanDevice(d.id);
+                                                        await _refresh();
+                                                      },
+                                                      child: const Text('Rescan'),
+                                                    ),
+                                                    FilledButton.tonal(
+                                                      onPressed: () async {
+                                                        await widget.api.deleteDevice(d.id);
+                                                        await _refresh();
+                                                      },
+                                                      child: const Text('Remove'),
+                                                    ),
+                                                  ],
+                                                ),
+                                                const SizedBox(height: 8),
+                                                _buildQuickControls(d),
+                                              ],
+                                            ),
+                                          )
+                                        ],
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
                   ),
                 ],
               ),
@@ -974,9 +1315,13 @@ class _DevicesScreenState extends State<DevicesScreen> {
                     child: ListView(
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                       children: [
-                        ..._scanResults.map(
+                        ..._scanResults.where(_scanMatchesActiveSection).map(
                           (item) => ListTile(
                             dense: true,
+                            leading: Icon(
+                              _connectionIconForScan(item),
+                              color: _scanIsCloud(item) ? Colors.orange : Colors.green,
+                            ),
                             title: Text(
                               (item['name']?.toString().trim().isNotEmpty ?? false)
                                   ? item['name'].toString()
@@ -985,11 +1330,11 @@ class _DevicesScreenState extends State<DevicesScreen> {
                             subtitle: Text(
                               'IP: ${item['ip'] ?? ''}  Host: ${item['hostname'] ?? ''}  MAC: ${item['mac'] ?? ''}\n'
                               'Hint: ${item['device_hint'] ?? item['provider_hint'] ?? 'unknown'}'
-                              '  Score: ${item['score'] ?? 0}',
+                              '  Score: ${item['score'] ?? 0}  Mode: ${item['mode'] ?? 'local_lan'}',
                             ),
                             trailing: IconButton(
                               icon: const Icon(Icons.add_circle_outline),
-                              onPressed: () => _openCreateDialog(presetHost: item['ip']?.toString() ?? ''),
+                              onPressed: () => _addScannedDevice(item),
                             ),
                           ),
                         ),

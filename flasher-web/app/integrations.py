@@ -1,18 +1,81 @@
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from .security import decrypt_secret
 from .scanner import prime_neighbors, scan_network
-from .storage import append_event, get_setting
+from .storage import DATA_DIR, append_event, get_setting
 
 _spotify_cache: dict[str, Any] = {
     "access_token": "",
     "expires_at": 0.0,
 }
+
+
+def _load_json_file_candidates(names: list[str]) -> tuple[dict[str, Any], str]:
+    for name in names:
+        path = (DATA_DIR / name).resolve()
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            raw = path.read_text(encoding="utf-8").strip()
+            if not raw:
+                continue
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                return payload, path.name
+        except Exception:
+            continue
+    return {}, ""
+
+
+def _load_tuya_app_keys_file() -> tuple[dict[str, Any], str]:
+    return _load_json_file_candidates([
+        ".app_keys",
+        ".pp_keys",
+        "app_keys.json",
+        "tuya_app_keys.json",
+    ])
+
+
+def _load_tuya_devices_file() -> tuple[list[dict[str, Any]], str]:
+    file_candidates = [
+        "devices.json",
+        "tuya_devices.json",
+    ]
+    for name in file_candidates:
+        path = (DATA_DIR / name).resolve()
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            raw = path.read_text(encoding="utf-8").strip()
+            if not raw:
+                continue
+            payload = json.loads(raw)
+            rows: list[dict[str, Any]] = []
+            if isinstance(payload, list):
+                rows = [dict(item) for item in payload if isinstance(item, dict)]
+            elif isinstance(payload, dict):
+                if isinstance(payload.get("devices"), list):
+                    rows = [dict(item) for item in payload.get("devices", []) if isinstance(item, dict)]
+                else:
+                    # Some exports are a dict keyed by device id.
+                    for key, value in payload.items():
+                        if isinstance(value, dict):
+                            row = dict(value)
+                            if "id" not in row:
+                                row["id"] = str(key)
+                            rows.append(row)
+            if rows:
+                return rows, path.name
+        except Exception:
+            continue
+    return [], ""
 
 
 def _get_spotify_access_token(spotify_cfg: dict[str, Any], timeout_s: float = 15.0) -> str:
@@ -151,14 +214,48 @@ def _tuya_effective_cfg(
     api_device_id: str = "",
 ) -> dict[str, Any]:
     tuya_cfg = get_setting("tuya")
+    file_keys, file_name = _load_tuya_app_keys_file()
+
+    file_region = str(
+        file_keys.get("apiRegion")
+        or file_keys.get("region")
+        or file_keys.get("cloud_region")
+        or ""
+    ).strip()
+    file_client_id = str(
+        file_keys.get("apiKey")
+        or file_keys.get("client_id")
+        or file_keys.get("clientId")
+        or ""
+    ).strip()
+    file_client_secret = str(
+        file_keys.get("apiSecret")
+        or file_keys.get("client_secret")
+        or file_keys.get("clientSecret")
+        or ""
+    ).strip()
+    file_api_device_id = str(
+        file_keys.get("apiDeviceID")
+        or file_keys.get("api_device_id")
+        or file_keys.get("apiDeviceId")
+        or ""
+    ).strip()
+
     resolved_secret = client_secret.strip() if client_secret.strip() else decrypt_secret(tuya_cfg.get("client_secret", "")).strip()
+    if not resolved_secret:
+        resolved_secret = file_client_secret
+
+    cloud_region_final = cloud_region.strip() or str(tuya_cfg.get("cloud_region", "")).strip() or file_region
+    client_id_final = client_id.strip() or str(tuya_cfg.get("client_id", "")).strip() or file_client_id
+    api_device_id_final = api_device_id.strip() or str(tuya_cfg.get("api_device_id", "")).strip() or file_api_device_id
     return {
-        "cloud_region": cloud_region.strip() or str(tuya_cfg.get("cloud_region", "")).strip(),
-        "client_id": client_id.strip() or str(tuya_cfg.get("client_id", "")).strip(),
+        "cloud_region": cloud_region_final,
+        "client_id": client_id_final,
         "client_secret": resolved_secret,
-        "api_device_id": api_device_id.strip() or str(tuya_cfg.get("api_device_id", "")).strip(),
+        "api_device_id": api_device_id_final,
         "default_local_key": decrypt_secret(tuya_cfg.get("local_key", "")).strip(),
         "local_scan_enabled": bool(tuya_cfg.get("local_scan_enabled", True)),
+        "app_keys_file": file_name,
     }
 
 
@@ -227,6 +324,31 @@ def _tuya_cloud_indexes(cloud_devices: list[dict[str, Any]]) -> tuple[dict[str, 
     return by_id, by_mac, by_ip
 
 
+def _tuya_devices_file_indexes(file_devices: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    by_mac: dict[str, dict[str, Any]] = {}
+    by_ip: dict[str, dict[str, Any]] = {}
+    for item in file_devices:
+        dev_id = str(item.get("id") or item.get("gwId") or item.get("dev_id") or "").strip()
+        mac = str(item.get("mac", "")).strip().lower()
+        ip = str(item.get("ip", "")).strip()
+        if dev_id and dev_id not in by_id:
+            by_id[dev_id] = item
+        if mac and mac not in by_mac:
+            by_mac[mac] = item
+        if ip and ip not in by_ip:
+            by_ip[ip] = item
+    return by_id, by_mac, by_ip
+
+
+def _get_file_value(row: dict[str, Any], *names: str) -> str:
+    for name in names:
+        value = str(row.get(name, "")).strip()
+        if value:
+            return value
+    return ""
+
+
 def tuya_local_scan(
     subnet_hint: str = "",
     *,
@@ -243,6 +365,9 @@ def tuya_local_scan(
     )
     if not cfg.get("local_scan_enabled", True):
         return {"devices": [], "enabled": False}
+
+    file_devices, file_name = _load_tuya_devices_file()
+    file_by_id, file_by_mac, file_by_ip = _tuya_devices_file_indexes(file_devices)
 
     hint = (subnet_hint or "").strip()
     primed = 0
@@ -269,6 +394,47 @@ def tuya_local_scan(
                 "source": "lan_scan",
             }
         )
+
+    # Enrich with existing devices.json export from /data for local keys and names.
+    for item in out:
+        dev_id = str(item.get("id", "")).strip()
+        mac = str(item.get("mac", "")).strip().lower()
+        ip = str(item.get("ip", "")).strip()
+        match = file_by_id.get(dev_id) if dev_id else None
+        if match is None and mac:
+            match = file_by_mac.get(mac)
+        if match is None and ip:
+            match = file_by_ip.get(ip)
+        if match is None:
+            continue
+        if not item.get("name"):
+            item["name"] = _get_file_value(match, "name", "friendly_name")
+        if not item.get("version"):
+            item["version"] = _get_file_value(match, "version")
+        local_key = _get_file_value(match, "local_key", "key")
+        if local_key:
+            item["local_key"] = local_key
+            item["local_key_source"] = "devices_json"
+            item["available_modes"] = ["local_lan", "cloud"] if bool(cfg.get("client_id")) else ["local_lan"]
+
+    # If LAN scan found none, expose devices.json records with IP as fallback candidates.
+    if not out and file_devices:
+        for row in file_devices:
+            ip = _get_file_value(row, "ip")
+            if not ip:
+                continue
+            out.append(
+                {
+                    "id": _get_file_value(row, "id", "gwId", "dev_id"),
+                    "ip": ip,
+                    "mac": _get_file_value(row, "mac").lower(),
+                    "version": _get_file_value(row, "version"),
+                    "product_key": _get_file_value(row, "product_key", "productKey"),
+                    "name": _get_file_value(row, "name", "friendly_name"),
+                    "local_key": _get_file_value(row, "local_key", "key"),
+                    "source": "devices_json_fallback",
+                }
+            )
 
     cloud_devices: list[dict[str, Any]] = []
     cloud_error = ""
@@ -346,6 +512,9 @@ def tuya_local_scan(
             "cloud_enriched": cloud_enriched,
             "cloud_error": cloud_error,
             "cloud_cfg_present": cloud_cfg_present,
+            "app_keys_file": str(cfg.get("app_keys_file", "")),
+            "devices_file": file_name,
+            "devices_file_count": len(file_devices),
         },
     )
     return {
@@ -356,6 +525,9 @@ def tuya_local_scan(
         "lan_candidates": lan_candidates[:40],
         "cloud_enriched": cloud_enriched,
         "cloud_error": cloud_error,
+        "app_keys_file": str(cfg.get("app_keys_file", "")),
+        "devices_file": file_name,
+        "devices_file_count": len(file_devices),
     }
 
 
@@ -377,6 +549,7 @@ def tuya_cloud_devices(
         "devices": devices,
         "cloud_region": str(cfg.get("cloud_region", "")).strip(),
         "api_device_id": str(cfg.get("api_device_id", "")).strip(),
+        "app_keys_file": str(cfg.get("app_keys_file", "")),
     }
     append_event("tuya_cloud_query", {"count": len(devices), "cloud_region": result["cloud_region"]})
     return result
