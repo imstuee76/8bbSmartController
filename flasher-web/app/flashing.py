@@ -56,7 +56,7 @@ def _capture_runtime_serial_with_retries(
         last_error = err
         retry_errors.append(err)
         low = err.lower()
-        if "access is denied" not in low and "permissionerror" not in low:
+        if "access is denied" not in low and "permissionerror" not in low and "permission denied" not in low:
             return lines, err, retry_errors
         if idx < attempts - 1:
             time.sleep(retry_delay)
@@ -392,8 +392,14 @@ def probe_serial_port(port: str, baud: int = 115200) -> dict:
     if runtime_error:
         low = runtime_error.lower()
         hint = ""
-        if "access is denied" in low or "permissionerror" in low:
-            hint = "COM port is busy. Close miniterm/Arduino/other serial apps, then retry."
+        if "access is denied" in low or "permissionerror" in low or "permission denied" in low:
+            if os.name == "nt":
+                hint = "COM port is busy. Close miniterm/Arduino/other serial apps, then retry."
+            else:
+                hint = (
+                    "Serial permission denied. Run linux-controller-updater.sh, then logout/login (or reboot) "
+                    "so dialout/udev changes apply. Also close other serial apps."
+                )
         return {
             "ok": False,
             "port": device,

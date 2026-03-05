@@ -59,10 +59,16 @@ def _run_monitor(session: MonitorSession) -> None:
                 if text:
                     _append_line(session, text)
     except Exception as exc:
+        error_text = str(exc)
+        low = error_text.lower()
+        if "permission denied" in low or "permissionerror" in low:
+            error_text += (
+                " | Hint: run linux-controller-updater.sh, then logout/login (or reboot), and make sure no other app has the port open."
+            )
         with session.lock:
             session.status = "error"
-            session.error = str(exc)
-        _append_line(session, f"[monitor] error: {exc}")
+            session.error = error_text
+        _append_line(session, f"[monitor] error: {error_text}")
     finally:
         with session.lock:
             if session.status == "running":

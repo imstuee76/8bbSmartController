@@ -450,7 +450,7 @@ install_deps() {
   ensure_cmd rsync rsync
   ensure_cmd git git
   if command -v apt-get >/dev/null 2>&1; then
-    local -a pkgs=(clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-12-dev python3-pip python3-venv python3-serial dfu-util libusb-1.0-0)
+    local -a pkgs=(clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-12-dev python3-pip python3-venv python3-serial dfu-util libusb-1.0-0 acl)
     local -a missing=()
     for p in "${pkgs[@]}"; do
       if ! dpkg -s "$p" >/dev/null 2>&1; then
@@ -871,10 +871,16 @@ ensure_serial_port_access() {
 
   local current_groups
   current_groups="$(id -nG "$target_owner" 2>/dev/null || true)"
-  local -a required_groups=("dialout" "tty")
+  log "Serial access target user: $target_owner"
+  log "Current groups: ${current_groups:-<none>}"
+
+  local -a required_groups=("dialout" "tty" "plugdev" "uucp" "lock")
   local -a missing_groups=()
   local g
   for g in "${required_groups[@]}"; do
+    if ! getent group "$g" >/dev/null 2>&1; then
+      continue
+    fi
     if [[ " $current_groups " != *" $g "* ]]; then
       missing_groups+=("$g")
     fi
@@ -897,8 +903,8 @@ ensure_serial_port_access() {
   local rule_path="/etc/udev/rules.d/99-8bb-serial.rules"
   local tmp_rule="$TMP_ROOT/99-8bb-serial.rules"
   cat >"$tmp_rule" <<'EOF'
-SUBSYSTEM=="tty", KERNEL=="ttyUSB[0-9]*", MODE="0660", GROUP="dialout"
-SUBSYSTEM=="tty", KERNEL=="ttyACM[0-9]*", MODE="0660", GROUP="dialout"
+SUBSYSTEM=="tty", KERNEL=="ttyUSB[0-9]*", MODE="0660", GROUP="dialout", TAG+="uaccess"
+SUBSYSTEM=="tty", KERNEL=="ttyACM[0-9]*", MODE="0660", GROUP="dialout", TAG+="uaccess"
 EOF
   if run_maybe_sudo_noninteractive install -m 0644 "$tmp_rule" "$rule_path"; then
     log "Installed serial udev rule: $rule_path"
@@ -913,15 +919,27 @@ EOF
 
   local found_any="false"
   local dev
+  local has_setfacl="false"
+  if command -v setfacl >/dev/null 2>&1; then
+    has_setfacl="true"
+  fi
   for dev in /dev/ttyUSB* /dev/ttyACM*; do
     if [[ -e "$dev" ]]; then
       found_any="true"
+      log "Detected serial device: $dev ($(ls -l "$dev" 2>/dev/null || true))"
       run_maybe_sudo_noninteractive chgrp dialout "$dev" || true
       run_maybe_sudo_noninteractive chmod g+rw "$dev" || true
+      if [[ "$has_setfacl" == "true" ]]; then
+        run_maybe_sudo_noninteractive setfacl -m "u:${target_owner}:rw" "$dev" || true
+      fi
     fi
   done
   if [[ "$found_any" == "true" ]]; then
     log "Applied immediate group/write access to connected serial ports."
+    if [[ "$has_setfacl" == "false" ]]; then
+      log "Optional: install 'acl' package so updater can also apply per-user ACL to serial devices."
+    fi
+    log "If monitor still shows permission denied, fully logout/login (or reboot) and restart backend."
   else
     log "No /dev/ttyUSB* or /dev/ttyACM* devices currently connected."
   fi
