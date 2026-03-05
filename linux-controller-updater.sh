@@ -19,6 +19,7 @@ CONTROLLER_SYNC_PATHS=(
   "flasher-web"
   "esp32-firmware"
   "shared"
+  "tools"
   "run.py"
   "run.cmd"
   "linux-controller-run.sh"
@@ -280,6 +281,9 @@ ensure_permissions() {
   fi
   if [[ -d "$APP_ROOT/scripts" ]]; then
     find "$APP_ROOT/scripts" -type f -name "*.py" -exec chmod +x {} \; || true
+  fi
+  if [[ -d "$APP_ROOT/tools" ]]; then
+    find "$APP_ROOT/tools" -type f -name "*.sh" -exec chmod +x {} \; || true
   fi
 }
 
@@ -983,8 +987,9 @@ main() {
   ensure_runtime_writable_paths
   install_deps
   ensure_esp_idf_ready
-  ensure_serial_port_access
-  ensure_firewall_rule
+  log "Manual admin scripts:"
+  log " - Serial/admin port access: $APP_ROOT/tools/allowPORTadmin.sh"
+  log " - Firewall port open: $APP_ROOT/tools/openports.sh"
   show_version
   log "Updater errors (if any): $ERROR_LOG"
   log "App runtime logs: $DATA_DIR/logs"

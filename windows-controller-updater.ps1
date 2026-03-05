@@ -164,6 +164,7 @@ try {
     "flasher-web",
     "esp32-firmware",
     "shared",
+    "tools",
     "run.py",
     "run.cmd",
     "windows-controller-updater.ps1",
