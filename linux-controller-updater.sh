@@ -658,9 +658,6 @@ is_truthy() {
 install_esp_idf_if_missing() {
   local script_path
   script_path="$(detect_idf_script_path || true)"
-  if [[ -n "$script_path" ]]; then
-    return 0
-  fi
 
   local auto_install="${IDF_AUTO_INSTALL:-1}"
   if ! is_truthy "$auto_install"; then
@@ -676,6 +673,7 @@ install_esp_idf_if_missing() {
     return 0
   fi
 
+  local idf_ref="${IDF_INSTALL_REF:-v5.5.3}"
   local idf_root="${IDF_INSTALL_DIR:-$HOME/esp/esp-idf}"
   local idf_parent
   idf_parent="$(dirname "$idf_root")"
@@ -686,10 +684,21 @@ install_esp_idf_if_missing() {
       log "WARNING: $idf_root exists but is not a git checkout. Skipping auto-clone."
       return 0
     fi
-    log "ESP-IDF not found. Auto-installing to: $idf_root"
-    run git clone --recursive https://github.com/espressif/esp-idf.git "$idf_root"
+    log "ESP-IDF not found. Auto-installing to: $idf_root (ref=$idf_ref)"
+    run git clone --recursive --branch "$idf_ref" https://github.com/espressif/esp-idf.git "$idf_root"
   else
     log "ESP-IDF checkout found at $idf_root"
+    local current_ref
+    current_ref="$(git -C "$idf_root" describe --tags --exact-match 2>/dev/null || git -C "$idf_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    if [[ "$current_ref" != "$idf_ref" ]]; then
+      log "Switching ESP-IDF checkout to $idf_ref (current: ${current_ref:-unknown})"
+      run git -C "$idf_root" fetch --tags --prune
+      if ! run git -C "$idf_root" checkout "$idf_ref"; then
+        run git -C "$idf_root" fetch origin "$idf_ref"
+        run git -C "$idf_root" checkout "$idf_ref"
+      fi
+    fi
+    run git -C "$idf_root" submodule update --init --recursive
   fi
 
   if [[ ! -x "$idf_root/install.sh" ]]; then
@@ -697,7 +706,7 @@ install_esp_idf_if_missing() {
     return 0
   fi
 
-  log "Running ESP-IDF installer (esp32 target). This may take a while..."
+  log "Running ESP-IDF installer (esp32 target, ref=$idf_ref). This may take a while..."
   (
     cd "$idf_root"
     run ./install.sh esp32
