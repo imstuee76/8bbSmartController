@@ -126,14 +126,32 @@ def _resolve_hub_inputs(
         try:
             local_scan = tuya_local_scan()
             for item in local_scan.get("devices", []):
-                if str(item.get("id", "")).strip() == selected_hub:
-                    if not selected_ip:
-                        selected_ip = str(item.get("ip", "")).strip()
-                    if not selected_mac:
-                        selected_mac = str(item.get("mac", "")).strip().lower()
-                    if not selected_version_raw:
-                        selected_version_raw = str(item.get("version", "")).strip()
-                    break
+                if not isinstance(item, dict):
+                    continue
+                item_id = str(item.get("id", "")).strip()
+                item_ip = str(item.get("ip", "")).strip()
+                item_mac = str(item.get("mac", "")).strip().lower()
+                item_key = str(item.get("local_key", "")).strip()
+                match = False
+                if item_id and selected_hub and item_id == selected_hub:
+                    match = True
+                elif selected_ip and item_ip and selected_ip == item_ip:
+                    match = True
+                elif selected_mac and item_mac and selected_mac == item_mac:
+                    match = True
+                if not match:
+                    continue
+                if not selected_hub and item_id:
+                    selected_hub = item_id
+                if not selected_ip and item_ip:
+                    selected_ip = item_ip
+                if not selected_mac and item_mac:
+                    selected_mac = item_mac
+                if not selected_version_raw:
+                    selected_version_raw = str(item.get("version", "")).strip()
+                if not selected_key and item_key:
+                    selected_key = item_key
+                break
         except Exception:
             pass
 
@@ -175,7 +193,15 @@ def _resolve_hub_inputs(
     return selected_hub, selected_ip, selected_key, _parse_version(selected_version_raw), selected_mac
 
 
-def _create_hub_device(hub_id: str, hub_ip: str, local_key: str, version: float) -> Any:
+def _create_hub_device(
+    hub_id: str,
+    hub_ip: str,
+    local_key: str,
+    version: float,
+    *,
+    socket_timeout: float = 3.0,
+    retry_limit: int = 1,
+) -> Any:
     try:
         import tinytuya  # type: ignore
     except Exception as exc:
@@ -184,7 +210,7 @@ def _create_hub_device(hub_id: str, hub_ip: str, local_key: str, version: float)
     if not hub_ip:
         raise ValueError("MOES hub IP is required for LAN mode")
     if not local_key:
-        raise ValueError("MOES hub local key is required for LAN mode")
+        raise ValueError("MOES hub local key is required for LAN mode. Use Tuya setup+scan to auto-fill the key, or enter it manually.")
 
     dev = tinytuya.Device(  # type: ignore[attr-defined]
         dev_id=hub_id,
@@ -195,6 +221,16 @@ def _create_hub_device(hub_id: str, hub_ip: str, local_key: str, version: float)
     )
     dev.set_version(version)
     dev.set_socketPersistent(False)
+    if hasattr(dev, "set_socketTimeout"):
+        try:
+            dev.set_socketTimeout(float(socket_timeout))
+        except Exception:
+            pass
+    if hasattr(dev, "set_socketRetryLimit"):
+        try:
+            dev.set_socketRetryLimit(int(retry_limit))
+        except Exception:
+            pass
     return dev
 
 
@@ -283,6 +319,7 @@ def discover_bhubw_local(
         mac = str(entry.get("mac", "")).strip().lower()
         dev_id = str(entry.get("id", "")).strip()
         version = str(entry.get("version", "")).strip()
+        local_key = str(entry.get("local_key", "")).strip()
         marker_blob = _text_blob(
             {
                 "id": dev_id,
@@ -304,6 +341,9 @@ def discover_bhubw_local(
                     candidate["version"] = version
                 if mac and not str(candidate.get("mac", "")).strip():
                     candidate["mac"] = mac
+                if local_key and not str(candidate.get("local_key", "")).strip():
+                    candidate["local_key"] = local_key
+                    candidate["has_local_key"] = True
                 candidate["score"] = max(int(candidate.get("score", 0)), score)
                 candidate.setdefault("reasons", []).append("matched tuya local scan")
                 matched = True
@@ -320,6 +360,8 @@ def discover_bhubw_local(
                 "id": dev_id,
                 "ip": ip,
                 "version": version,
+                "local_key": local_key,
+                "has_local_key": bool(local_key),
                 "mac": mac,
                 "hostname": "",
                 "name": "",
@@ -327,6 +369,10 @@ def discover_bhubw_local(
                 "reasons": ["from tuya local scan"],
             }
         )
+
+    for hub in hubs:
+        if "has_local_key" not in hub:
+            hub["has_local_key"] = bool(str(hub.get("local_key", "")).strip())
 
     hubs.sort(key=lambda h: h.get("score", 0), reverse=True)
 
@@ -378,6 +424,7 @@ def discover_bhubw_lights(
             "mac": selected_mac,
             "name": "MOES BHUB-W",
             "version": str(selected_version),
+            "has_local_key": bool(selected_key),
             "online": True,
         }
     ]
@@ -442,6 +489,7 @@ def discover_bhubw_lights(
         "selected_hub_ip": selected_ip,
         "selected_hub_mac": selected_mac,
         "selected_hub_version": str(selected_version),
+        "selected_hub_has_local_key": bool(selected_key),
         "hubs": hubs,
         "lights": lights,
         "subdevices": subdevices,
@@ -549,7 +597,7 @@ def send_bhubw_light_command(metadata: dict[str, Any], command: dict[str, Any]) 
     raise ValueError(f"Unsupported MOES command state '{state}' for local light control")
 
 
-def get_bhubw_light_status(metadata: dict[str, Any]) -> dict[str, Any]:
+def get_bhubw_light_status(metadata: dict[str, Any], quick: bool = False) -> dict[str, Any]:
     selected_hub, selected_ip, selected_key, selected_version, selected_mac = _resolve_hub_inputs(
         hub_device_id=str(metadata.get("hub_device_id", "")).strip(),
         hub_ip=str(metadata.get("hub_ip", "")).strip(),
@@ -570,6 +618,8 @@ def get_bhubw_light_status(metadata: dict[str, Any]) -> dict[str, Any]:
         hub_ip=selected_ip,
         local_key=selected_key,
         version=selected_version,
+        socket_timeout=1.0 if quick else 3.0,
+        retry_limit=0 if quick else 1,
     )
     child = _create_child_device(parent, cid)
     raw = child.status()

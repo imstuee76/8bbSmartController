@@ -12,9 +12,9 @@ def normalize_device_host(host: str) -> str:
     return f"http://{value.rstrip('/')}"
 
 
-def fetch_device_status(host: str) -> dict[str, Any]:
+def fetch_device_status(host: str, timeout: float = 8.0) -> dict[str, Any]:
     base = normalize_device_host(host)
-    with httpx.Client(timeout=8) as client:
+    with httpx.Client(timeout=timeout) as client:
         res = client.get(f"{base}/api/status")
     res.raise_for_status()
     return res.json()

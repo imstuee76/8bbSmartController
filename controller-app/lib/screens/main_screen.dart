@@ -15,6 +15,7 @@ class MainScreen extends StatefulWidget {
 
 class _MainScreenState extends State<MainScreen> {
   bool _loading = true;
+  bool _refreshing = false;
   String? _error;
   List<Map<String, dynamic>> _tiles = [];
 
@@ -23,7 +24,7 @@ class _MainScreenState extends State<MainScreen> {
     final lower = text.toLowerCase();
     if (lower.contains('connection refused') || lower.contains('socketexception')) {
       return 'Backend unreachable at ${widget.api.baseUrl}.\n'
-          'Check: backend is running on Windows, URL/port are correct, and firewall allows TCP 8088.';
+          'Check: backend is running on Windows/Linux server, URL/port are correct, and firewall allows TCP 1111.';
     }
     return text;
   }
@@ -31,26 +32,35 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void initState() {
     super.initState();
-    _load();
+    _load(initial: true);
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool initial = false}) async {
+    if (!mounted) return;
     setState(() {
-      _loading = true;
+      if (initial || _tiles.isEmpty) {
+        _loading = true;
+      } else {
+        _refreshing = true;
+      }
       _error = null;
     });
     try {
       final tiles = await widget.api.fetchTileData();
+      if (!mounted) return;
       setState(() {
         _tiles = tiles;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = _friendlyError(e);
       });
     } finally {
+      if (!mounted) return;
       setState(() {
         _loading = false;
+        _refreshing = false;
       });
     }
   }
@@ -347,8 +357,22 @@ class _MainScreenState extends State<MainScreen> {
               child: IconButton(
                 tooltip: 'Remove tile',
                 onPressed: () async {
-                  await widget.api.removeTile((tile['id'] ?? '').toString());
-                  await _load();
+                  final tileId = (tile['id'] ?? '').toString();
+                  if (tileId.isEmpty) return;
+                  final prev = List<Map<String, dynamic>>.from(_tiles);
+                  setState(() {
+                    _tiles = _tiles.where((t) => (t['id'] ?? '').toString() != tileId).toList();
+                  });
+                  try {
+                    await widget.api.removeTile(tileId);
+                    await _load();
+                  } catch (e) {
+                    if (!mounted) return;
+                    setState(() => _tiles = prev);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Failed to remove tile: $e')),
+                    );
+                  }
                 },
                 icon: const Icon(Icons.delete_outline),
               ),
@@ -389,19 +413,28 @@ class _MainScreenState extends State<MainScreen> {
       );
     }
 
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: GridView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: _tiles.length,
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 4,
-          mainAxisSpacing: 12,
-          crossAxisSpacing: 12,
-          childAspectRatio: 1.45,
+    return Stack(
+      children: [
+        RefreshIndicator(
+          onRefresh: _load,
+          child: GridView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: _tiles.length,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 4,
+              mainAxisSpacing: 12,
+              crossAxisSpacing: 12,
+              childAspectRatio: 1.45,
+            ),
+            itemBuilder: (context, index) => _buildTileCard(_tiles[index]),
+          ),
         ),
-        itemBuilder: (context, index) => _buildTileCard(_tiles[index]),
-      ),
+        if (_refreshing)
+          const Align(
+            alignment: Alignment.topCenter,
+            child: LinearProgressIndicator(minHeight: 3),
+          ),
+      ],
     );
   }
 }

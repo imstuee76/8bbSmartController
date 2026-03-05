@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import hashlib
 import ipaddress
+import os
 import re
 import time
 import traceback
 import uuid
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -66,10 +68,19 @@ from .versioning import flasher_display_version, load_version_manifest
 
 app = FastAPI(title="8bb Smart Controller Flasher", version=flasher_display_version())
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+ROOT_DIR = Path(__file__).resolve().parents[2]
+CONTROLLER_WEB_DIR = Path(
+    os.environ.get("CONTROLLER_WEB_DIR", str(ROOT_DIR / "controller-app" / "build" / "web"))
+).resolve()
 FIRMWARE_DIR = DATA_DIR / "firmware"
 OTA_DIR = DATA_DIR / "ota"
 FIRMWARE_PROFILES_DIR = DATA_DIR / "firmware_profiles"
 ensure_data_layout()
+
+_DASHBOARD_DEVICE_CACHE_TTL_SECONDS = float(os.environ.get("DASHBOARD_DEVICE_CACHE_TTL_SECONDS", "12"))
+_DASHBOARD_TASK_TIMEOUT_SECONDS = float(os.environ.get("DASHBOARD_TASK_TIMEOUT_SECONDS", "2.5"))
+_DASHBOARD_TOTAL_TIMEOUT_SECONDS = float(os.environ.get("DASHBOARD_TOTAL_TIMEOUT_SECONDS", "6.0"))
+_dashboard_device_cache: dict[str, dict[str, Any]] = {}
 
 app.add_middleware(
     CORSMiddleware,
@@ -80,6 +91,8 @@ app.add_middleware(
 )
 
 app.mount("/ui", StaticFiles(directory=STATIC_DIR), name="ui")
+if CONTROLLER_WEB_DIR.exists():
+    app.mount("/controller", StaticFiles(directory=CONTROLLER_WEB_DIR, html=True), name="controller_ui")
 app.mount("/downloads/firmware", StaticFiles(directory=FIRMWARE_DIR), name="downloads_firmware")
 app.mount("/downloads/ota", StaticFiles(directory=OTA_DIR), name="downloads_ota")
 app.mount("/downloads/profiles", StaticFiles(directory=FIRMWARE_PROFILES_DIR), name="downloads_profiles")
@@ -237,15 +250,15 @@ def _parse_metadata(row: Any) -> dict[str, Any]:
         return {}
 
 
-def _resolve_device_status(row: Any) -> dict[str, Any]:
+def _resolve_device_status(row: Any, *, quick: bool = False) -> dict[str, Any]:
     metadata = _parse_metadata(row)
     provider = str(metadata.get("provider", "")).strip().lower()
     if provider == "moes_bhubw":
-        out = get_bhubw_light_status(metadata)
+        out = get_bhubw_light_status(metadata, quick=quick)
         out.setdefault("source_name", metadata.get("source_name", "MOES BHUB-W"))
         return out
     if provider in ("tuya_local", "tuya_cloud", "tuya"):
-        out = get_tuya_device_status(metadata)
+        out = get_tuya_device_status(metadata, quick=quick)
         if provider == "tuya_cloud":
             out.setdefault("source_name", metadata.get("source_name", "Tuya Cloud"))
         else:
@@ -255,7 +268,7 @@ def _resolve_device_status(row: Any) -> dict[str, Any]:
     host = str(row["host"] or "").strip()
     if not host:
         raise ValueError("Device host is not set")
-    status = fetch_device_status(host)
+    status = fetch_device_status(host, timeout=1.2 if quick else 8.0)
     if isinstance(status, dict) and "device_type" not in status:
         status["device_type"] = row["type"]
     if isinstance(status, dict):
@@ -263,6 +276,32 @@ def _resolve_device_status(row: Any) -> dict[str, Any]:
         status.setdefault("mode", "local_lan")
         status.setdefault("source_name", metadata.get("source_name", "8bb Firmware"))
     return status
+
+
+def _dashboard_cached_device_status(row: Any, *, quick: bool = True) -> dict[str, Any]:
+    device_id = str(row["id"])
+    now = time.time()
+    cached = _dashboard_device_cache.get(device_id)
+    if cached:
+        age = max(0.0, now - float(cached.get("ts", 0.0)))
+        if age <= _DASHBOARD_DEVICE_CACHE_TTL_SECONDS:
+            payload = dict(cached.get("data") or {})
+            payload["cached"] = True
+            payload["cache_age_s"] = round(age, 2)
+            return payload
+
+    try:
+        payload = _resolve_device_status(row, quick=quick)
+        _dashboard_device_cache[device_id] = {"ts": now, "data": dict(payload)}
+        return payload
+    except Exception:
+        if cached:
+            age = max(0.0, now - float(cached.get("ts", 0.0)))
+            payload = dict(cached.get("data") or {})
+            payload["stale"] = True
+            payload["cache_age_s"] = round(age, 2)
+            return payload
+        raise
 
 
 def _require_device(device_id: str) -> tuple[Any, Any]:
@@ -424,7 +463,7 @@ def get_integrations() -> dict[str, Any]:
     return {
         "spotify": _decrypt_fields(spotify, ["client_secret", "refresh_token"]),
         "weather": _decrypt_fields(weather, ["api_key"]),
-        "tuya": _decrypt_fields(tuya, ["client_secret"]),
+        "tuya": _decrypt_fields(tuya, ["client_secret", "local_key"]),
         "scan": scan,
         "moes": _decrypt_fields(moes, ["hub_local_key"]),
         "ota": _decrypt_fields(ota, ["shared_key"]),
@@ -438,6 +477,7 @@ def put_integrations(payload: IntegrationsConfig) -> dict[str, Any]:
     data["spotify"]["refresh_token"] = encrypt_secret(data["spotify"].get("refresh_token", ""))
     data["weather"]["api_key"] = encrypt_secret(data["weather"].get("api_key", ""))
     data["tuya"]["client_secret"] = encrypt_secret(data["tuya"].get("client_secret", ""))
+    data["tuya"]["local_key"] = encrypt_secret(data["tuya"].get("local_key", ""))
     data["moes"]["hub_local_key"] = encrypt_secret(data["moes"].get("hub_local_key", ""))
     data["ota"]["shared_key"] = encrypt_secret(data["ota"].get("shared_key", ""))
 
@@ -518,18 +558,46 @@ def get_weather_current() -> dict[str, Any]:
 @app.post("/api/integrations/tuya/local-scan", dependencies=[Depends(require_auth_if_configured)])
 def post_tuya_local_scan(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     subnet_hint = ""
+    cloud_region = ""
+    client_id = ""
+    client_secret = ""
+    api_device_id = ""
     if isinstance(payload, dict):
         subnet_hint = str(payload.get("subnet_hint", "")).strip()
+        cloud_region = str(payload.get("cloud_region", "")).strip()
+        client_id = str(payload.get("client_id", "")).strip()
+        client_secret = str(payload.get("client_secret", "")).strip()
+        api_device_id = str(payload.get("api_device_id", "")).strip()
     try:
-        return tuya_local_scan(subnet_hint=subnet_hint)
+        return tuya_local_scan(
+            subnet_hint=subnet_hint,
+            cloud_region=cloud_region,
+            client_id=client_id,
+            client_secret=client_secret,
+            api_device_id=api_device_id,
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/integrations/tuya/cloud-devices", dependencies=[Depends(require_auth_if_configured)])
-def post_tuya_cloud_devices() -> dict[str, Any]:
+def post_tuya_cloud_devices(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    cloud_region = ""
+    client_id = ""
+    client_secret = ""
+    api_device_id = ""
+    if isinstance(payload, dict):
+        cloud_region = str(payload.get("cloud_region", "")).strip()
+        client_id = str(payload.get("client_id", "")).strip()
+        client_secret = str(payload.get("client_secret", "")).strip()
+        api_device_id = str(payload.get("api_device_id", "")).strip()
     try:
-        return tuya_cloud_devices()
+        return tuya_cloud_devices(
+            cloud_region=cloud_region,
+            client_id=client_id,
+            client_secret=client_secret,
+            api_device_id=api_device_id,
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -872,29 +940,83 @@ def get_tile_data() -> dict[str, Any]:
     device_map = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM devices").fetchall()}
     conn.close()
 
-    tiles = []
-    for row in rows:
-        tile = {
-            "id": row["id"],
-            "tile_type": row["tile_type"],
-            "label": row["label"],
-            "ref_id": row["ref_id"],
-            "payload": json.loads(row["payload_json"]),
-            "data": {},
-            "error": None,
-        }
+    tiles: list[dict[str, Any]] = []
+    pending: dict[Any, int] = {}
+    executor = ThreadPoolExecutor(max_workers=max(1, min(8, len(rows))))
+    deadline = time.monotonic() + max(1.0, _DASHBOARD_TOTAL_TIMEOUT_SECONDS)
+
+    def resolve_live(row: Any) -> tuple[dict[str, Any], str | None]:
+        tile_type = row["tile_type"]
         try:
-            if row["tile_type"] == "weather":
-                tile["data"] = weather_current()
-            elif row["tile_type"] == "spotify":
-                tile["data"] = spotify_now_playing()
-            elif row["tile_type"] == "device" and row["ref_id"] in device_map:
+            if tile_type == "weather":
+                return weather_current(timeout_s=2.0), None
+            if tile_type == "spotify":
+                return spotify_now_playing(timeout_s=2.5), None
+            if tile_type == "device":
+                if row["ref_id"] not in device_map:
+                    return {}, "Device not found"
                 dev = device_map[row["ref_id"]]
-                tile["data"] = _resolve_device_status(dev)
-                tile["data"]["device_type"] = dev.get("type")
-        except Exception as exc:  # best-effort dashboard render
-            tile["error"] = str(exc)
-        tiles.append(tile)
+                data = _dashboard_cached_device_status(dev, quick=True)
+                data["device_type"] = dev.get("type")
+                return data, None
+            return {}, None
+        except Exception as exc:
+            return {}, str(exc)
+
+    try:
+        for row in rows:
+            tile = {
+                "id": row["id"],
+                "tile_type": row["tile_type"],
+                "label": row["label"],
+                "ref_id": row["ref_id"],
+                "payload": json.loads(row["payload_json"]),
+                "data": {},
+                "error": None,
+            }
+            tiles.append(tile)
+
+            tile_type = row["tile_type"]
+            if tile_type in ("weather", "spotify", "device"):
+                future = executor.submit(resolve_live, row)
+                pending[future] = len(tiles) - 1
+
+        unresolved = set(pending.keys())
+        while unresolved:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            done, unresolved = wait(unresolved, timeout=min(_DASHBOARD_TASK_TIMEOUT_SECONDS, remaining), return_when=FIRST_COMPLETED)
+            for fut in done:
+                idx = pending.get(fut)
+                if idx is None:
+                    continue
+                try:
+                    data, err = fut.result(timeout=0)
+                    tiles[idx]["data"] = data
+                    tiles[idx]["error"] = err
+                except Exception as exc:  # best-effort dashboard render
+                    tiles[idx]["error"] = str(exc)
+
+        for fut in unresolved:
+            idx = pending.get(fut)
+            if idx is None:
+                continue
+            tile = tiles[idx]
+            if tile["tile_type"] == "device" and tile["ref_id"] in device_map:
+                dev = device_map[tile["ref_id"]]
+                try:
+                    stale = _dashboard_cached_device_status(dev, quick=True)
+                    stale["device_type"] = dev.get("type")
+                    stale["stale"] = True
+                    tile["data"] = stale
+                    tile["error"] = None
+                    continue
+                except Exception:
+                    pass
+            tile["error"] = "Timed out fetching live status"
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
     return {"tiles": tiles}
 
 

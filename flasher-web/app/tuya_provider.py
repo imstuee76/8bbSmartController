@@ -117,6 +117,7 @@ def _cloud_client() -> Any:
     region = str(tuya_cfg.get("cloud_region", "")).strip()
     client_id = str(tuya_cfg.get("client_id", "")).strip()
     client_secret = decrypt_secret(str(tuya_cfg.get("client_secret", ""))).strip()
+    api_device_id = str(tuya_cfg.get("api_device_id", "")).strip()
     if not region or not client_id or not client_secret:
         raise ValueError("Tuya cloud credentials are not configured")
     try:
@@ -127,11 +128,16 @@ def _cloud_client() -> Any:
         apiRegion=region,
         apiKey=client_id,
         apiSecret=client_secret,
-        apiDeviceID="",
+        apiDeviceID=api_device_id,
     )
 
 
-def _local_device(metadata: dict[str, Any]) -> Any:
+def _local_device(
+    metadata: dict[str, Any],
+    *,
+    socket_timeout: float = 3.0,
+    retry_limit: int = 1,
+) -> Any:
     dev_id = str(metadata.get("tuya_device_id", "")).strip() or str(metadata.get("id", "")).strip()
     ip = str(metadata.get("tuya_ip", "")).strip() or str(metadata.get("ip", "")).strip() or str(metadata.get("host", "")).strip()
     local_key = str(metadata.get("tuya_local_key", "")).strip() or str(metadata.get("local_key", "")).strip()
@@ -154,6 +160,16 @@ def _local_device(metadata: dict[str, Any]) -> Any:
     )
     dev.set_version(version)
     dev.set_socketPersistent(False)
+    if hasattr(dev, "set_socketTimeout"):
+        try:
+            dev.set_socketTimeout(float(socket_timeout))
+        except Exception:
+            pass
+    if hasattr(dev, "set_socketRetryLimit"):
+        try:
+            dev.set_socketRetryLimit(int(retry_limit))
+        except Exception:
+            pass
     return dev, dev_id, ip, version
 
 
@@ -191,14 +207,18 @@ def _pick_cloud_brightness_code(cloud_values: dict[str, Any], functions: list[di
     return None
 
 
-def get_tuya_device_status(metadata: dict[str, Any]) -> dict[str, Any]:
+def get_tuya_device_status(metadata: dict[str, Any], quick: bool = False) -> dict[str, Any]:
     provider = str(metadata.get("provider", "tuya_local")).strip().lower()
     dev_id = str(metadata.get("tuya_device_id", "")).strip() or str(metadata.get("id", "")).strip()
     local_error = ""
 
     if provider in ("tuya_local", "tuya"):
         try:
-            dev, local_id, ip, version = _local_device(metadata)
+            dev, local_id, ip, version = _local_device(
+                metadata,
+                socket_timeout=1.0 if quick else 3.0,
+                retry_limit=0 if quick else 1,
+            )
             raw = dev.status()
             dps = _extract_dps(raw)
             return {
@@ -217,6 +237,8 @@ def get_tuya_device_status(metadata: dict[str, Any]) -> dict[str, Any]:
             if provider == "tuya_local":
                 # local-first devices can still fall back to cloud by ID if creds exist
                 pass
+            if quick:
+                raise ValueError(f"Tuya quick local status failed: {local_error}") from exc
 
     if dev_id:
         try:

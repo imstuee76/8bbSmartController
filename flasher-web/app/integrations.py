@@ -15,7 +15,7 @@ _spotify_cache: dict[str, Any] = {
 }
 
 
-def _get_spotify_access_token(spotify_cfg: dict[str, Any]) -> str:
+def _get_spotify_access_token(spotify_cfg: dict[str, Any], timeout_s: float = 15.0) -> str:
     now = time.time()
     cached = _spotify_cache.get("access_token", "")
     if cached and float(_spotify_cache.get("expires_at", 0.0)) > (now + 30):
@@ -33,7 +33,7 @@ def _get_spotify_access_token(spotify_cfg: dict[str, Any]) -> str:
         "client_id": client_id,
         "client_secret": client_secret,
     }
-    with httpx.Client(timeout=15) as client:
+    with httpx.Client(timeout=timeout_s) as client:
         res = client.post("https://accounts.spotify.com/api/token", data=data)
         res.raise_for_status()
         body = res.json()
@@ -47,12 +47,12 @@ def _get_spotify_access_token(spotify_cfg: dict[str, Any]) -> str:
     return token
 
 
-def spotify_now_playing() -> dict[str, Any]:
+def spotify_now_playing(timeout_s: float = 15.0) -> dict[str, Any]:
     spotify_cfg = get_setting("spotify")
-    token = _get_spotify_access_token(spotify_cfg)
+    token = _get_spotify_access_token(spotify_cfg, timeout_s=timeout_s)
     headers = {"Authorization": f"Bearer {token}"}
 
-    with httpx.Client(timeout=15) as client:
+    with httpx.Client(timeout=timeout_s) as client:
         res = client.get("https://api.spotify.com/v1/me/player/currently-playing", headers=headers)
     if res.status_code == 204:
         return {"is_playing": False, "track": None}
@@ -105,7 +105,7 @@ def spotify_action(action: str) -> dict[str, Any]:
     return {"ok": True, "action": action}
 
 
-def weather_current() -> dict[str, Any]:
+def weather_current(timeout_s: float = 15.0) -> dict[str, Any]:
     weather_cfg = get_setting("weather")
     provider = weather_cfg.get("provider", "openweather").strip().lower()
     api_key = decrypt_secret(weather_cfg.get("api_key", ""))
@@ -122,7 +122,7 @@ def weather_current() -> dict[str, Any]:
         "appid": api_key,
         "units": units,
     }
-    with httpx.Client(timeout=15) as client:
+    with httpx.Client(timeout=timeout_s) as client:
         res = client.get("https://api.openweathermap.org/data/2.5/weather", params=params)
     if res.status_code >= 400:
         raise ValueError(f"Weather request failed: {res.text}")
@@ -143,9 +143,105 @@ def weather_current() -> dict[str, Any]:
     }
 
 
-def tuya_local_scan(subnet_hint: str = "") -> dict[str, Any]:
+def _tuya_effective_cfg(
+    *,
+    cloud_region: str = "",
+    client_id: str = "",
+    client_secret: str = "",
+    api_device_id: str = "",
+) -> dict[str, Any]:
     tuya_cfg = get_setting("tuya")
-    if not tuya_cfg.get("local_scan_enabled", True):
+    resolved_secret = client_secret.strip() if client_secret.strip() else decrypt_secret(tuya_cfg.get("client_secret", "")).strip()
+    return {
+        "cloud_region": cloud_region.strip() or str(tuya_cfg.get("cloud_region", "")).strip(),
+        "client_id": client_id.strip() or str(tuya_cfg.get("client_id", "")).strip(),
+        "client_secret": resolved_secret,
+        "api_device_id": api_device_id.strip() or str(tuya_cfg.get("api_device_id", "")).strip(),
+        "default_local_key": decrypt_secret(tuya_cfg.get("local_key", "")).strip(),
+        "local_scan_enabled": bool(tuya_cfg.get("local_scan_enabled", True)),
+    }
+
+
+def _tuya_cloud_device_list(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    region = str(cfg.get("cloud_region", "")).strip()
+    client_id = str(cfg.get("client_id", "")).strip()
+    client_secret = str(cfg.get("client_secret", "")).strip()
+    api_device_id = str(cfg.get("api_device_id", "")).strip()
+
+    if not region or not client_id or not client_secret:
+        raise ValueError("Tuya cloud credentials missing (region, client_id, client_secret)")
+
+    try:
+        import tinytuya  # type: ignore
+    except Exception as exc:  # pragma: no cover - optional import
+        raise ValueError(f"tinytuya not installed: {exc}") from exc
+
+    cloud = tinytuya.Cloud(  # type: ignore[attr-defined]
+        apiRegion=region,
+        apiKey=client_id,
+        apiSecret=client_secret,
+        apiDeviceID=api_device_id,
+    )
+    res = cloud.getdevices()
+    if not isinstance(res, dict):
+        raise ValueError("Unexpected Tuya cloud response")
+    if not res.get("success", False):
+        raise ValueError(f"Tuya cloud query failed: {res}")
+
+    raw_items = res.get("result", [])
+    if not isinstance(raw_items, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        item["id"] = str(raw.get("id", raw.get("dev_id", ""))).strip()
+        item["name"] = str(raw.get("name", "")).strip()
+        item["ip"] = str(raw.get("ip", raw.get("local_ip", ""))).strip()
+        item["mac"] = str(raw.get("mac", "")).strip().lower()
+        item["category"] = str(raw.get("category", "")).strip()
+        item["product_name"] = str(raw.get("product_name", raw.get("productName", ""))).strip()
+        item["version"] = str(raw.get("version", "")).strip()
+        item["local_key"] = str(raw.get("local_key", raw.get("key", ""))).strip()
+        item["online"] = raw.get("online")
+        normalized.append(item)
+    return normalized
+
+
+def _tuya_cloud_indexes(cloud_devices: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    by_mac: dict[str, dict[str, Any]] = {}
+    by_ip: dict[str, dict[str, Any]] = {}
+    for item in cloud_devices:
+        dev_id = str(item.get("id", "")).strip()
+        mac = str(item.get("mac", "")).strip().lower()
+        ip = str(item.get("ip", "")).strip()
+        if dev_id and dev_id not in by_id:
+            by_id[dev_id] = item
+        if mac and mac not in by_mac:
+            by_mac[mac] = item
+        if ip and ip not in by_ip:
+            by_ip[ip] = item
+    return by_id, by_mac, by_ip
+
+
+def tuya_local_scan(
+    subnet_hint: str = "",
+    *,
+    cloud_region: str = "",
+    client_id: str = "",
+    client_secret: str = "",
+    api_device_id: str = "",
+) -> dict[str, Any]:
+    cfg = _tuya_effective_cfg(
+        cloud_region=cloud_region,
+        client_id=client_id,
+        client_secret=client_secret,
+        api_device_id=api_device_id,
+    )
+    if not cfg.get("local_scan_enabled", True):
         return {"devices": [], "enabled": False}
 
     hint = (subnet_hint or "").strip()
@@ -159,19 +255,71 @@ def tuya_local_scan(subnet_hint: str = "") -> dict[str, Any]:
         raise ValueError(f"tinytuya not installed: {exc}") from exc
 
     devices = tinytuya.deviceScan(maxretry=6)  # type: ignore[attr-defined]
-    out = []
+    out: list[dict[str, Any]] = []
     for _, details in (devices or {}).items():
         item = details if isinstance(details, dict) else {}
         out.append(
             {
-                "id": item.get("gwId", ""),
-                "ip": item.get("ip", ""),
-                "mac": item.get("mac", ""),
-                "version": item.get("version", ""),
-                "product_key": item.get("productKey", ""),
-                "name": item.get("name", ""),
+                "id": str(item.get("gwId", "")).strip(),
+                "ip": str(item.get("ip", "")).strip(),
+                "mac": str(item.get("mac", "")).strip().lower(),
+                "version": str(item.get("version", "")).strip(),
+                "product_key": str(item.get("productKey", "")).strip(),
+                "name": str(item.get("name", "")).strip(),
+                "source": "lan_scan",
             }
         )
+
+    cloud_devices: list[dict[str, Any]] = []
+    cloud_error = ""
+    cloud_enriched = False
+    cloud_cfg_present = bool(cfg.get("cloud_region") and cfg.get("client_id") and cfg.get("client_secret"))
+    if cloud_cfg_present:
+        try:
+            cloud_devices = _tuya_cloud_device_list(cfg)
+            cloud_enriched = True
+        except Exception as exc:
+            cloud_error = str(exc)
+
+    if out and cloud_devices:
+        by_id, by_mac, by_ip = _tuya_cloud_indexes(cloud_devices)
+        for item in out:
+            dev_id = str(item.get("id", "")).strip()
+            mac = str(item.get("mac", "")).strip().lower()
+            ip = str(item.get("ip", "")).strip()
+            match = by_id.get(dev_id) if dev_id else None
+            if match is None and mac:
+                match = by_mac.get(mac)
+            if match is None and ip:
+                match = by_ip.get(ip)
+            if match is None:
+                continue
+            if not item.get("id"):
+                item["id"] = str(match.get("id", "")).strip()
+            if not item.get("name"):
+                item["name"] = str(match.get("name", "")).strip()
+            if not item.get("version"):
+                item["version"] = str(match.get("version", "")).strip()
+            if not item.get("mac"):
+                item["mac"] = str(match.get("mac", "")).strip().lower()
+            item["category"] = str(match.get("category", "")).strip()
+            item["product_name"] = str(match.get("product_name", "")).strip()
+            item["online"] = match.get("online")
+            local_key = str(match.get("local_key", "")).strip()
+            if local_key:
+                item["local_key"] = local_key
+                item["local_key_source"] = "tuya_cloud"
+                item["available_modes"] = ["local_lan", "cloud"]
+
+    default_local_key = str(cfg.get("default_local_key", "")).strip()
+    if default_local_key:
+        for item in out:
+            if str(item.get("local_key", "")).strip():
+                continue
+            item["local_key"] = default_local_key
+            item["local_key_source"] = "tuya_default"
+            item["available_modes"] = ["local_lan", "cloud"] if cloud_cfg_present else ["local_lan"]
+
     lan_candidates: list[dict[str, Any]] = []
     if hint:
         try:
@@ -195,6 +343,9 @@ def tuya_local_scan(subnet_hint: str = "") -> dict[str, Any]:
             "subnet_hint": hint,
             "primed_hosts": primed,
             "lan_candidates": len(lan_candidates),
+            "cloud_enriched": cloud_enriched,
+            "cloud_error": cloud_error,
+            "cloud_cfg_present": cloud_cfg_present,
         },
     )
     return {
@@ -203,34 +354,29 @@ def tuya_local_scan(subnet_hint: str = "") -> dict[str, Any]:
         "subnet_hint": hint,
         "primed_hosts": primed,
         "lan_candidates": lan_candidates[:40],
+        "cloud_enriched": cloud_enriched,
+        "cloud_error": cloud_error,
     }
 
 
-def tuya_cloud_devices() -> dict[str, Any]:
-    tuya_cfg = get_setting("tuya")
-    region = tuya_cfg.get("cloud_region", "").strip()
-    client_id = tuya_cfg.get("client_id", "").strip()
-    client_secret = decrypt_secret(tuya_cfg.get("client_secret", ""))
-
-    if not region or not client_id or not client_secret:
-        raise ValueError("Tuya cloud credentials missing")
-
-    try:
-        import tinytuya  # type: ignore
-    except Exception as exc:  # pragma: no cover - optional import
-        raise ValueError(f"tinytuya not installed: {exc}") from exc
-
-    cloud = tinytuya.Cloud(  # type: ignore[attr-defined]
-        apiRegion=region,
-        apiKey=client_id,
-        apiSecret=client_secret,
-        apiDeviceID="",
+def tuya_cloud_devices(
+    *,
+    cloud_region: str = "",
+    client_id: str = "",
+    client_secret: str = "",
+    api_device_id: str = "",
+) -> dict[str, Any]:
+    cfg = _tuya_effective_cfg(
+        cloud_region=cloud_region,
+        client_id=client_id,
+        client_secret=client_secret,
+        api_device_id=api_device_id,
     )
-    res = cloud.getdevices()
-    if not isinstance(res, dict):
-        raise ValueError("Unexpected Tuya cloud response")
-    if not res.get("success", False):
-        raise ValueError(f"Tuya cloud query failed: {res}")
-    result = {"devices": res.get("result", [])}
-    append_event("tuya_cloud_query", {"count": len(result['devices'])})
+    devices = _tuya_cloud_device_list(cfg)
+    result = {
+        "devices": devices,
+        "cloud_region": str(cfg.get("cloud_region", "")).strip(),
+        "api_device_id": str(cfg.get("api_device_id", "")).strip(),
+    }
+    append_event("tuya_cloud_query", {"count": len(devices), "cloud_region": result["cloud_region"]})
     return result
