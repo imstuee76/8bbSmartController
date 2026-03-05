@@ -6,6 +6,7 @@ import ipaddress
 import os
 import re
 import socket
+import threading
 import time
 import traceback
 import uuid
@@ -83,6 +84,10 @@ _DASHBOARD_DEVICE_CACHE_TTL_SECONDS = float(os.environ.get("DASHBOARD_DEVICE_CAC
 _DASHBOARD_TASK_TIMEOUT_SECONDS = float(os.environ.get("DASHBOARD_TASK_TIMEOUT_SECONDS", "2.5"))
 _DASHBOARD_TOTAL_TIMEOUT_SECONDS = float(os.environ.get("DASHBOARD_TOTAL_TIMEOUT_SECONDS", "6.0"))
 _dashboard_device_cache: dict[str, dict[str, Any]] = {}
+_PROFILE_PUSH_JOB_WORKERS = max(1, min(6, int(os.environ.get("PROFILE_PUSH_JOB_WORKERS", "3"))))
+_profile_push_executor = ThreadPoolExecutor(max_workers=_PROFILE_PUSH_JOB_WORKERS)
+_profile_push_jobs_lock = threading.Lock()
+_profile_push_jobs: dict[str, dict[str, Any]] = {}
 
 app.add_middleware(
     CORSMiddleware,
@@ -378,6 +383,126 @@ def _require_device(device_id: str) -> tuple[Any, Any]:
 def _slug_value(value: str, fallback: str = "item") -> str:
     raw = re.sub(r"[^a-zA-Z0-9_-]+", "-", (value or "").strip().lower()).strip("-")
     return raw[:64] if raw else fallback
+
+
+def _profile_push_job_read(job_id: str) -> dict[str, Any] | None:
+    with _profile_push_jobs_lock:
+        item = _profile_push_jobs.get(job_id)
+        if not item:
+            return None
+        return dict(item)
+
+
+def _profile_push_job_update(job_id: str, **fields: Any) -> dict[str, Any] | None:
+    with _profile_push_jobs_lock:
+        item = _profile_push_jobs.get(job_id)
+        if not item:
+            return None
+        item.update(fields)
+        return dict(item)
+
+
+def _profile_push_job_append_output(job_id: str, line: str) -> None:
+    now = utc_now()
+    message = str(line or "").strip()
+    if not message:
+        return
+    with _profile_push_jobs_lock:
+        item = _profile_push_jobs.get(job_id)
+        if not item:
+            return
+        output = str(item.get("output", ""))
+        chunk = f"[{now}] {message}"
+        item["output"] = f"{output}\n{chunk}".strip() if output else chunk
+
+
+def _start_profile_push_job(
+    *,
+    profile_id: str,
+    profile_name: str,
+    device_id: str,
+    host: str,
+    firmware_url: str,
+    manifest_url: str,
+    passcode: str,
+    mode: str,
+) -> dict[str, Any]:
+    job_id = str(uuid.uuid4())
+    created_at = utc_now()
+    job = {
+        "job_id": job_id,
+        "status": "queued",
+        "profile_id": profile_id,
+        "profile_name": profile_name,
+        "device_id": device_id,
+        "host": host,
+        "mode": mode,
+        "firmware_url": firmware_url,
+        "manifest_url": manifest_url,
+        "created_at": created_at,
+        "started_at": "",
+        "ended_at": "",
+        "error": "",
+        "result": {},
+        "output": "",
+    }
+    with _profile_push_jobs_lock:
+        _profile_push_jobs[job_id] = job
+
+    def _runner() -> None:
+        _profile_push_job_update(job_id, status="running", started_at=utc_now())
+        _profile_push_job_append_output(job_id, f"Starting profile OTA push ({mode})")
+        _profile_push_job_append_output(job_id, f"host={host}")
+        _profile_push_job_append_output(job_id, f"profile={profile_name} ({profile_id})")
+        _profile_push_job_append_output(job_id, "Sending /api/ota/apply to device...")
+        append_event(
+            "firmware_profile_push_started",
+            {
+                "job_id": job_id,
+                "profile_id": profile_id,
+                "device_id": device_id,
+                "host": host,
+                "mode": mode,
+            },
+        )
+        try:
+            result = push_ota_to_device(host, passcode, firmware_url, manifest_url)
+            _profile_push_job_append_output(job_id, "Device accepted OTA request.")
+            _profile_push_job_update(
+                job_id,
+                status="success",
+                ended_at=utc_now(),
+                result=result if isinstance(result, dict) else {"raw": str(result)},
+            )
+            append_event(
+                "firmware_profile_push_finished",
+                {
+                    "job_id": job_id,
+                    "profile_id": profile_id,
+                    "device_id": device_id,
+                    "host": host,
+                    "mode": mode,
+                    "ok": True,
+                },
+            )
+        except Exception as exc:
+            _profile_push_job_append_output(job_id, f"ERROR: {exc}")
+            _profile_push_job_update(job_id, status="failed", ended_at=utc_now(), error=str(exc))
+            append_event(
+                "firmware_profile_push_finished",
+                {
+                    "job_id": job_id,
+                    "profile_id": profile_id,
+                    "device_id": device_id,
+                    "host": host,
+                    "mode": mode,
+                    "ok": False,
+                    "error": str(exc),
+                },
+            )
+
+    _profile_push_executor.submit(_runner)
+    return dict(job)
 
 
 def _is_single_ipv4_host_hint(value: str) -> bool:
@@ -1629,12 +1754,16 @@ def push_profile_to_device(profile_id: str, device_id: str, request: Request) ->
     firmware_url = f"{base}/downloads/profiles/{profile_folder}/{firmware_name}"
     manifest_url = f"{base}/downloads/profiles/{profile_folder}/{manifest_name}"
 
-    try:
-        result = push_ota_to_device(host, passcode, firmware_url, manifest_url)
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"Profile OTA push failed: {exc}") from exc
-    append_event("firmware_profile_pushed", {"profile_id": profile_id, "device_id": device_id})
-    return {"ok": True, "profile_id": profile_id, "device_id": device_id, "device_response": result}
+    return _start_profile_push_job(
+        profile_id=profile_id,
+        profile_name=str(profile.get("profile_name", profile_id)),
+        device_id=device_id,
+        host=host,
+        firmware_url=firmware_url,
+        manifest_url=manifest_url,
+        passcode=passcode,
+        mode="registered_device",
+    )
 
 
 @app.post("/api/firmware/profiles/{profile_id}/push-direct", dependencies=[Depends(require_auth_if_configured)])
@@ -1662,12 +1791,24 @@ def push_profile_to_host(profile_id: str, payload: dict[str, Any], request: Requ
     firmware_url = f"{base}/downloads/profiles/{profile_folder}/{firmware_name}"
     manifest_url = f"{base}/downloads/profiles/{profile_folder}/{manifest_name}"
 
-    try:
-        result = push_ota_to_device(host, passcode, firmware_url, manifest_url)
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"Profile OTA push failed: {exc}") from exc
-    append_event("firmware_profile_pushed_direct", {"profile_id": profile_id, "host": host})
-    return {"ok": True, "profile_id": profile_id, "host": host, "device_response": result}
+    return _start_profile_push_job(
+        profile_id=profile_id,
+        profile_name=str(profile.get("profile_name", profile_id)),
+        device_id="",
+        host=host,
+        firmware_url=firmware_url,
+        manifest_url=manifest_url,
+        passcode=passcode,
+        mode="direct_host",
+    )
+
+
+@app.get("/api/firmware/profiles/push-jobs/{job_id}", dependencies=[Depends(require_auth_if_configured)])
+def get_profile_push_job(job_id: str) -> dict[str, Any]:
+    job = _profile_push_job_read(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
 
 
 @app.post("/api/firmware/build", dependencies=[Depends(require_auth_if_configured)])
@@ -1687,7 +1828,15 @@ def post_build_firmware(payload: dict[str, Any]) -> dict[str, Any]:
             defaults=defaults,
         )
     except FirmwareBuildError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": str(exc),
+                "build_id": exc.build_id,
+                "log_file": str(exc.log_file),
+                "hint": "Open the build log file for full stdout/stderr details.",
+            },
+        ) from exc
     except (RuntimeError, FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {

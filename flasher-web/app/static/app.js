@@ -23,8 +23,10 @@ const DEFAULT_BAUDS = [115200, 230400, 460800, 921600, 1000000, 1500000, 2000000
 const DEFAULT_RELAY_GPIOS = [16, 17, 18, 19, -1, -1, -1, -1];
 let flashPollTimer = null;
 let monitorPollTimer = null;
+let otaPushPollTimer = null;
 let monitorSessionId = "";
 let activeFlashJobId = "";
+let activeOtaPushJobId = "";
 let comCooldownUntil = 0;
 
 function stopBackgroundPolling() {
@@ -33,6 +35,11 @@ function stopBackgroundPolling() {
     flashPollTimer = null;
   }
   activeFlashJobId = "";
+  if (otaPushPollTimer) {
+    clearInterval(otaPushPollTimer);
+    otaPushPollTimer = null;
+  }
+  activeOtaPushJobId = "";
   comCooldownUntil = 0;
   if (monitorPollTimer) {
     clearInterval(monitorPollTimer);
@@ -81,7 +88,21 @@ async function api(path, opts = {}) {
       if (typeof body.detail === "string") {
         message = body.detail;
       } else if (typeof body.detail === "object") {
-        message = body.detail.message || JSON.stringify(body.detail, null, 2);
+        const d = body.detail;
+        const lines = [];
+        if (d.message) {
+          lines.push(String(d.message));
+        }
+        if (d.build_id) {
+          lines.push(`build_id: ${d.build_id}`);
+        }
+        if (d.log_file) {
+          lines.push(`log_file: ${d.log_file}`);
+        }
+        if (d.hint) {
+          lines.push(`hint: ${d.hint}`);
+        }
+        message = lines.length ? lines.join("\n") : JSON.stringify(d, null, 2);
       }
     }
     throw new Error(message);
@@ -1160,6 +1181,9 @@ async function buildProfilePackage() {
 }
 
 async function flashOta() {
+  if (activeOtaPushJobId) {
+    throw new Error(`OTA push job ${activeOtaPushJobId} is already running.`);
+  }
   const profileId = getEl("profileSelect").value.trim();
   const deviceId = getEl("otaDeviceSelect").value.trim();
   const directHost = getEl("otaDirectHost").value.trim();
@@ -1171,34 +1195,83 @@ async function flashOta() {
     throw new Error("Select a target device, or enter Direct Host + Passcode.");
   }
 
+  let result;
+  let mode = "registered_device";
+  const startedAt = Date.now();
+
   if (deviceId) {
-    print(actionOut, "Flash OTA", "Pushing profile OTA to registered device...");
-    const result = await api(`/api/firmware/profiles/${encodeURIComponent(profileId)}/push/${encodeURIComponent(deviceId)}`, {
+    print(actionOut, "Flash OTA", "Queueing profile OTA push to registered device...");
+    result = await api(`/api/firmware/profiles/${encodeURIComponent(profileId)}/push/${encodeURIComponent(deviceId)}`, {
       method: "POST",
       body: JSON.stringify({}),
     });
-    print(actionOut, "Flash OTA", {
-      mode: "registered_device",
-      ...result,
+  } else {
+    if (!directPasscode) {
+      throw new Error("Direct Device Passcode is required for direct-host OTA.");
+    }
+    mode = "direct_host";
+    print(actionOut, "Flash OTA", `Queueing profile OTA push directly to ${directHost}...`);
+    result = await api(`/api/firmware/profiles/${encodeURIComponent(profileId)}/push-direct`, {
+      method: "POST",
+      body: JSON.stringify({
+        host: directHost,
+        passcode: directPasscode,
+      }),
     });
-    return;
   }
 
-  if (!directPasscode) {
-    throw new Error("Direct Device Passcode is required for direct-host OTA.");
+  const jobId = String(result.job_id || "").trim();
+  if (!jobId) {
+    print(actionOut, "Flash OTA", { mode, ...result });
+    return;
   }
-  print(actionOut, "Flash OTA", `Pushing profile OTA directly to ${directHost}...`);
-  const result = await api(`/api/firmware/profiles/${encodeURIComponent(profileId)}/push-direct`, {
-    method: "POST",
-    body: JSON.stringify({
-      host: directHost,
-      passcode: directPasscode,
-    }),
-  });
-  print(actionOut, "Flash OTA", {
-    mode: "direct_host",
-    ...result,
-  });
+  activeOtaPushJobId = jobId;
+  if (otaPushPollTimer) {
+    clearInterval(otaPushPollTimer);
+    otaPushPollTimer = null;
+  }
+
+  const renderJob = (job) => {
+    const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
+    const lines = [
+      `OTA Job: ${job.job_id || jobId}`,
+      `Status: ${job.status || "unknown"}`,
+      `Mode: ${job.mode || mode}`,
+      `Host: ${job.host || directHost || "-"}`,
+      `Profile: ${job.profile_name || profileId}`,
+      `Elapsed: ${elapsedSec}s`,
+      "",
+      job.output || "",
+    ];
+    if (job.error) {
+      lines.push("");
+      lines.push(`Error: ${job.error}`);
+    }
+    if (job.result && Object.keys(job.result).length) {
+      lines.push("");
+      lines.push("Result:");
+      lines.push(JSON.stringify(job.result, null, 2));
+    }
+    actionOut.textContent = lines.filter((ln) => ln !== "").join("\n");
+  };
+
+  const poll = async () => {
+    const job = await api(`/api/firmware/profiles/push-jobs/${encodeURIComponent(jobId)}`);
+    renderJob(job);
+    const status = String(job.status || "").toLowerCase();
+    if (status === "success" || status === "failed") {
+      if (otaPushPollTimer) {
+        clearInterval(otaPushPollTimer);
+        otaPushPollTimer = null;
+      }
+      activeOtaPushJobId = "";
+    }
+  };
+
+  await poll();
+  otaPushPollTimer = setInterval(() => {
+    guarded(poll);
+  }, 1200);
 }
 
 async function pollSerialMonitor() {
