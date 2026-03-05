@@ -72,14 +72,36 @@ run_maybe_sudo() {
   run "$@"
 }
 
-apt_update_safe() {
-  if ! command -v sudo >/dev/null 2>&1 || ! command -v apt-get >/dev/null 2>&1; then
-    return 1
-  fi
-  if run sudo apt-get update; then
+can_run_privileged_noninteractive() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
     return 0
   fi
-  log "WARNING: apt-get update failed (likely broken external repo). Continuing with best effort."
+  if ! command -v sudo >/dev/null 2>&1; then
+    return 1
+  fi
+  sudo -n true >/dev/null 2>&1
+}
+
+run_maybe_sudo_noninteractive() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    run "$@"
+    return 0
+  fi
+  if can_run_privileged_noninteractive; then
+    run sudo "$@"
+    return 0
+  fi
+  return 1
+}
+
+apt_update_safe() {
+  if ! command -v apt-get >/dev/null 2>&1; then
+    return 1
+  fi
+  if run_maybe_sudo_noninteractive apt-get update; then
+    return 0
+  fi
+  log "WARNING: Skipping apt-get update (requires sudo password in interactive shell)."
   return 1
 }
 
@@ -132,10 +154,10 @@ ensure_cmd() {
     return 0
   fi
   log "Missing command '$cmd'. Attempting apt install: $pkg"
-  if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
     apt_update_safe || true
-    if ! run sudo apt-get install -y "$pkg"; then
-      log "WARNING: apt install failed for '$pkg'."
+    if ! run_maybe_sudo_noninteractive apt-get install -y "$pkg"; then
+      log "WARNING: apt install skipped for '$pkg' (sudo password required)."
     fi
   fi
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -358,9 +380,11 @@ ensure_backend_runtime() {
 
   if ! python3 -m pip --version >/dev/null 2>&1; then
     log "python3 pip missing. Installing python3-pip..."
-    if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then
       apt_update_safe || true
-      run sudo apt-get install -y python3-pip
+      if ! run_maybe_sudo_noninteractive apt-get install -y python3-pip; then
+        log "WARNING: Could not install python3-pip without sudo prompt."
+      fi
     fi
   fi
 
@@ -386,10 +410,9 @@ ensure_firewall_rule() {
   fi
 
   local status_out
-  if command -v sudo >/dev/null 2>&1; then
-    status_out="$(sudo ufw status 2>/dev/null || true)"
-  else
-    status_out="$(ufw status 2>/dev/null || true)"
+  status_out="$(ufw status 2>/dev/null || true)"
+  if [[ -z "$status_out" ]] && can_run_privileged_noninteractive; then
+    status_out="$(sudo -n ufw status 2>/dev/null || true)"
   fi
   if [[ "$status_out" == *"Status: inactive"* ]]; then
     log "UFW is inactive; skipping firewall rule setup."
@@ -406,8 +429,9 @@ ensure_firewall_rule() {
   fi
 
   log "Allowing firewall TCP port $port for 8bb server access."
-  if ! run_maybe_sudo ufw allow "${port}/tcp"; then
-    log "WARNING: Could not add UFW rule for ${port}/tcp."
+  if ! run_maybe_sudo_noninteractive ufw allow "${port}/tcp"; then
+    log "WARNING: Could not add UFW rule without sudo prompt."
+    log "Run this once manually: sudo ufw allow ${port}/tcp"
   fi
 }
 
@@ -416,7 +440,7 @@ install_deps() {
   ensure_cmd curl curl
   ensure_cmd tar tar
   ensure_cmd rsync rsync
-  if command -v apt-get >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
     local -a pkgs=(clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-12-dev python3-pip)
     local -a missing=()
     for p in "${pkgs[@]}"; do
@@ -427,7 +451,7 @@ install_deps() {
     if ((${#missing[@]} > 0)); then
       log "Installing missing Linux build packages: ${missing[*]}"
       apt_update_safe || true
-      if ! run sudo apt-get install -y "${missing[@]}"; then
+      if ! run_maybe_sudo_noninteractive apt-get install -y "${missing[@]}"; then
         log "WARNING: Optional Linux build package install failed. Flutter may still run if toolchain is already present."
       fi
     fi
@@ -436,12 +460,13 @@ install_deps() {
   ensure_flutter
   run "$FLUTTER_BIN" config --enable-linux-desktop
   ensure_linux_desktop_project
-  if command -v apt-get >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
     if ! command -v onboard >/dev/null 2>&1; then
       log "Installing optional touch keyboard package: onboard"
       apt_update_safe || true
-      if ! run sudo apt-get install -y onboard; then
-        log "WARNING: Could not install onboard automatically. You can install it manually if touch keyboard is needed."
+      if ! run_maybe_sudo_noninteractive apt-get install -y onboard; then
+        log "WARNING: Could not install onboard automatically without sudo prompt."
+        log "Install manually when ready: sudo apt-get install -y onboard"
       fi
     fi
   fi
