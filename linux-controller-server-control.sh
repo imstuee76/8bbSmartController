@@ -131,8 +131,12 @@ main() {
   case "$action" in
     start)
       if service_exists; then
-        run_maybe_sudo systemctl start "$SERVICE_NAME"
-        run systemctl status "$SERVICE_NAME" --no-pager || true
+        if run_maybe_sudo systemctl start "$SERVICE_NAME"; then
+          run systemctl status "$SERVICE_NAME" --no-pager || true
+        else
+          log "Service start failed (likely permissions). Falling back to manual server start."
+          manual_start
+        fi
       else
         manual_start
       fi

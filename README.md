@@ -129,10 +129,12 @@ Behavior:
 - Syncs both controller and local server runtime (`flasher-web`) files.
 - Installs missing controller deps, local backend Python deps, and local Flutter SDK bootstrap to `.tools/flutter` if Flutter is not in PATH.
 - `linux-controller-run.sh` auto-starts local backend (`flasher-web`) by default, then starts controller.
+- If backend is not running, app launch auto-starts it; backend stays running after app closes.
 - Auto-creates missing Flutter Linux desktop scaffolding (`controller-app/linux`) when needed.
 - Writes updater logs to `/data/logs/updater/sessions/<session>/`.
 - Writes controller run logs to `/data/logs/controller/sessions/<session>/`.
 - Local backend logs are also written in each controller session folder (`backend-*.log`, `backend-errors-*.log`).
+- Updater creates desktop shortcuts for app launch, updater, and server stop control.
 
 ## Split deployment model
 

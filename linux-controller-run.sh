@@ -13,9 +13,6 @@ ERROR_LOG="$SESSION_DIR/errors-$DAY_LOCAL.log"
 FLUTTER_HOME_DEFAULT="$APP_ROOT/.tools/flutter"
 FLUTTER_BIN=""
 ENV_FILE_LOADED=""
-BACKEND_PID=""
-BACKEND_ACTIVITY_LOG="$SESSION_DIR/backend-$DAY_LOCAL.log"
-BACKEND_ERROR_LOG="$SESSION_DIR/backend-errors-$DAY_LOCAL.log"
 
 mkdir -p "$SESSION_DIR"
 mkdir -p "$DATA_DIR/logs/updater"
@@ -40,12 +37,7 @@ is_true() {
 }
 
 cleanup_processes() {
-  if [[ -n "$BACKEND_PID" ]] && kill -0 "$BACKEND_PID" >/dev/null 2>&1; then
-    log "Stopping local backend (pid=$BACKEND_PID)"
-    kill "$BACKEND_PID" >/dev/null 2>&1 || true
-    wait "$BACKEND_PID" >/dev/null 2>&1 || true
-    BACKEND_PID=""
-  fi
+  :
 }
 
 trap cleanup_processes EXIT INT TERM
@@ -313,14 +305,6 @@ wait_for_local_backend() {
       log "Local backend ready: ${base_url}"
       return 0
     fi
-    if [[ -n "$BACKEND_PID" ]] && ! kill -0 "$BACKEND_PID" >/dev/null 2>&1; then
-      log "ERROR: Local backend process exited unexpectedly."
-      if [[ -f "$BACKEND_ERROR_LOG" ]]; then
-        log "Last backend errors:"
-        tail -n 30 "$BACKEND_ERROR_LOG" || true
-      fi
-      return 1
-    fi
     sleep 0.25
     i=$((i + 1))
   done
@@ -344,11 +328,7 @@ start_local_backend() {
   fi
 
   local host="${CONTROLLER_LOCAL_BACKEND_HOST:-127.0.0.1}"
-  local port="${CONTROLLER_LOCAL_BACKEND_PORT:-8088}"
-  local reload_flag=""
-  if is_true "${CONTROLLER_LOCAL_BACKEND_RELOAD:-0}"; then
-    reload_flag="--reload"
-  fi
+  local port="${CONTROLLER_LOCAL_BACKEND_PORT:-1111}"
 
   local base_url="http://${host}:${port}"
   export CONTROLLER_BACKEND_URL="$base_url"
@@ -363,20 +343,28 @@ start_local_backend() {
 
   ensure_local_backend_deps
 
-  log "Starting local backend: $base_url"
-  (
-    cd "$backend_dir"
-    if [[ -n "$reload_flag" ]]; then
-      exec python3 -m uvicorn app.main:app --host "$host" --port "$port" --reload
-    else
-      exec python3 -m uvicorn app.main:app --host "$host" --port "$port"
-    fi
-  ) >>"$BACKEND_ACTIVITY_LOG" 2>>"$BACKEND_ERROR_LOG" &
-  BACKEND_PID=$!
-  log "Local backend pid: $BACKEND_PID"
-  log "Backend logs: $BACKEND_ACTIVITY_LOG | $BACKEND_ERROR_LOG"
+  local server_ctl="$APP_ROOT/linux-controller-server-control.sh"
+  if [[ -x "$server_ctl" ]]; then
+    log "Starting local backend via server control helper..."
+    CONTROLLER_SERVER_HOST="$host" CONTROLLER_SERVER_PORT="$port" "$server_ctl" start || true
+  else
+    local run_dir="$DATA_DIR/run"
+    local pid_file="$run_dir/controller-server.pid"
+    local log_dir="$DATA_DIR/logs/server/manual"
+    mkdir -p "$run_dir" "$log_dir"
+    log "Starting local backend (manual detached mode): $base_url"
+    (
+      cd "$backend_dir"
+      nohup python3 -m uvicorn app.main:app --host "$host" --port "$port" \
+        >>"$log_dir/activity-$DAY_LOCAL.log" \
+        2>>"$log_dir/errors-$DAY_LOCAL.log" &
+      echo "$!" >"$pid_file"
+    )
+    log "Manual backend pid file: $pid_file"
+  fi
 
   wait_for_local_backend "$base_url"
+  log "Local backend stays running after app closes."
 }
 
 main() {
