@@ -60,6 +60,18 @@ run() {
   "$@"
 }
 
+run_maybe_sudo() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    run "$@"
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    run sudo "$@"
+    return 0
+  fi
+  run "$@"
+}
+
 apt_update_safe() {
   if ! command -v sudo >/dev/null 2>&1 || ! command -v apt-get >/dev/null 2>&1; then
     return 1
@@ -319,7 +331,7 @@ EOF
   create_one_shortcut \
     "8bb-flasher-web.desktop" \
     "8bb Flasher Web" \
-    "Start flasher backend and open browser UI" \
+    "Open flasher web UI (uses running local backend)" \
     "$APP_ROOT/linux-flasher-web.sh" \
     "true"
 }
@@ -358,6 +370,45 @@ ensure_backend_runtime() {
   fi
 
   run python3 -m pip install --user --upgrade -r "$req_file"
+}
+
+ensure_firewall_rule() {
+  local port="${CONTROLLER_SERVER_PORT:-1111}"
+  port="$(printf '%s' "$port" | tr -d '[:space:]')"
+  if [[ ! "$port" =~ ^[0-9]{2,5}$ ]]; then
+    log "Skipping firewall rule: invalid CONTROLLER_SERVER_PORT='$port'"
+    return 0
+  fi
+
+  if ! command -v ufw >/dev/null 2>&1; then
+    log "UFW not installed; skipping firewall rule setup."
+    return 0
+  fi
+
+  local status_out
+  if command -v sudo >/dev/null 2>&1; then
+    status_out="$(sudo ufw status 2>/dev/null || true)"
+  else
+    status_out="$(ufw status 2>/dev/null || true)"
+  fi
+  if [[ "$status_out" == *"Status: inactive"* ]]; then
+    log "UFW is inactive; skipping firewall rule setup."
+    return 0
+  fi
+  if [[ "$status_out" != *"Status: active"* ]]; then
+    log "Could not determine active UFW status; skipping firewall rule setup."
+    return 0
+  fi
+
+  if printf '%s\n' "$status_out" | grep -Eq "(^|[[:space:]])${port}/tcp([[:space:]]|$).*ALLOW"; then
+    log "Firewall already allows TCP port $port."
+    return 0
+  fi
+
+  log "Allowing firewall TCP port $port for 8bb server access."
+  if ! run_maybe_sudo ufw allow "${port}/tcp"; then
+    log "WARNING: Could not add UFW rule for ${port}/tcp."
+  fi
 }
 
 install_deps() {
@@ -478,6 +529,7 @@ main() {
   ensure_permissions
   create_desktop_shortcut
   install_deps
+  ensure_firewall_rule
   show_version
   log "Update complete. Preserved: $DATA_DIR and .env files."
 }

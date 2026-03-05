@@ -25,6 +25,12 @@ run() {
   "$@"
 }
 
+is_truthy() {
+  local v
+  v="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  [[ "$v" == "1" || "$v" == "true" || "$v" == "yes" || "$v" == "on" ]]
+}
+
 load_env_file() {
   local env_file=""
   if [[ -f "$DATA_DIR/.env" ]]; then
@@ -219,17 +225,33 @@ main() {
     exit 1
   fi
 
-  run "$APP_ROOT/linux-controller-server-control.sh" start
-
   local base_url
   base_url="$(detect_backend_url)"
-  if ! base_url="$(wait_for_any_server "$base_url")"; then
-    print_server_debug
-    exit 1
+  if base_url="$(wait_for_any_server "$base_url")"; then
+    log "Flasher backend ready: $base_url"
+    open_browser "$base_url"
+    log "Opened flasher UI: $base_url"
+    return 0
   fi
-  log "Flasher backend ready: $base_url"
-  open_browser "$base_url"
-  log "Opened flasher UI: $base_url"
+
+  if is_truthy "${FLASHER_AUTO_START_BACKEND:-0}"; then
+    log "Backend not reachable. Auto-start enabled, starting backend now..."
+    run "$APP_ROOT/linux-controller-server-control.sh" start
+    base_url="$(detect_backend_url)"
+    if base_url="$(wait_for_any_server "$base_url")"; then
+      log "Flasher backend ready: $base_url"
+      open_browser "$base_url"
+      log "Opened flasher UI: $base_url"
+      return 0
+    fi
+  else
+    log "Backend is not running (auto-start disabled)."
+    log "Start it with:"
+    log "  ./linux-controller-server-control.sh start"
+  fi
+
+  print_server_debug
+  exit 1
 }
 
 main "$@"
