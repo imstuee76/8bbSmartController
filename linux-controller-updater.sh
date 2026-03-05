@@ -714,6 +714,17 @@ install_esp_idf_if_missing() {
     return 0
   fi
 
+  local force_install="${IDF_FORCE_INSTALL:-0}"
+  if ! is_truthy "$force_install"; then
+    local existing_py
+    existing_py="$(detect_idf_python_via_export "$idf_root/tools/idf.py" || true)"
+    if [[ -n "$existing_py" ]]; then
+      log "ESP-IDF tools already available ($existing_py). Skipping install.sh."
+      log "Set IDF_FORCE_INSTALL=1 to force re-install."
+      return 0
+    fi
+  fi
+
   log "Running ESP-IDF installer (esp32 target, ref=$idf_ref). This may take a while..."
   (
     cd "$idf_root"

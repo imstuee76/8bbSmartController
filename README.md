@@ -142,6 +142,7 @@ Behavior:
 - Updater also configures Linux serial access (dialout/tty groups + udev rule for `ttyUSB*`/`ttyACM*`) for ESP flashing.
 - Updater auto-installs/configures ESP-IDF on Linux when missing (`IDF_AUTO_INSTALL=1` default) and writes `IDF_CMD` to `.env`.
 - Updater pins ESP-IDF install to `IDF_INSTALL_REF` (default `v5.5.3`) in `IDF_INSTALL_DIR` (default `~/esp/esp-idf-v5.5.3`) for firmware compatibility.
+- Updater skips `install.sh` when ESP-IDF tools are already healthy; set `IDF_FORCE_INSTALL=1` to force reinstall.
 
 ## Split deployment model
 
