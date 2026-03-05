@@ -25,6 +25,44 @@ run() {
   "$@"
 }
 
+load_env_file() {
+  local env_file=""
+  if [[ -f "$DATA_DIR/.env" ]]; then
+    env_file="$DATA_DIR/.env"
+  elif [[ -f "$APP_ROOT/.env" ]]; then
+    env_file="$APP_ROOT/.env"
+  fi
+  if [[ -n "$env_file" ]]; then
+    log "Loading env from $env_file"
+    while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+      local line="$raw_line"
+      line="${line//$'\r'/}"
+      if [[ -z "${line//[[:space:]]/}" ]]; then
+        continue
+      fi
+      if [[ "$line" =~ ^[[:space:]]*# ]]; then
+        continue
+      fi
+      if [[ ! "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]]; then
+        continue
+      fi
+      local key="${BASH_REMATCH[1]}"
+      local value="${BASH_REMATCH[2]}"
+      value="${value//$'\r'/}"
+      if [[ "$value" =~ ^[[:space:]]*\"(.*)\"[[:space:]]*$ ]]; then
+        value="${BASH_REMATCH[1]}"
+      elif [[ "$value" =~ ^[[:space:]]*\'(.*)\'[[:space:]]*$ ]]; then
+        value="${BASH_REMATCH[1]}"
+      else
+        value="${value%%#*}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+      fi
+      export "$key=$value"
+    done <"$env_file"
+  fi
+}
+
 resolve_browser_url() {
   local host="${CONTROLLER_SERVER_HOST:-127.0.0.1}"
   local port="${CONTROLLER_SERVER_PORT:-1111}"
@@ -38,6 +76,50 @@ resolve_browser_url() {
     port="1111"
   fi
   printf 'http://%s:%s/\n' "$host" "$port"
+}
+
+is_backend_ready() {
+  local base_url="$1"
+  if ! command -v curl >/dev/null 2>&1; then
+    return 0
+  fi
+  if curl -fsS "${base_url}api/auth/status" >/dev/null 2>&1; then
+    return 0
+  fi
+  if curl -fsS "${base_url}" >/dev/null 2>&1; then
+    return 0
+  fi
+  if curl -fsS "${base_url}ui/" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+detect_backend_url() {
+  local configured
+  configured="$(resolve_browser_url)"
+  if is_backend_ready "$configured"; then
+    printf '%s\n' "$configured"
+    return 0
+  fi
+
+  local host="${CONTROLLER_SERVER_HOST:-127.0.0.1}"
+  host="$(printf '%s' "$host" | tr -d '[:space:]')"
+  if [[ -z "$host" || "$host" == "0.0.0.0" || "$host" == "::" ]]; then
+    host="127.0.0.1"
+  fi
+
+  local -a fallback_ports=(1111 8088)
+  local p
+  for p in "${fallback_ports[@]}"; do
+    local candidate="http://${host}:${p}/"
+    if is_backend_ready "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  printf '%s\n' "$configured"
 }
 
 open_browser() {
@@ -61,12 +143,11 @@ wait_for_server() {
   local url="$1"
   local i=0
   while ((i < 50)); do
-    if command -v curl >/dev/null 2>&1; then
-      if curl -fsS "${url}api/auth/status" >/dev/null 2>&1; then
-        log "Flasher backend ready: $url"
-        return 0
-      fi
-    else
+    if is_backend_ready "$url"; then
+      log "Flasher backend ready: $url"
+      return 0
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
       sleep 1
       return 0
     fi
@@ -80,6 +161,7 @@ main() {
   log "Session: $SESSION_ID"
   log "App root: $APP_ROOT"
   log "Data dir: $DATA_DIR"
+  load_env_file
 
   if [[ ! -x "$APP_ROOT/linux-controller-server-control.sh" ]]; then
     log "ERROR: Missing server control script: $APP_ROOT/linux-controller-server-control.sh"
@@ -89,7 +171,7 @@ main() {
   run "$APP_ROOT/linux-controller-server-control.sh" start
 
   local base_url
-  base_url="$(resolve_browser_url)"
+  base_url="$(detect_backend_url)"
   wait_for_server "$base_url"
   open_browser "$base_url"
   log "Opened flasher UI: $base_url"
