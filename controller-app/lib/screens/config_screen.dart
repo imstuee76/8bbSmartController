@@ -755,6 +755,96 @@ class _ConfigScreenState extends State<ConfigScreen> {
     }
   }
 
+  Future<void> _testMoesHub() async {
+    _setLiveActionStatus('Testing MOES hub connection...', busy: true);
+    _markActionRunning('moes_test', openOutputPanel: true);
+    try {
+      final result = await widget.api.moesTest(
+        hubDeviceId: _moesHubIdCtl.text.trim(),
+        hubIp: _moesHubIpCtl.text.trim(),
+        hubMac: _moesHubMacCtl.text.trim(),
+        hubLocalKey: _moesHubKeyCtl.text.trim(),
+        hubVersion: _moesHubVersionCtl.text.trim(),
+        subnetHint: _scanSubnetCtl.text.trim(),
+      );
+      _setOutputJson(result, openOutputPanel: true);
+      final count = (result['subdevice_count'] as num?)?.toInt() ?? 0;
+      _setLiveActionStatus('MOES test OK. Hub reachable. Subdevices: $count.', busy: false);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('MOES test OK (subdevices: $count)')),
+      );
+    } catch (e) {
+      _setLiveActionStatus('MOES test failed.', busy: false);
+      _setOutputJson({
+        'action': 'moes_test',
+        'backend_url': widget.api.baseUrl,
+        'ok': false,
+        'error': _friendlyError(e),
+        'at_utc': DateTime.now().toUtc().toIso8601String(),
+      }, openOutputPanel: true);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    }
+  }
+
+  Future<void> _showTuyaHowTo() async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('How To: Tuya Credentials'),
+        content: const SingleChildScrollView(
+          child: Text(
+            'Required fields:\n'
+            '1. Cloud region (e.g. eu/us/cn/in)\n'
+            '2. Client ID (Access ID)\n'
+            '3. Client Secret\n'
+            '4. API Device ID\n\n'
+            'Steps:\n'
+            '1. Open Tuya IoT Platform (iot.tuya.com).\n'
+            '2. Create/select Cloud Project and link your Smart Life/Tuya app account.\n'
+            '3. Copy Access ID -> Client ID field.\n'
+            '4. Copy Access Secret -> Client Secret field.\n'
+            '5. Open any one device in the project and copy its Device ID -> API Device ID field.\n'
+            '6. Save section, then click Test Tuya Setup.\n'
+            '7. Click Scan + Save devices.json.\n\n'
+            'Note: Local key is optional fallback only.',
+          ),
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
+      ),
+    );
+  }
+
+  Future<void> _showMoesHowTo() async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('How To: MOES Hub ID + Local Key'),
+        content: const SingleChildScrollView(
+          child: Text(
+            'Best method (inside this app):\n'
+            '1. In Tuya section, enter Cloud region + Client ID + Client Secret + API Device ID.\n'
+            '2. Click Test Tuya Setup.\n'
+            '3. Click Scan + Save devices.json.\n'
+            '4. Return to MOES section.\n'
+            '5. Click Discover MOES Hub (LAN).\n'
+            '6. Click Use on your hub candidate.\n'
+            '7. Click Test MOES.\n\n'
+            'Manual method:\n'
+            '- Hub Device ID = MOES gateway device ID from Tuya app/IoT platform.\n'
+            '- Hub Local Key = device local key from Tuya IoT linked device list.\n\n'
+            'Tips:\n'
+            '- Hub and controller must be on same LAN.\n'
+            '- Use subnet hint (e.g. 192.168.50) for faster discover.\n'
+            '- If test fails, verify IP + ID + key match the same hub.',
+          ),
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
+      ),
+    );
+  }
+
   void _useMoesHub(Map<String, dynamic> hub) {
     setState(() {
       if ((hub['ip'] ?? '').toString().isNotEmpty) {
@@ -1249,6 +1339,8 @@ class _ConfigScreenState extends State<ConfigScreen> {
                     Wrap(
                       spacing: 8,
                       children: [
+                        OutlinedButton(onPressed: _showMoesHowTo, child: const Text('How to get MOES details')),
+                        FilledButton.tonal(onPressed: _testMoesHub, child: const Text('Test MOES')),
                         FilledButton.tonal(onPressed: _discoverMoesHubLocal, child: const Text('Discover MOES Hub (LAN)')),
                         FilledButton.tonal(onPressed: _discoverMoesLights, child: const Text('Discover Hub RGB Lights')),
                         FilledButton(onPressed: _saveMoesSection, child: const Text('Save section')),
@@ -1417,6 +1509,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
                     Wrap(
                       spacing: 8,
                       children: [
+                        OutlinedButton(onPressed: _showTuyaHowTo, child: const Text('How to get Tuya details')),
                         FilledButton.tonal(onPressed: _testTuyaSetup, child: const Text('Test Tuya Setup')),
                         FilledButton.tonal(onPressed: _scanTuyaAndSave, child: const Text('Scan + Save devices.json')),
                         OutlinedButton(onPressed: _loadSavedTuyaDevices, child: const Text('Load saved devices.json')),

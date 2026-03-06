@@ -524,6 +524,32 @@ class ApiService {
     return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
+  Future<Map<String, dynamic>> moesTest({
+    String hubDeviceId = '',
+    String hubIp = '',
+    String hubMac = '',
+    String hubLocalKey = '',
+    String hubVersion = '',
+    String subnetHint = '',
+  }) async {
+    final res = await _client.post(
+      _uri('/api/integrations/moes/test'),
+      headers: _jsonHeaders(),
+      body: jsonEncode({
+        'hub_device_id': hubDeviceId,
+        'hub_ip': hubIp,
+        'hub_mac': hubMac,
+        'hub_local_key': hubLocalKey,
+        'hub_version': hubVersion,
+        'subnet_hint': subnetHint,
+      }),
+    );
+    if (res.statusCode != 200) {
+      throw Exception('MOES test failed: ${res.body}');
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
   Future<bool> isAuthConfigured() async {
     final res = await _client.get(_uri('/api/auth/status'));
     if (res.statusCode != 200) {

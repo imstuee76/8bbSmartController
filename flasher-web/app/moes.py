@@ -498,6 +498,60 @@ def discover_bhubw_lights(
     }
 
 
+def test_bhubw_connection(
+    hub_device_id: str = "",
+    hub_ip: str = "",
+    hub_mac: str = "",
+    hub_local_key: str = "",
+    hub_version: str = "",
+    subnet_hint: str = "",
+) -> dict[str, Any]:
+    selected_hub, selected_ip, selected_key, selected_version, selected_mac = _resolve_hub_inputs(
+        hub_device_id=hub_device_id,
+        hub_ip=hub_ip,
+        hub_mac=hub_mac,
+        hub_local_key=hub_local_key,
+        hub_version=hub_version,
+        subnet_hint=subnet_hint,
+    )
+    parent = _create_hub_device(
+        hub_id=selected_hub,
+        hub_ip=selected_ip,
+        local_key=selected_key,
+        version=selected_version,
+        socket_timeout=2.5,
+        retry_limit=0,
+    )
+    status = parent.status()
+    dps = _extract_dps(status)
+    subdev_raw = parent.subdev_query()
+    cids: dict[str, dict[str, Any]] = {}
+    _collect_subdevices(subdev_raw, cids)
+
+    append_event(
+        "moes_connection_test",
+        {
+            "ok": True,
+            "hub_id": selected_hub,
+            "hub_ip": selected_ip,
+            "hub_mac": selected_mac,
+            "subdevice_count": len(cids),
+        },
+    )
+    return {
+        "ok": True,
+        "selected_hub_device_id": selected_hub,
+        "selected_hub_ip": selected_ip,
+        "selected_hub_mac": selected_mac,
+        "selected_hub_version": str(selected_version),
+        "selected_hub_has_local_key": bool(selected_key),
+        "status_keys": sorted(list(status.keys())) if isinstance(status, dict) else [],
+        "dps_keys": sorted(list(dps.keys())),
+        "subdevice_count": len(cids),
+        "subdevice_ids": sorted(list(cids.keys()))[:80],
+    }
+
+
 def send_bhubw_light_command(metadata: dict[str, Any], command: dict[str, Any]) -> dict[str, Any]:
     selected_hub, selected_ip, selected_key, selected_version, selected_mac = _resolve_hub_inputs(
         hub_device_id=str(metadata.get("hub_device_id", "")).strip(),
