@@ -40,6 +40,8 @@ class _ConfigScreenState extends State<ConfigScreen> {
   final _tuyaRegionCtl = TextEditingController();
   final _tuyaIdCtl = TextEditingController();
   final _tuyaSecretCtl = TextEditingController();
+  final _tuyaApiDeviceIdCtl = TextEditingController();
+  final _tuyaLocalKeyCtl = TextEditingController();
   final _moesHubIpCtl = TextEditingController();
   final _moesHubMacCtl = TextEditingController();
   final _moesHubIdCtl = TextEditingController();
@@ -64,6 +66,8 @@ class _ConfigScreenState extends State<ConfigScreen> {
   int _panelUiEpoch = 0;
   Offset _logWindowOffset = const Offset(20, 20);
   String _integrationTestOutput = '';
+  String _liveActionStatus = '';
+  bool _liveActionBusy = false;
   String _moesLastDiscoveredAt = '';
   String _moesLastLightScanAt = '';
   List<Map<String, dynamic>> _tuyaLocalDevices = <Map<String, dynamic>>[];
@@ -90,7 +94,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
     final lower = text.toLowerCase();
     if (lower.contains('connection refused') || lower.contains('socketexception')) {
       return 'Backend unreachable at ${widget.api.baseUrl}.\n'
-          'Check: Windows backend is running, URL/port are correct, and firewall allows TCP 8088.';
+          'Check: backend service is running, URL/port are correct, and firewall allows TCP 1111.';
     }
     return text;
   }
@@ -120,6 +124,8 @@ class _ConfigScreenState extends State<ConfigScreen> {
       _tuyaRegionCtl.text = integrations.tuya['cloud_region']?.toString() ?? '';
       _tuyaIdCtl.text = integrations.tuya['client_id']?.toString() ?? '';
       _tuyaSecretCtl.text = integrations.tuya['client_secret']?.toString() ?? '';
+      _tuyaApiDeviceIdCtl.text = integrations.tuya['api_device_id']?.toString() ?? '';
+      _tuyaLocalKeyCtl.text = integrations.tuya['local_key']?.toString() ?? '';
       _moesHubIpCtl.text = integrations.moes['hub_ip']?.toString() ?? '';
       _moesHubMacCtl.text = integrations.moes['hub_mac']?.toString() ?? '';
       _moesHubIdCtl.text = integrations.moes['hub_device_id']?.toString() ?? '';
@@ -161,6 +167,8 @@ class _ConfigScreenState extends State<ConfigScreen> {
         'cloud_region': _tuyaRegionCtl.text.trim(),
         'client_id': _tuyaIdCtl.text.trim(),
         'client_secret': _tuyaSecretCtl.text.trim(),
+        'api_device_id': _tuyaApiDeviceIdCtl.text.trim(),
+        'local_key': _tuyaLocalKeyCtl.text.trim(),
         'local_scan_enabled': true,
       },
       scan: {
@@ -332,7 +340,15 @@ class _ConfigScreenState extends State<ConfigScreen> {
     _setOutputMessage(const JsonEncoder.withIndent('  ').convert(payload), openOutputPanel: openOutputPanel);
   }
 
-  void _markActionRunning(String action, {Map<String, dynamic>? extra}) {
+  void _setLiveActionStatus(String text, {bool busy = false}) {
+    if (!mounted) return;
+    setState(() {
+      _liveActionStatus = text;
+      _liveActionBusy = busy;
+    });
+  }
+
+  void _markActionRunning(String action, {Map<String, dynamic>? extra, bool openOutputPanel = false}) {
     final payload = <String, dynamic>{
       'action': action,
       'status': 'running',
@@ -342,7 +358,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
     if (extra != null && extra.isNotEmpty) {
       payload.addAll(extra);
     }
-    _setOutputJson(payload, openOutputPanel: false);
+    _setOutputJson(payload, openOutputPanel: openOutputPanel);
   }
 
   Future<void> _setupAdmin() async {
@@ -483,19 +499,28 @@ class _ConfigScreenState extends State<ConfigScreen> {
   }
 
   Future<void> _testTuyaLocal() async {
-    _markActionRunning('tuya_local_scan');
+    _setLiveActionStatus('Tuya local scan started...', busy: true);
+    _markActionRunning('tuya_local_scan', openOutputPanel: true);
     try {
-      final result = await widget.api.tuyaLocalScan(subnetHint: _scanSubnetCtl.text.trim());
+      final result = await widget.api.tuyaLocalScan(
+        subnetHint: _scanSubnetCtl.text.trim(),
+        cloudRegion: _tuyaRegionCtl.text.trim(),
+        clientId: _tuyaIdCtl.text.trim(),
+        clientSecret: _tuyaSecretCtl.text.trim(),
+        apiDeviceId: _tuyaApiDeviceIdCtl.text.trim(),
+      );
       if (!mounted) return;
       setState(() {
         _tuyaLocalDevices = (result['devices'] as List<dynamic>? ?? <dynamic>[]).whereType<Map<String, dynamic>>().toList();
       });
       _setOutputJson(result);
       if (!mounted) return;
+      _setLiveActionStatus('Tuya local scan complete: ${_tuyaLocalDevices.length} device(s).', busy: false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Tuya local scan complete: ${_tuyaLocalDevices.length} device(s)')),
       );
     } catch (e) {
+      _setLiveActionStatus('Tuya local scan failed.', busy: false);
       _setOutputJson({
         'action': 'tuya_local_scan',
         'backend_url': widget.api.baseUrl,
@@ -509,19 +534,27 @@ class _ConfigScreenState extends State<ConfigScreen> {
   }
 
   Future<void> _testTuyaCloud() async {
-    _markActionRunning('tuya_cloud_scan');
+    _setLiveActionStatus('Tuya cloud scan started...', busy: true);
+    _markActionRunning('tuya_cloud_scan', openOutputPanel: true);
     try {
-      final result = await widget.api.tuyaCloudDevices();
+      final result = await widget.api.tuyaCloudDevices(
+        cloudRegion: _tuyaRegionCtl.text.trim(),
+        clientId: _tuyaIdCtl.text.trim(),
+        clientSecret: _tuyaSecretCtl.text.trim(),
+        apiDeviceId: _tuyaApiDeviceIdCtl.text.trim(),
+      );
       if (!mounted) return;
       setState(() {
         _tuyaCloudDevices = (result['devices'] as List<dynamic>? ?? <dynamic>[]).whereType<Map<String, dynamic>>().toList();
       });
       _setOutputJson(result);
       if (!mounted) return;
+      _setLiveActionStatus('Tuya cloud scan complete: ${_tuyaCloudDevices.length} device(s).', busy: false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Tuya cloud scan complete: ${_tuyaCloudDevices.length} device(s)')),
       );
     } catch (e) {
+      _setLiveActionStatus('Tuya cloud scan failed.', busy: false);
       _setOutputJson({
         'action': 'tuya_cloud_scan',
         'backend_url': widget.api.baseUrl,
@@ -534,8 +567,117 @@ class _ConfigScreenState extends State<ConfigScreen> {
     }
   }
 
+  Future<void> _testTuyaSetup() async {
+    _setLiveActionStatus('Testing Tuya credentials...', busy: true);
+    _markActionRunning(
+      'tuya_test_credentials',
+      openOutputPanel: true,
+      extra: {
+        'requires_api_device_id': true,
+      },
+    );
+    try {
+      await _saveTuyaSection();
+      final result = await widget.api.tuyaTest(
+        cloudRegion: _tuyaRegionCtl.text.trim(),
+        clientId: _tuyaIdCtl.text.trim(),
+        clientSecret: _tuyaSecretCtl.text.trim(),
+        apiDeviceId: _tuyaApiDeviceIdCtl.text.trim(),
+      );
+      _setOutputJson(result);
+      final ok = (result['ok'] as bool?) ?? false;
+      final count = (result['device_count'] as num?)?.toInt() ?? 0;
+      _setLiveActionStatus(ok ? 'Tuya test OK. Cloud devices visible: $count.' : 'Tuya test failed.', busy: false);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(ok ? 'Tuya test OK ($count devices)' : (result['error'] ?? 'Tuya test failed').toString())),
+      );
+    } catch (e) {
+      _setLiveActionStatus('Tuya test failed.', busy: false);
+      _setOutputJson({
+        'action': 'tuya_test_credentials',
+        'backend_url': widget.api.baseUrl,
+        'ok': false,
+        'error': _friendlyError(e),
+        'at_utc': DateTime.now().toUtc().toIso8601String(),
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    }
+  }
+
+  Future<void> _scanTuyaAndSave() async {
+    _setLiveActionStatus('Scanning Tuya (local + cloud) and saving devices.json...', busy: true);
+    _markActionRunning('tuya_scan_save', openOutputPanel: true);
+    try {
+      await _saveTuyaSection();
+      final result = await widget.api.tuyaScanAndSave(
+        subnetHint: _scanSubnetCtl.text.trim(),
+        cloudRegion: _tuyaRegionCtl.text.trim(),
+        clientId: _tuyaIdCtl.text.trim(),
+        clientSecret: _tuyaSecretCtl.text.trim(),
+        apiDeviceId: _tuyaApiDeviceIdCtl.text.trim(),
+      );
+      if (!mounted) return;
+      setState(() {
+        _tuyaLocalDevices = (result['local_devices'] as List<dynamic>? ?? <dynamic>[]).whereType<Map<String, dynamic>>().toList();
+        _tuyaCloudDevices = (result['cloud_devices'] as List<dynamic>? ?? <dynamic>[]).whereType<Map<String, dynamic>>().toList();
+      });
+      _setOutputJson(result, openOutputPanel: true);
+      final saved = (result['saved_count'] as num?)?.toInt() ?? 0;
+      final localCount = (result['local_count'] as num?)?.toInt() ?? _tuyaLocalDevices.length;
+      final cloudCount = (result['cloud_count'] as num?)?.toInt() ?? _tuyaCloudDevices.length;
+      final fileName = (result['file_name'] ?? 'devices.json').toString();
+      _setLiveActionStatus(
+        'Tuya scan complete. Saved $saved device(s) to $fileName. Local $localCount, Cloud $cloudCount.',
+        busy: false,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Tuya saved to $fileName: $saved device(s)')),
+      );
+    } catch (e) {
+      _setLiveActionStatus('Tuya scan + save failed.', busy: false);
+      _setOutputJson({
+        'action': 'tuya_scan_save',
+        'backend_url': widget.api.baseUrl,
+        'ok': false,
+        'error': _friendlyError(e),
+        'at_utc': DateTime.now().toUtc().toIso8601String(),
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    }
+  }
+
+  Future<void> _loadSavedTuyaDevices() async {
+    _setLiveActionStatus('Loading saved Tuya devices from devices.json...', busy: true);
+    _markActionRunning('tuya_devices_file_load', openOutputPanel: false);
+    try {
+      final result = await widget.api.tuyaDevicesFile();
+      final rows = (result['devices'] as List<dynamic>? ?? <dynamic>[]).whereType<Map<String, dynamic>>().toList();
+      if (!mounted) return;
+      setState(() {
+        _tuyaLocalDevices = rows
+            .where((row) => (row['mode'] ?? '').toString().toLowerCase() == 'local_lan')
+            .toList(growable: false);
+        _tuyaCloudDevices = rows
+            .where((row) => (row['mode'] ?? '').toString().toLowerCase() == 'cloud')
+            .toList(growable: false);
+      });
+      _setOutputJson(result);
+      final fileName = (result['file_name'] ?? 'devices.json').toString();
+      _setLiveActionStatus('Loaded ${rows.length} Tuya devices from $fileName.', busy: false);
+    } catch (e) {
+      _setLiveActionStatus('Loading saved Tuya devices failed.', busy: false);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    }
+  }
+
   Future<void> _discoverMoesHubLocal() async {
-    _markActionRunning('moes_discover_local');
+    _setLiveActionStatus('Scanning MOES hubs on LAN...', busy: true);
+    _markActionRunning('moes_discover_local', openOutputPanel: true);
     try {
       final result = await widget.api.moesDiscoverLocal(subnetHint: _scanSubnetCtl.text.trim());
       if (!mounted) return;
@@ -552,14 +694,18 @@ class _ConfigScreenState extends State<ConfigScreen> {
           if (bestIp.isNotEmpty) _moesHubIpCtl.text = bestIp;
           if (bestId.isNotEmpty) _moesHubIdCtl.text = bestId;
           if (bestVersion.isNotEmpty) _moesHubVersionCtl.text = bestVersion;
+          final bestKey = (best['local_key'] ?? '').toString().trim();
+          if (bestKey.isNotEmpty) _moesHubKeyCtl.text = bestKey;
         }
       });
       _setOutputJson(result);
       if (!mounted) return;
+      _setLiveActionStatus('MOES hub scan complete: ${_moesHubs.length} candidate(s).', busy: false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('MOES hub discover complete: ${_moesHubs.length} candidate(s)')),
       );
     } catch (e) {
+      _setLiveActionStatus('MOES hub scan failed.', busy: false);
       _setOutputJson({
         'action': 'moes_discover_local',
         'backend_url': widget.api.baseUrl,
@@ -573,7 +719,8 @@ class _ConfigScreenState extends State<ConfigScreen> {
   }
 
   Future<void> _discoverMoesLights() async {
-    _markActionRunning('moes_discover_lights');
+    _setLiveActionStatus('Scanning MOES lights via selected hub...', busy: true);
+    _markActionRunning('moes_discover_lights', openOutputPanel: true);
     try {
       final result = await widget.api.moesDiscoverLights(
         hubDeviceId: _moesHubIdCtl.text.trim(),
@@ -590,10 +737,12 @@ class _ConfigScreenState extends State<ConfigScreen> {
       });
       _setOutputJson(result);
       if (!mounted) return;
+      _setLiveActionStatus('MOES light scan complete: ${_moesLights.length} light(s).', busy: false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('MOES light discover complete: ${_moesLights.length} light(s)')),
       );
     } catch (e) {
+      _setLiveActionStatus('MOES light scan failed.', busy: false);
       _setOutputJson({
         'action': 'moes_discover_lights',
         'backend_url': widget.api.baseUrl,
@@ -620,6 +769,9 @@ class _ConfigScreenState extends State<ConfigScreen> {
       if ((hub['version'] ?? '').toString().isNotEmpty) {
         _moesHubVersionCtl.text = (hub['version'] ?? '').toString();
       }
+      if ((hub['local_key'] ?? '').toString().isNotEmpty) {
+        _moesHubKeyCtl.text = (hub['local_key'] ?? '').toString();
+      }
     });
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('MOES hub loaded into config fields')));
   }
@@ -643,6 +795,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
           'hub_mac': _moesHubMacCtl.text.trim(),
           'hub_device_id': _moesHubIdCtl.text.trim(),
           'hub_version': _moesHubVersionCtl.text.trim(),
+          'hub_local_key': _moesHubKeyCtl.text.trim(),
           'moes_cid': lightCid,
           'tuya_device_id': lightId,
           'tuya_category': category,
@@ -694,8 +847,12 @@ class _ConfigScreenState extends State<ConfigScreen> {
     return 'relay_switch';
   }
 
-  Future<String?> _promptOptionalLocalKey(String title) async {
-    final ctl = TextEditingController();
+  Future<String?> _promptLocalKey(
+    String title, {
+    String initialValue = '',
+    bool allowSkip = true,
+  }) async {
+    final ctl = TextEditingController(text: initialValue);
     return showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
@@ -703,44 +860,152 @@ class _ConfigScreenState extends State<ConfigScreen> {
         content: TextField(
           controller: ctl,
           obscureText: true,
-          decoration: const InputDecoration(labelText: 'Tuya local key (optional)'),
+          decoration: InputDecoration(labelText: allowSkip ? 'Tuya local key (optional)' : 'Tuya local key (required)'),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(context, ''), child: const Text('Skip')),
+          if (allowSkip) TextButton(onPressed: () => Navigator.pop(context, ''), child: const Text('Skip')),
           FilledButton(onPressed: () => Navigator.pop(context, ctl.text.trim()), child: const Text('Save')),
         ],
       ),
     );
   }
 
+  bool _hasTuyaLocalMode(Map<String, dynamic> item) {
+    final ip = (item['ip'] ?? item['local_ip'] ?? '').toString().trim();
+    final devId = (item['id'] ?? '').toString().trim();
+    final key = (item['local_key'] ?? '').toString().trim();
+    final defaultKey = _tuyaLocalKeyCtl.text.trim();
+    return ip.isNotEmpty && devId.isNotEmpty && (key.isNotEmpty || defaultKey.isNotEmpty);
+  }
+
+  Future<String?> _pickTuyaAddMode({
+    required Map<String, dynamic> item,
+    required String preferredMode,
+  }) async {
+    final hasLocal = _hasTuyaLocalMode(item);
+    final hasCloud = (item['id'] ?? '').toString().trim().isNotEmpty;
+    if (hasLocal && !hasCloud) return 'local_lan';
+    if (!hasLocal && hasCloud) return 'cloud';
+    if (!hasLocal && !hasCloud) return null;
+
+    final deviceName = (item['name'] ?? item['id'] ?? item['ip'] ?? 'Tuya Device').toString();
+    return showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Add $deviceName'),
+        content: const Text('Choose how to add this Tuya device.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton.tonal(
+            onPressed: hasLocal ? () => Navigator.pop(context, 'local_lan') : null,
+            child: Text(preferredMode == 'local_lan' ? 'Local LAN (Recommended)' : 'Local LAN'),
+          ),
+          FilledButton.tonal(
+            onPressed: hasCloud ? () => Navigator.pop(context, 'cloud') : null,
+            child: Text(preferredMode == 'cloud' ? 'Cloud (Recommended)' : 'Cloud'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _createTuyaLocalDeviceFromItem(Map<String, dynamic> item) async {
+    final deviceId = (item['id'] ?? '').toString().trim();
+    final ip = (item['ip'] ?? item['local_ip'] ?? '').toString().trim();
+    final version = (item['version'] ?? '').toString().trim();
+    final productKey = (item['product_key'] ?? '').toString().trim();
+    final category = (item['category'] ?? '').toString().trim();
+    final productName = (item['product_name'] ?? '').toString().trim();
+
+    if (deviceId.isEmpty || ip.isEmpty) {
+      throw Exception('Tuya local add requires both device id and IP from scan result');
+    }
+
+    var localKey = (item['local_key'] ?? '').toString().trim();
+    if (localKey.isEmpty) {
+      localKey = _tuyaLocalKeyCtl.text.trim();
+    }
+    if (localKey.isEmpty) {
+      final input = await _promptLocalKey('Add Tuya Local Device', allowSkip: false);
+      if (input == null || input.trim().isEmpty) {
+        return;
+      }
+      localKey = input.trim();
+    }
+
+    final name = (item['name'] ?? '').toString().trim().isEmpty
+        ? 'Tuya Local ${deviceId.substring(deviceId.length > 6 ? deviceId.length - 6 : 0)}'
+        : (item['name'] ?? '').toString().trim();
+
+    await widget.api.createDevice(
+      name: name,
+      type: _guessTuyaDeviceType(item),
+      host: ip.isEmpty ? null : ip,
+      metadata: {
+        'provider': 'tuya_local',
+        'source_name': 'Tuya Local',
+        'connection_mode': 'local_lan',
+        'tuya_device_id': deviceId,
+        'tuya_ip': ip,
+        'tuya_version': version,
+        'tuya_local_key': localKey,
+        'tuya_product_key': productKey,
+        'tuya_category': category,
+        'tuya_product_name': productName,
+      },
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added Tuya Local device "$name"')));
+  }
+
+  Future<void> _createTuyaCloudDeviceFromItem(Map<String, dynamic> item) async {
+    final deviceId = (item['id'] ?? '').toString().trim();
+    final ip = (item['ip'] ?? item['local_ip'] ?? '').toString().trim();
+    final version = (item['version'] ?? '').toString().trim();
+    final category = (item['category'] ?? '').toString().trim();
+    final productName = (item['product_name'] ?? '').toString().trim();
+    final localKey = (item['local_key'] ?? '').toString().trim();
+    final name = (item['name'] ?? 'Tuya Cloud Device').toString();
+    if (deviceId.isEmpty) {
+      throw Exception('Tuya cloud add requires device id from scan result');
+    }
+
+    final confirmed = await _confirmCloudWarning(
+      actionLabel: 'Adding this device',
+      deviceName: name,
+    );
+    if (!confirmed) return;
+
+    await widget.api.createDevice(
+      name: name,
+      type: _guessTuyaDeviceType(item),
+      host: ip.isEmpty ? null : ip,
+      metadata: {
+        'provider': 'tuya_cloud',
+        'source_name': 'Tuya Cloud',
+        'connection_mode': 'cloud',
+        'tuya_device_id': deviceId,
+        'tuya_ip': ip,
+        'tuya_version': version,
+        'tuya_category': category,
+        'tuya_product_name': productName,
+        'tuya_local_key': localKey,
+      },
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added Tuya Cloud device "$name"')));
+  }
+
   Future<void> _addTuyaLocalAsDevice(Map<String, dynamic> item) async {
     try {
-      final deviceId = (item['id'] ?? '').toString();
-      final ip = (item['ip'] ?? '').toString();
-      final version = (item['version'] ?? '').toString();
-      final productKey = (item['product_key'] ?? '').toString();
-      final localKey = await _promptOptionalLocalKey('Add Tuya Local Device');
-      if (localKey == null) return;
-
-      final name = 'Tuya Local ${deviceId.isEmpty ? ip : deviceId.substring(deviceId.length > 6 ? deviceId.length - 6 : 0)}';
-      await widget.api.createDevice(
-        name: name,
-        type: _guessTuyaDeviceType(item),
-        host: ip.isEmpty ? null : ip,
-        metadata: {
-          'provider': 'tuya_local',
-          'source_name': 'Tuya Local',
-          'connection_mode': 'local_lan',
-          'tuya_device_id': deviceId,
-          'tuya_ip': ip,
-          'tuya_version': version,
-          'tuya_local_key': localKey,
-          'tuya_product_key': productKey,
-        },
-      );
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added Tuya Local device "$name"')));
+      final mode = await _pickTuyaAddMode(item: item, preferredMode: 'local_lan');
+      if (mode == null) return;
+      if (mode == 'cloud') {
+        await _createTuyaCloudDeviceFromItem(item);
+        return;
+      }
+      await _createTuyaLocalDeviceFromItem(item);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
@@ -749,35 +1014,13 @@ class _ConfigScreenState extends State<ConfigScreen> {
 
   Future<void> _addTuyaCloudAsDevice(Map<String, dynamic> item) async {
     try {
-      final deviceId = (item['id'] ?? '').toString();
-      final ip = (item['ip'] ?? item['local_ip'] ?? '').toString();
-      final version = (item['version'] ?? '').toString();
-      final category = (item['category'] ?? '').toString();
-      final productName = (item['product_name'] ?? '').toString();
-      final name = (item['name'] ?? 'Tuya Cloud Device').toString();
-      final confirmed = await _confirmCloudWarning(
-        actionLabel: 'Adding this device',
-        deviceName: name,
-      );
-      if (!confirmed) return;
-
-      await widget.api.createDevice(
-        name: name,
-        type: _guessTuyaDeviceType(item),
-        host: ip.isEmpty ? null : ip,
-        metadata: {
-          'provider': 'tuya_cloud',
-          'source_name': 'Tuya Cloud',
-          'connection_mode': 'cloud',
-          'tuya_device_id': deviceId,
-          'tuya_ip': ip,
-          'tuya_version': version,
-          'tuya_category': category,
-          'tuya_product_name': productName,
-        },
-      );
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added Tuya Cloud device "$name"')));
+      final mode = await _pickTuyaAddMode(item: item, preferredMode: 'cloud');
+      if (mode == null) return;
+      if (mode == 'local_lan') {
+        await _createTuyaLocalDeviceFromItem(item);
+        return;
+      }
+      await _createTuyaCloudDeviceFromItem(item);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
@@ -985,6 +1228,8 @@ class _ConfigScreenState extends State<ConfigScreen> {
                     const Text('LAN mode only. No Tuya cloud required.'),
                     const SizedBox(height: 6),
                     const Text('Simple flow: 1) Enter subnet hint, 2) Discover hub, 3) Discover lights, 4) Add Device'),
+                    const SizedBox(height: 4),
+                    const Text('If hub key is blank, app will try auto-fill from Tuya scan data when available.'),
                     TextField(
                       controller: _scanSubnetCtl,
                       decoration: const InputDecoration(
@@ -1009,6 +1254,17 @@ class _ConfigScreenState extends State<ConfigScreen> {
                         FilledButton(onPressed: _saveMoesSection, child: const Text('Save section')),
                       ],
                     ),
+                    if (_liveActionBusy) ...[
+                      const SizedBox(height: 8),
+                      const LinearProgressIndicator(minHeight: 4),
+                    ],
+                    if (_liveActionStatus.trim().isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Status: $_liveActionStatus',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
                     if (_moesHubs.isNotEmpty) ...[
                       const SizedBox(height: 10),
                       const Text('Hub candidates'),
@@ -1136,7 +1392,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
               ),
               ExpansionPanelRadio(
                 value: 'tuya',
-                headerBuilder: (_, __) => _panelHeader('Tuya', 'Local/cloud scan + credentials'),
+                headerBuilder: (_, __) => _panelHeader('Tuya', 'Setup once: ID/Secret/Device ID, then scan local + cloud'),
                 body: _panelBody(
                   [
                     TextField(
@@ -1146,17 +1402,40 @@ class _ConfigScreenState extends State<ConfigScreen> {
                       ),
                     ),
                     TextField(controller: _tuyaRegionCtl, decoration: const InputDecoration(labelText: 'Cloud region')),
-                    TextField(controller: _tuyaIdCtl, decoration: const InputDecoration(labelText: 'Client ID')),
+                    TextField(controller: _tuyaIdCtl, decoration: const InputDecoration(labelText: 'Access ID / Client ID')),
                     TextField(controller: _tuyaSecretCtl, decoration: const InputDecoration(labelText: 'Client Secret')),
+                    TextField(
+                      controller: _tuyaApiDeviceIdCtl,
+                      decoration: const InputDecoration(labelText: 'API Device ID (from Tuya project link)'),
+                    ),
+                    TextField(
+                      controller: _tuyaLocalKeyCtl,
+                      decoration: const InputDecoration(labelText: 'Default Local Key (optional fallback)'),
+                      obscureText: true,
+                    ),
                     const SizedBox(height: 8),
                     Wrap(
                       spacing: 8,
                       children: [
-                        FilledButton.tonal(onPressed: _testTuyaLocal, child: const Text('Scan Tuya Local')),
-                        FilledButton.tonal(onPressed: _testTuyaCloud, child: const Text('Scan Tuya Cloud')),
+                        FilledButton.tonal(onPressed: _testTuyaSetup, child: const Text('Test Tuya Setup')),
+                        FilledButton.tonal(onPressed: _scanTuyaAndSave, child: const Text('Scan + Save devices.json')),
+                        OutlinedButton(onPressed: _loadSavedTuyaDevices, child: const Text('Load saved devices.json')),
+                        OutlinedButton(onPressed: _testTuyaLocal, child: const Text('Scan Tuya Local')),
+                        OutlinedButton(onPressed: _testTuyaCloud, child: const Text('Scan Tuya Cloud')),
                         FilledButton(onPressed: _saveTuyaSection, child: const Text('Save section')),
                       ],
                     ),
+                    if (_liveActionBusy) ...[
+                      const SizedBox(height: 8),
+                      const LinearProgressIndicator(minHeight: 4),
+                    ],
+                    if (_liveActionStatus.trim().isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Status: $_liveActionStatus',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
                     if (_tuyaLocalDevices.isNotEmpty) ...[
                       const SizedBox(height: 10),
                       const Text('Tuya Local discovered'),
@@ -1164,7 +1443,10 @@ class _ConfigScreenState extends State<ConfigScreen> {
                         (item) => ListTile(
                           dense: true,
                           title: Text('${item['id'] ?? ''}'),
-                          subtitle: Text('IP: ${item['ip'] ?? ''}  Version: ${item['version'] ?? ''}'),
+                          subtitle: Text(
+                            'IP: ${item['ip'] ?? ''}  Version: ${item['version'] ?? ''}  '
+                            'LocalKey: ${((item['local_key'] ?? '').toString().trim().isNotEmpty) ? "yes" : "no"}',
+                          ),
                           trailing: TextButton(
                             onPressed: () => _addTuyaLocalAsDevice(item),
                             child: const Text('Add Device'),
@@ -1179,7 +1461,10 @@ class _ConfigScreenState extends State<ConfigScreen> {
                         (item) => ListTile(
                           dense: true,
                           title: Text('${item['name'] ?? ''} (${item['id'] ?? ''})'),
-                          subtitle: Text('Category: ${item['category'] ?? ''}  Online: ${item['online'] ?? ''}'),
+                          subtitle: Text(
+                            'Category: ${item['category'] ?? ''}  Online: ${item['online'] ?? ''}  '
+                            'LocalKey: ${((item['local_key'] ?? '').toString().trim().isNotEmpty) ? "yes" : "no"}',
+                          ),
                           trailing: TextButton(
                             onPressed: () => _addTuyaCloudAsDevice(item),
                             child: const Text('Add Device'),

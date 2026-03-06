@@ -34,7 +34,16 @@ from .diagnostics import (
 )
 from .firmware_builder import FirmwareBuildError, build_firmware
 from .flashing import get_flash_job, list_ports_for_flash, probe_serial_port, start_flash_job
-from .integrations import spotify_action, spotify_now_playing, tuya_cloud_devices, tuya_local_scan, weather_current
+from .integrations import (
+    spotify_action,
+    spotify_now_playing,
+    tuya_cloud_devices,
+    tuya_devices_file,
+    tuya_local_scan,
+    tuya_scan_and_save,
+    tuya_test_credentials,
+    weather_current,
+)
 from .moes import discover_bhubw_lights, discover_bhubw_local, get_bhubw_light_status, send_bhubw_light_command
 from .ota import sign_firmware
 from .profiles import (
@@ -884,6 +893,61 @@ def post_tuya_cloud_devices(payload: dict[str, Any] | None = None) -> dict[str, 
             client_secret=client_secret,
             api_device_id=api_device_id,
         )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/integrations/tuya/test", dependencies=[Depends(require_auth_if_configured)])
+def post_tuya_test(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    cloud_region = ""
+    client_id = ""
+    client_secret = ""
+    api_device_id = ""
+    if isinstance(payload, dict):
+        cloud_region = str(payload.get("cloud_region", "")).strip()
+        client_id = str(payload.get("client_id", "")).strip()
+        client_secret = str(payload.get("client_secret", "")).strip()
+        api_device_id = str(payload.get("api_device_id", "")).strip()
+    try:
+        return tuya_test_credentials(
+            cloud_region=cloud_region,
+            client_id=client_id,
+            client_secret=client_secret,
+            api_device_id=api_device_id,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/integrations/tuya/scan-save", dependencies=[Depends(require_auth_if_configured)])
+def post_tuya_scan_save(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    subnet_hint = ""
+    cloud_region = ""
+    client_id = ""
+    client_secret = ""
+    api_device_id = ""
+    if isinstance(payload, dict):
+        subnet_hint = str(payload.get("subnet_hint", "")).strip()
+        cloud_region = str(payload.get("cloud_region", "")).strip()
+        client_id = str(payload.get("client_id", "")).strip()
+        client_secret = str(payload.get("client_secret", "")).strip()
+        api_device_id = str(payload.get("api_device_id", "")).strip()
+    try:
+        return tuya_scan_and_save(
+            subnet_hint=subnet_hint,
+            cloud_region=cloud_region,
+            client_id=client_id,
+            client_secret=client_secret,
+            api_device_id=api_device_id,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/integrations/tuya/devices-file", dependencies=[Depends(require_auth_if_configured)])
+def get_tuya_devices_file() -> dict[str, Any]:
+    try:
+        return tuya_devices_file()
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

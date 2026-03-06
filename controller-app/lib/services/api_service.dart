@@ -386,11 +386,23 @@ class ApiService {
     return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
-  Future<Map<String, dynamic>> tuyaLocalScan({String subnetHint = ''}) async {
+  Future<Map<String, dynamic>> tuyaLocalScan({
+    String subnetHint = '',
+    String cloudRegion = '',
+    String clientId = '',
+    String clientSecret = '',
+    String apiDeviceId = '',
+  }) async {
     final res = await _client.post(
       _uri('/api/integrations/tuya/local-scan'),
       headers: _jsonHeaders(),
-      body: jsonEncode({'subnet_hint': subnetHint}),
+      body: jsonEncode({
+        'subnet_hint': subnetHint,
+        'cloud_region': cloudRegion,
+        'client_id': clientId,
+        'client_secret': clientSecret,
+        'api_device_id': apiDeviceId,
+      }),
     );
     if (res.statusCode != 200) {
       throw Exception('Tuya local scan failed: ${res.body}');
@@ -398,10 +410,78 @@ class ApiService {
     return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
-  Future<Map<String, dynamic>> tuyaCloudDevices() async {
-    final res = await _client.post(_uri('/api/integrations/tuya/cloud-devices'), headers: _jsonHeaders());
+  Future<Map<String, dynamic>> tuyaCloudDevices({
+    String cloudRegion = '',
+    String clientId = '',
+    String clientSecret = '',
+    String apiDeviceId = '',
+  }) async {
+    final res = await _client.post(
+      _uri('/api/integrations/tuya/cloud-devices'),
+      headers: _jsonHeaders(),
+      body: jsonEncode({
+        'cloud_region': cloudRegion,
+        'client_id': clientId,
+        'client_secret': clientSecret,
+        'api_device_id': apiDeviceId,
+      }),
+    );
     if (res.statusCode != 200) {
       throw Exception('Tuya cloud scan failed: ${res.body}');
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> tuyaTest({
+    String cloudRegion = '',
+    String clientId = '',
+    String clientSecret = '',
+    String apiDeviceId = '',
+  }) async {
+    final res = await _client.post(
+      _uri('/api/integrations/tuya/test'),
+      headers: _jsonHeaders(),
+      body: jsonEncode({
+        'cloud_region': cloudRegion,
+        'client_id': clientId,
+        'client_secret': clientSecret,
+        'api_device_id': apiDeviceId,
+      }),
+    );
+    if (res.statusCode != 200) {
+      throw Exception('Tuya test failed: ${res.body}');
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> tuyaScanAndSave({
+    String subnetHint = '',
+    String cloudRegion = '',
+    String clientId = '',
+    String clientSecret = '',
+    String apiDeviceId = '',
+  }) async {
+    final res = await _client.post(
+      _uri('/api/integrations/tuya/scan-save'),
+      headers: _jsonHeaders(),
+      body: jsonEncode({
+        'subnet_hint': subnetHint,
+        'cloud_region': cloudRegion,
+        'client_id': clientId,
+        'client_secret': clientSecret,
+        'api_device_id': apiDeviceId,
+      }),
+    );
+    if (res.statusCode != 200) {
+      throw Exception('Tuya scan+save failed: ${res.body}');
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> tuyaDevicesFile() async {
+    final res = await _client.get(_uri('/api/integrations/tuya/devices-file'));
+    if (res.statusCode != 200) {
+      throw Exception('Tuya devices file load failed: ${res.body}');
     }
     return jsonDecode(res.body) as Map<String, dynamic>;
   }

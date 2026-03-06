@@ -138,66 +138,74 @@ class _DevicesScreenState extends State<DevicesScreen> {
 
   Future<void> _scanTuya() async {
     final subnetHint = _subnetCtl.text.trim();
-    final merged = <Map<String, dynamic>>[];
-    String cloudError = '';
-
-    final local = await widget.api.tuyaLocalScan(subnetHint: subnetHint);
-    final localDevices = (local['devices'] as List<dynamic>? ?? const <dynamic>[])
+    final result = await widget.api.tuyaScanAndSave(subnetHint: subnetHint);
+    final merged = (result['devices'] as List<dynamic>? ?? const <dynamic>[])
         .whereType<Map<String, dynamic>>()
-        .toList(growable: false);
-    for (final row in localDevices) {
-      merged.add({
-        'name': row['name'] ?? 'Tuya Local',
+        .map((row) {
+      final mode = (row['mode'] ?? '').toString().toLowerCase().trim();
+      final provider = (row['provider'] ?? '').toString().trim();
+      final isLocal = mode == 'local_lan' || provider == 'tuya_local';
+      return <String, dynamic>{
+        'name': row['name'] ?? (isLocal ? 'Tuya Local' : 'Tuya Cloud'),
         'ip': row['ip'] ?? '',
         'hostname': '',
         'mac': row['mac'] ?? '',
-        'device_hint': row['category'] ?? row['product_name'] ?? 'tuya_local',
-        'provider_hint': 'tuya_local',
-        'mode': 'local_lan',
-        'score': 10,
+        'device_hint': row['category'] ?? row['product_name'] ?? (isLocal ? 'tuya_local' : 'tuya_cloud'),
+        'provider_hint': isLocal ? 'tuya_local' : 'tuya_cloud',
+        'mode': isLocal ? 'local_lan' : 'cloud',
+        'score': isLocal ? 10 : 8,
         'tuya_device_id': row['id'] ?? '',
         'tuya_version': row['version'] ?? '',
         'tuya_local_key': row['local_key'] ?? '',
         'tuya_product_key': row['product_key'] ?? '',
-      });
-    }
+        'source': row['source'] ?? '',
+      };
+    }).toList(growable: false);
 
-    try {
-      final cloud = await widget.api.tuyaCloudDevices();
-      final cloudDevices = (cloud['devices'] as List<dynamic>? ?? const <dynamic>[])
-          .whereType<Map<String, dynamic>>()
-          .toList(growable: false);
-      final localIds = localDevices
-          .map((e) => (e['id'] ?? '').toString().trim())
-          .where((id) => id.isNotEmpty)
-          .toSet();
-      for (final row in cloudDevices) {
-        final id = (row['id'] ?? '').toString().trim();
-        if (id.isNotEmpty && localIds.contains(id)) continue;
-        merged.add({
-          'name': row['name'] ?? 'Tuya Cloud',
-          'ip': row['ip'] ?? '',
-          'hostname': '',
-          'mac': row['mac'] ?? '',
-          'device_hint': row['category'] ?? row['product_name'] ?? 'tuya_cloud',
-          'provider_hint': 'tuya_cloud',
-          'mode': 'cloud',
-          'score': 8,
-          'tuya_device_id': id,
-          'tuya_version': row['version'] ?? '',
-          'tuya_product_key': row['product_key'] ?? '',
-        });
-      }
-    } catch (e) {
-      cloudError = _friendlyError(e);
-    }
+    final localCount = (result['local_count'] as num?)?.toInt() ?? 0;
+    final cloudCount = (result['cloud_count'] as num?)?.toInt() ?? 0;
+    final savedCount = (result['saved_count'] as num?)?.toInt() ?? merged.length;
+    final cloudError = (result['cloud_error'] ?? '').toString();
+    final fileName = (result['file_name'] ?? 'devices.json').toString();
 
     setState(() {
       _scanResults = merged;
       _error = null;
       _statusOutput =
-          'Tuya scan found ${merged.length} device(s). Local: ${localDevices.length}.'
-          '${cloudError.isNotEmpty ? '\nCloud query failed: $cloudError' : ''}';
+          'Tuya scan+save complete: $savedCount device(s) stored in $fileName.'
+          '\nLocal: $localCount | Cloud: $cloudCount'
+          '${cloudError.isNotEmpty ? '\nCloud query warning: $cloudError' : ''}';
+    });
+  }
+
+  Future<void> _loadTuyaFromSavedFile() async {
+    final result = await widget.api.tuyaDevicesFile();
+    final rows = (result['devices'] as List<dynamic>? ?? const <dynamic>[])
+        .whereType<Map<String, dynamic>>()
+        .toList(growable: false);
+    final mapped = rows.map((row) {
+      final mode = (row['mode'] ?? '').toString().toLowerCase().trim();
+      final provider = (row['provider'] ?? '').toString().trim();
+      final isLocal = mode == 'local_lan' || provider == 'tuya_local';
+      return <String, dynamic>{
+        'name': row['name'] ?? (isLocal ? 'Tuya Local' : 'Tuya Cloud'),
+        'ip': row['ip'] ?? '',
+        'hostname': '',
+        'mac': row['mac'] ?? '',
+        'device_hint': row['category'] ?? row['product_name'] ?? (isLocal ? 'tuya_local' : 'tuya_cloud'),
+        'provider_hint': isLocal ? 'tuya_local' : 'tuya_cloud',
+        'mode': isLocal ? 'local_lan' : 'cloud',
+        'score': isLocal ? 10 : 8,
+        'tuya_device_id': row['id'] ?? '',
+        'tuya_version': row['version'] ?? '',
+        'tuya_local_key': row['local_key'] ?? '',
+        'tuya_product_key': row['product_key'] ?? '',
+      };
+    }).toList(growable: false);
+    if (!mounted) return;
+    setState(() {
+      _scanResults = mapped.where((item) => _scanMatchesActiveSection(item)).toList(growable: false);
+      _statusOutput = 'Loaded ${mapped.length} Tuya device(s) from ${(result['file_name'] ?? 'devices.json').toString()}.';
     });
   }
 
@@ -1153,6 +1161,9 @@ class _DevicesScreenState extends State<DevicesScreen> {
                                           .where((item) => _scanMatchesActiveSection(item))
                                           .toList(growable: false);
                                     });
+                                    if (section == _DeviceSection.tuya) {
+                                      _loadTuyaFromSavedFile().catchError((_) {});
+                                    }
                                   },
                                 ),
                               )

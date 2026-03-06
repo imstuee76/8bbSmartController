@@ -9,7 +9,7 @@ import httpx
 
 from .security import decrypt_secret
 from .scanner import prime_neighbors, scan_network
-from .storage import DATA_DIR, append_event, get_setting
+from .storage import DATA_DIR, append_event, get_setting, utc_now
 
 _spotify_cache: dict[str, Any] = {
     "access_token": "",
@@ -76,6 +76,17 @@ def _load_tuya_devices_file() -> tuple[list[dict[str, Any]], str]:
         except Exception:
             continue
     return [], ""
+
+
+def _tuya_devices_file_path() -> Path:
+    return (DATA_DIR / "devices.json").resolve()
+
+
+def _write_tuya_devices_file(payload: dict[str, Any]) -> str:
+    path = _tuya_devices_file_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path.name
 
 
 def _get_spotify_access_token(spotify_cfg: dict[str, Any], timeout_s: float = 15.0) -> str:
@@ -349,6 +360,73 @@ def _get_file_value(row: dict[str, Any], *names: str) -> str:
     return ""
 
 
+def _tuya_identity(item: dict[str, Any]) -> str:
+    dev_id = str(item.get("id", "")).strip()
+    if dev_id:
+        return f"id:{dev_id}"
+    mac = str(item.get("mac", "")).strip().lower()
+    if mac:
+        return f"mac:{mac}"
+    ip = str(item.get("ip", "")).strip()
+    if ip:
+        return f"ip:{ip}"
+    return f"row:{hash(json.dumps(item, sort_keys=True, default=str))}"
+
+
+def _normalize_tuya_row(item: dict[str, Any], *, source: str, mode: str) -> dict[str, Any]:
+    local_key = str(item.get("local_key", "")).strip()
+    provider = "tuya_local" if mode == "local_lan" else "tuya_cloud"
+    available_modes = list(item.get("available_modes", [])) if isinstance(item.get("available_modes"), list) else []
+    if not available_modes:
+        available_modes = ["local_lan"] if mode == "local_lan" else ["cloud"]
+    if local_key and "local_lan" not in available_modes:
+        available_modes.append("local_lan")
+    if "cloud" not in available_modes:
+        available_modes.append("cloud")
+    return {
+        "id": str(item.get("id", "")).strip(),
+        "name": str(item.get("name", "")).strip(),
+        "ip": str(item.get("ip", "")).strip(),
+        "mac": str(item.get("mac", "")).strip().lower(),
+        "version": str(item.get("version", "")).strip(),
+        "category": str(item.get("category", "")).strip(),
+        "product_key": str(item.get("product_key", "")).strip(),
+        "product_name": str(item.get("product_name", "")).strip(),
+        "local_key": local_key,
+        "online": item.get("online"),
+        "source": source,
+        "provider": provider,
+        "mode": mode,
+        "available_modes": available_modes,
+    }
+
+
+def _merge_tuya_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        key = _tuya_identity(row)
+        if key not in merged:
+            merged[key] = dict(row)
+            continue
+        current = merged[key]
+        for field, value in row.items():
+            if field == "available_modes":
+                prev = current.get(field, [])
+                prev_list = prev if isinstance(prev, list) else []
+                new_list = value if isinstance(value, list) else []
+                current[field] = sorted({str(x) for x in [*prev_list, *new_list] if str(x).strip()})
+                continue
+            if (current.get(field) is None or str(current.get(field, "")).strip() == "") and str(value or "").strip():
+                current[field] = value
+        # Prefer local provider when local key is present.
+        if str(current.get("local_key", "")).strip():
+            current["provider"] = "tuya_local"
+            current["mode"] = "local_lan"
+    out = list(merged.values())
+    out.sort(key=lambda item: (str(item.get("name", "")).lower(), str(item.get("id", "")).lower(), str(item.get("ip", ""))))
+    return out
+
+
 def tuya_local_scan(
     subnet_hint: str = "",
     *,
@@ -553,3 +631,143 @@ def tuya_cloud_devices(
     }
     append_event("tuya_cloud_query", {"count": len(devices), "cloud_region": result["cloud_region"]})
     return result
+
+
+def tuya_test_credentials(
+    *,
+    cloud_region: str = "",
+    client_id: str = "",
+    client_secret: str = "",
+    api_device_id: str = "",
+) -> dict[str, Any]:
+    cfg = _tuya_effective_cfg(
+        cloud_region=cloud_region,
+        client_id=client_id,
+        client_secret=client_secret,
+        api_device_id=api_device_id,
+    )
+    cloud_region_final = str(cfg.get("cloud_region", "")).strip()
+    client_id_final = str(cfg.get("client_id", "")).strip()
+    client_secret_final = str(cfg.get("client_secret", "")).strip()
+    api_device_id_final = str(cfg.get("api_device_id", "")).strip()
+    cloud_configured = bool(cloud_region_final and client_id_final and client_secret_final and api_device_id_final)
+    result: dict[str, Any] = {
+        "ok": False,
+        "cloud_configured": cloud_configured,
+        "cloud_region": cloud_region_final,
+        "api_device_id_present": bool(api_device_id_final),
+        "client_id_present": bool(client_id_final),
+        "client_secret_present": bool(client_secret_final),
+        "local_key_present": bool(str(cfg.get("default_local_key", "")).strip()),
+        "app_keys_file": str(cfg.get("app_keys_file", "")),
+        "checked_at": utc_now(),
+    }
+    if not cloud_configured:
+        result["error"] = "Tuya cloud test requires cloud_region, client_id, client_secret, and api_device_id."
+        return result
+    try:
+        devices = _tuya_cloud_device_list(cfg)
+        result["ok"] = True
+        result["cloud_ok"] = True
+        result["device_count"] = len(devices)
+    except Exception as exc:
+        result["ok"] = False
+        result["cloud_ok"] = False
+        result["error"] = str(exc)
+    append_event("tuya_test_credentials", {"ok": bool(result.get("ok")), "cloud_configured": cloud_configured})
+    return result
+
+
+def tuya_scan_and_save(
+    *,
+    subnet_hint: str = "",
+    cloud_region: str = "",
+    client_id: str = "",
+    client_secret: str = "",
+    api_device_id: str = "",
+) -> dict[str, Any]:
+    cfg = _tuya_effective_cfg(
+        cloud_region=cloud_region,
+        client_id=client_id,
+        client_secret=client_secret,
+        api_device_id=api_device_id,
+    )
+    local_result = tuya_local_scan(
+        subnet_hint=subnet_hint,
+        cloud_region=cloud_region,
+        client_id=client_id,
+        client_secret=client_secret,
+        api_device_id=api_device_id,
+    )
+    local_devices = (local_result.get("devices", []) if isinstance(local_result.get("devices"), list) else [])
+    normalized_local = [_normalize_tuya_row(dict(item), source="local_scan", mode="local_lan") for item in local_devices if isinstance(item, dict)]
+
+    cloud_devices: list[dict[str, Any]] = []
+    cloud_error = ""
+    cloud_cfg_complete = bool(
+        str(cfg.get("cloud_region", "")).strip()
+        and str(cfg.get("client_id", "")).strip()
+        and str(cfg.get("client_secret", "")).strip()
+        and str(cfg.get("api_device_id", "")).strip()
+    )
+    if cloud_cfg_complete:
+        try:
+            cloud_result = tuya_cloud_devices(
+                cloud_region=cloud_region,
+                client_id=client_id,
+                client_secret=client_secret,
+                api_device_id=api_device_id,
+            )
+            cloud_devices = cloud_result.get("devices", []) if isinstance(cloud_result.get("devices"), list) else []
+        except Exception as exc:
+            cloud_error = str(exc)
+    normalized_cloud = [_normalize_tuya_row(dict(item), source="cloud_scan", mode="cloud") for item in cloud_devices if isinstance(item, dict)]
+
+    merged = _merge_tuya_rows([*normalized_local, *normalized_cloud])
+    payload = {
+        "updated_at": utc_now(),
+        "subnet_hint": (subnet_hint or "").strip(),
+        "devices": merged,
+        "local_count": len(normalized_local),
+        "cloud_count": len(normalized_cloud),
+        "cloud_error": cloud_error,
+        "app_keys_file": str(cfg.get("app_keys_file", "")),
+    }
+    file_name = _write_tuya_devices_file(payload)
+    append_event(
+        "tuya_scan_saved",
+        {
+            "devices": len(merged),
+            "local_count": len(normalized_local),
+            "cloud_count": len(normalized_cloud),
+            "cloud_error": cloud_error,
+            "file": file_name,
+        },
+    )
+    return {
+        "ok": True,
+        "devices": merged,
+        "local_devices": normalized_local,
+        "cloud_devices": normalized_cloud,
+        "file_name": file_name,
+        "cloud_error": cloud_error,
+        "local_count": len(normalized_local),
+        "cloud_count": len(normalized_cloud),
+        "saved_count": len(merged),
+        "subnet_hint": (subnet_hint or "").strip(),
+    }
+
+
+def tuya_devices_file() -> dict[str, Any]:
+    rows, file_name = _load_tuya_devices_file()
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        mode = "local_lan" if str(row.get("local_key", "")).strip() else "cloud"
+        normalized.append(_normalize_tuya_row(dict(row), source="devices_file", mode=mode))
+    merged = _merge_tuya_rows(normalized)
+    return {
+        "ok": True,
+        "file_name": file_name,
+        "count": len(merged),
+        "devices": merged,
+    }
