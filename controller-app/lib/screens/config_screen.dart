@@ -499,10 +499,11 @@ class _ConfigScreenState extends State<ConfigScreen> {
   }
 
   Future<void> _testTuyaLocal() async {
-    _setLiveActionStatus('Tuya local scan started...', busy: true);
-    _markActionRunning('tuya_local_scan', openOutputPanel: true);
+    _setLiveActionStatus('Tuya local/cloud scan started (saving devices.json)...', busy: true);
+    _markActionRunning('tuya_local_scan_save', openOutputPanel: true);
     try {
-      final result = await widget.api.tuyaLocalScan(
+      await _saveTuyaSection();
+      final result = await widget.api.tuyaScanAndSave(
         subnetHint: _scanSubnetCtl.text.trim(),
         cloudRegion: _tuyaRegionCtl.text.trim(),
         clientId: _tuyaIdCtl.text.trim(),
@@ -511,18 +512,21 @@ class _ConfigScreenState extends State<ConfigScreen> {
       );
       if (!mounted) return;
       setState(() {
-        _tuyaLocalDevices = (result['devices'] as List<dynamic>? ?? <dynamic>[]).whereType<Map<String, dynamic>>().toList();
+        _tuyaLocalDevices = (result['local_devices'] as List<dynamic>? ?? <dynamic>[]).whereType<Map<String, dynamic>>().toList();
+        _tuyaCloudDevices = (result['cloud_devices'] as List<dynamic>? ?? <dynamic>[]).whereType<Map<String, dynamic>>().toList();
       });
-      _setOutputJson(result);
+      _setOutputJson(result, openOutputPanel: true);
       if (!mounted) return;
-      _setLiveActionStatus('Tuya local scan complete: ${_tuyaLocalDevices.length} device(s).', busy: false);
+      final fileName = (result['file_name'] ?? 'devices.json').toString();
+      final saved = (result['saved_count'] as num?)?.toInt() ?? 0;
+      _setLiveActionStatus('Tuya scan complete. Saved $saved device(s) to $fileName.', busy: false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Tuya local scan complete: ${_tuyaLocalDevices.length} device(s)')),
+        SnackBar(content: Text('Tuya scan+save complete: $saved device(s)')),
       );
     } catch (e) {
-      _setLiveActionStatus('Tuya local scan failed.', busy: false);
+      _setLiveActionStatus('Tuya scan+save failed.', busy: false);
       _setOutputJson({
-        'action': 'tuya_local_scan',
+        'action': 'tuya_local_scan_save',
         'backend_url': widget.api.baseUrl,
         'ok': false,
         'error': _friendlyError(e),
@@ -534,10 +538,31 @@ class _ConfigScreenState extends State<ConfigScreen> {
   }
 
   Future<void> _testTuyaCloud() async {
-    _setLiveActionStatus('Tuya cloud scan started...', busy: true);
-    _markActionRunning('tuya_cloud_scan', openOutputPanel: true);
+    final missing = <String>[];
+    if (_tuyaRegionCtl.text.trim().isEmpty) missing.add('cloud_region');
+    if (_tuyaIdCtl.text.trim().isEmpty) missing.add('client_id');
+    if (_tuyaSecretCtl.text.trim().isEmpty) missing.add('client_secret');
+    if (_tuyaApiDeviceIdCtl.text.trim().isEmpty) missing.add('api_device_id');
+    if (missing.isNotEmpty) {
+      final msg = 'Missing Tuya cloud fields: ${missing.join(', ')}';
+      _setLiveActionStatus(msg, busy: false);
+      _setOutputJson({
+        'action': 'tuya_cloud_scan_save',
+        'backend_url': widget.api.baseUrl,
+        'ok': false,
+        'error': msg,
+        'at_utc': DateTime.now().toUtc().toIso8601String(),
+      }, openOutputPanel: true);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      return;
+    }
+    _setLiveActionStatus('Tuya cloud scan started (saving devices.json)...', busy: true);
+    _markActionRunning('tuya_cloud_scan_save', openOutputPanel: true);
     try {
-      final result = await widget.api.tuyaCloudDevices(
+      await _saveTuyaSection();
+      final result = await widget.api.tuyaScanAndSave(
+        subnetHint: _scanSubnetCtl.text.trim(),
         cloudRegion: _tuyaRegionCtl.text.trim(),
         clientId: _tuyaIdCtl.text.trim(),
         clientSecret: _tuyaSecretCtl.text.trim(),
@@ -545,18 +570,22 @@ class _ConfigScreenState extends State<ConfigScreen> {
       );
       if (!mounted) return;
       setState(() {
-        _tuyaCloudDevices = (result['devices'] as List<dynamic>? ?? <dynamic>[]).whereType<Map<String, dynamic>>().toList();
+        _tuyaLocalDevices = (result['local_devices'] as List<dynamic>? ?? <dynamic>[]).whereType<Map<String, dynamic>>().toList();
+        _tuyaCloudDevices = (result['cloud_devices'] as List<dynamic>? ?? <dynamic>[]).whereType<Map<String, dynamic>>().toList();
       });
-      _setOutputJson(result);
+      _setOutputJson(result, openOutputPanel: true);
       if (!mounted) return;
-      _setLiveActionStatus('Tuya cloud scan complete: ${_tuyaCloudDevices.length} device(s).', busy: false);
+      final fileName = (result['file_name'] ?? 'devices.json').toString();
+      final saved = (result['saved_count'] as num?)?.toInt() ?? 0;
+      final cloudCount = (result['cloud_count'] as num?)?.toInt() ?? _tuyaCloudDevices.length;
+      _setLiveActionStatus('Tuya cloud scan complete: $cloudCount cloud device(s), saved to $fileName.', busy: false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Tuya cloud scan complete: ${_tuyaCloudDevices.length} device(s)')),
+        SnackBar(content: Text('Tuya cloud scan+save complete: $saved total device(s)')),
       );
     } catch (e) {
-      _setLiveActionStatus('Tuya cloud scan failed.', busy: false);
+      _setLiveActionStatus('Tuya cloud scan+save failed.', busy: false);
       _setOutputJson({
-        'action': 'tuya_cloud_scan',
+        'action': 'tuya_cloud_scan_save',
         'backend_url': widget.api.baseUrl,
         'ok': false,
         'error': _friendlyError(e),
@@ -1513,8 +1542,8 @@ class _ConfigScreenState extends State<ConfigScreen> {
                         FilledButton.tonal(onPressed: _testTuyaSetup, child: const Text('Test Tuya Setup')),
                         FilledButton.tonal(onPressed: _scanTuyaAndSave, child: const Text('Scan + Save devices.json')),
                         OutlinedButton(onPressed: _loadSavedTuyaDevices, child: const Text('Load saved devices.json')),
-                        OutlinedButton(onPressed: _testTuyaLocal, child: const Text('Scan Tuya Local')),
-                        OutlinedButton(onPressed: _testTuyaCloud, child: const Text('Scan Tuya Cloud')),
+                        OutlinedButton(onPressed: _testTuyaLocal, child: const Text('Scan Tuya Local + Save')),
+                        OutlinedButton(onPressed: _testTuyaCloud, child: const Text('Scan Tuya Cloud + Save')),
                         FilledButton(onPressed: _saveTuyaSection, child: const Text('Save section')),
                       ],
                     ),
