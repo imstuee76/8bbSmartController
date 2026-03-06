@@ -17,32 +17,6 @@ _spotify_cache: dict[str, Any] = {
 }
 
 
-def _load_json_file_candidates(names: list[str]) -> tuple[dict[str, Any], str]:
-    for name in names:
-        path = (DATA_DIR / name).resolve()
-        if not path.exists() or not path.is_file():
-            continue
-        try:
-            raw = path.read_text(encoding="utf-8").strip()
-            if not raw:
-                continue
-            payload = json.loads(raw)
-            if isinstance(payload, dict):
-                return payload, path.name
-        except Exception:
-            continue
-    return {}, ""
-
-
-def _load_tuya_app_keys_file() -> tuple[dict[str, Any], str]:
-    return _load_json_file_candidates([
-        ".app_keys",
-        ".pp_keys",
-        "app_keys.json",
-        "tuya_app_keys.json",
-    ])
-
-
 def _load_tuya_devices_file() -> tuple[list[dict[str, Any]], str]:
     file_candidates = [
         "devices.json",
