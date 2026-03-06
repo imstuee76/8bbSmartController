@@ -17,38 +17,77 @@ _spotify_cache: dict[str, Any] = {
 }
 
 
-def _load_tuya_devices_file() -> tuple[list[dict[str, Any]], str]:
-    file_candidates = [
-        "devices.json",
-        "tuya_devices.json",
+def _tuya_devices_file_candidates() -> list[Path]:
+    return [
+        (DATA_DIR / "devices.json").resolve(),
+        (DATA_DIR / "tuya_devices.json").resolve(),
     ]
-    for name in file_candidates:
-        path = (DATA_DIR / name).resolve()
-        if not path.exists() or not path.is_file():
-            continue
-        try:
-            raw = path.read_text(encoding="utf-8").strip()
-            if not raw:
-                continue
-            payload = json.loads(raw)
-            rows: list[dict[str, Any]] = []
-            if isinstance(payload, list):
-                rows = [dict(item) for item in payload if isinstance(item, dict)]
-            elif isinstance(payload, dict):
-                if isinstance(payload.get("devices"), list):
-                    rows = [dict(item) for item in payload.get("devices", []) if isinstance(item, dict)]
-                else:
-                    # Some exports are a dict keyed by device id.
-                    for key, value in payload.items():
-                        if isinstance(value, dict):
-                            row = dict(value)
-                            if "id" not in row:
-                                row["id"] = str(key)
-                            rows.append(row)
-            if rows:
-                return rows, path.name
-        except Exception:
-            continue
+
+
+def _parse_tuya_devices_file(path: Path) -> tuple[list[dict[str, Any]], str]:
+    if not path.exists() or not path.is_file():
+        return [], "missing"
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except Exception as exc:
+        return [], f"read_error: {exc}"
+    if not raw:
+        return [], "empty"
+    try:
+        payload = json.loads(raw)
+    except Exception as exc:
+        return [], f"json_error: {exc}"
+
+    rows: list[dict[str, Any]] = []
+    if isinstance(payload, list):
+        rows = [dict(item) for item in payload if isinstance(item, dict)]
+    elif isinstance(payload, dict):
+        if isinstance(payload.get("devices"), list):
+            rows = [dict(item) for item in payload.get("devices", []) if isinstance(item, dict)]
+        else:
+            # Some exports are a dict keyed by device id.
+            for key, value in payload.items():
+                if isinstance(value, dict):
+                    row = dict(value)
+                    if "id" not in row:
+                        row["id"] = str(key)
+                    rows.append(row)
+    if rows:
+        return rows, "ok"
+    return [], "parsed_but_no_rows"
+
+
+def _tuya_devices_file_diagnostics() -> dict[str, Any]:
+    files: list[dict[str, Any]] = []
+    for path in _tuya_devices_file_candidates():
+        exists = path.exists() and path.is_file()
+        size_bytes = 0
+        if exists:
+            try:
+                size_bytes = path.stat().st_size
+            except Exception:
+                size_bytes = 0
+        parsed_rows, parse_state = _parse_tuya_devices_file(path)
+        files.append(
+            {
+                "path": str(path),
+                "exists": bool(exists),
+                "size_bytes": int(size_bytes),
+                "parse_state": parse_state,
+                "parsed_rows": len(parsed_rows),
+            }
+        )
+    return {
+        "data_dir": str(DATA_DIR.resolve()),
+        "files": files,
+    }
+
+
+def _load_tuya_devices_file() -> tuple[list[dict[str, Any]], str]:
+    for path in _tuya_devices_file_candidates():
+        rows, state = _parse_tuya_devices_file(path)
+        if state == "ok" and rows:
+            return rows, path.name
     return [], ""
 
 
@@ -668,6 +707,14 @@ def tuya_scan_and_save(
     )
     local_devices = (local_result.get("devices", []) if isinstance(local_result.get("devices"), list) else [])
     normalized_local = [_normalize_tuya_row(dict(item), source="local_scan", mode="local_lan") for item in local_devices if isinstance(item, dict)]
+    local_lan_scan_count = 0
+    local_file_fallback_count = 0
+    for item in local_devices:
+        source = str(item.get("source", "")).strip().lower()
+        if source == "lan_scan":
+            local_lan_scan_count += 1
+        elif source == "devices_json_fallback":
+            local_file_fallback_count += 1
 
     cloud_devices: list[dict[str, Any]] = []
     cloud_error = ""
@@ -690,7 +737,31 @@ def tuya_scan_and_save(
             cloud_error = str(exc)
     normalized_cloud = [_normalize_tuya_row(dict(item), source="cloud_scan", mode="cloud") for item in cloud_devices if isinstance(item, dict)]
 
-    merged = _merge_tuya_rows([*normalized_local, *normalized_cloud])
+    existing_rows, existing_file_name = _load_tuya_devices_file()
+    normalized_existing: list[dict[str, Any]] = []
+    for row in existing_rows:
+        mode = str(row.get("mode", "")).strip().lower()
+        if mode not in ("local_lan", "cloud"):
+            mode = "local_lan" if str(row.get("local_key", "")).strip() else "cloud"
+        normalized_existing.append(_normalize_tuya_row(dict(row), source="devices_file", mode=mode))
+
+    # Merge precedence: latest scan first, then existing devices.json for fallback/retention.
+    # This prevents "scan produced 0" from wiping previously saved devices.
+    merged = _merge_tuya_rows([*normalized_local, *normalized_cloud, *normalized_existing])
+
+    scanned_identities = {_tuya_identity(row) for row in [*normalized_local, *normalized_cloud]}
+    existing_only_count = 0
+    for row in normalized_existing:
+        identity = _tuya_identity(row)
+        if identity not in scanned_identities:
+            existing_only_count += 1
+    devices_file_diag = _tuya_devices_file_diagnostics()
+    cloud_cfg_presence = {
+        "cloud_region": bool(str(cfg.get("cloud_region", "")).strip()),
+        "client_id": bool(str(cfg.get("client_id", "")).strip()),
+        "client_secret": bool(str(cfg.get("client_secret", "")).strip()),
+        "api_device_id": bool(str(cfg.get("api_device_id", "")).strip()),
+    }
     payload = {
         "updated_at": utc_now(),
         "subnet_hint": (subnet_hint or "").strip(),
@@ -699,6 +770,11 @@ def tuya_scan_and_save(
         "cloud_count": len(normalized_cloud),
         "cloud_error": cloud_error,
         "app_keys_file": str(cfg.get("app_keys_file", "")),
+        "existing_file_name": existing_file_name,
+        "existing_file_count": len(normalized_existing),
+        "existing_only_count": existing_only_count,
+        "devices_file_diagnostics": devices_file_diag,
+        "cloud_cfg_presence": cloud_cfg_presence,
     }
     file_name = _write_tuya_devices_file(payload)
     append_event(
@@ -709,6 +785,13 @@ def tuya_scan_and_save(
             "cloud_count": len(normalized_cloud),
             "cloud_error": cloud_error,
             "file": file_name,
+            "existing_file": existing_file_name,
+            "existing_file_count": len(normalized_existing),
+            "existing_only_count": existing_only_count,
+            "local_lan_scan_count": local_lan_scan_count,
+            "local_file_fallback_count": local_file_fallback_count,
+            "devices_file_diagnostics": devices_file_diag,
+            "cloud_cfg_presence": cloud_cfg_presence,
         },
     )
     return {
@@ -722,6 +805,16 @@ def tuya_scan_and_save(
         "cloud_count": len(normalized_cloud),
         "saved_count": len(merged),
         "subnet_hint": (subnet_hint or "").strip(),
+        "existing_file_name": existing_file_name,
+        "existing_file_count": len(normalized_existing),
+        "existing_only_count": existing_only_count,
+        "local_lan_scan_count": local_lan_scan_count,
+        "local_file_fallback_count": local_file_fallback_count,
+        "local_scan_enabled": bool(local_result.get("enabled", True)),
+        "local_scan_devices_file": str(local_result.get("devices_file", "")),
+        "local_scan_devices_file_count": int(local_result.get("devices_file_count", 0) or 0),
+        "devices_file_diagnostics": devices_file_diag,
+        "cloud_cfg_presence": cloud_cfg_presence,
     }
 
 
@@ -737,4 +830,5 @@ def tuya_devices_file() -> dict[str, Any]:
         "file_name": file_name,
         "count": len(merged),
         "devices": merged,
+        "devices_file_diagnostics": _tuya_devices_file_diagnostics(),
     }

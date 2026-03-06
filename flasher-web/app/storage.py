@@ -134,6 +134,8 @@ DEFAULT_SETTINGS = {
         "cloud_region": "",
         "client_id": "",
         "client_secret": "",
+        "api_device_id": "",
+        "local_key": "",
         "local_scan_enabled": True,
     },
     "scan": {
@@ -159,6 +161,23 @@ DEFAULT_SETTINGS = {
 }
 
 
+def _merge_default_dict(defaults: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for key, default_value in defaults.items():
+        if key not in current:
+            merged[key] = default_value
+            continue
+        current_value = current[key]
+        if isinstance(default_value, dict) and isinstance(current_value, dict):
+            merged[key] = _merge_default_dict(default_value, current_value)
+        else:
+            merged[key] = current_value
+    for key, value in current.items():
+        if key not in merged:
+            merged[key] = value
+    return merged
+
+
 def set_setting(key: str, value: dict[str, Any]) -> None:
     now = utc_now()
     with _db_lock:
@@ -182,7 +201,15 @@ def get_setting(key: str) -> dict[str, Any]:
         conn.close()
 
     if row:
-        return json.loads(row["value"])
+        loaded = json.loads(row["value"])
+        default_value = DEFAULT_SETTINGS.get(key, {})
+        if isinstance(default_value, dict) and isinstance(loaded, dict):
+            merged = _merge_default_dict(default_value, loaded)
+            # Auto-heal older rows that miss newer keys.
+            if merged != loaded:
+                set_setting(key, merged)
+            return merged
+        return loaded
     default_value = DEFAULT_SETTINGS.get(key, {})
     set_setting(key, default_value)
     return default_value

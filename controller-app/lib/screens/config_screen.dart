@@ -1162,6 +1162,9 @@ class _ConfigScreenState extends State<ConfigScreen> {
 
   void _toggleLogWindow() {
     if (!mounted) return;
+    if (!_logWindowOpen) {
+      FocusManager.instance.primaryFocus?.unfocus();
+    }
     setState(() {
       _logWindowOpen = !_logWindowOpen;
     });
@@ -1346,7 +1349,9 @@ class _ConfigScreenState extends State<ConfigScreen> {
                   [
                     const Text('LAN mode only. No Tuya cloud required.'),
                     const SizedBox(height: 6),
-                    const Text('Simple flow: 1) Enter subnet hint, 2) Discover hub, 3) Discover lights, 4) Add Device'),
+                    const Text(
+                      'Simple flow: 1) Enter subnet hint, 2) Discover hub, 3) Discover lights, 4) Go to Devices > MOES to add.',
+                    ),
                     const SizedBox(height: 4),
                     const Text('If hub key is blank, app will try auto-fill from Tuya scan data when available.'),
                     TextField(
@@ -1401,15 +1406,12 @@ class _ConfigScreenState extends State<ConfigScreen> {
                     if (_moesLights.isNotEmpty) ...[
                       const SizedBox(height: 10),
                       const Text('Discovered RGB lights'),
+                      const Text('Add devices from Devices > MOES.', style: TextStyle(fontSize: 12)),
                       ..._moesLights.map(
                         (light) => ListTile(
                           dense: true,
                           title: Text('${light['name'] ?? ''} (${light['cid'] ?? light['id'] ?? ''})'),
                           subtitle: Text('Category: ${light['category'] ?? ''}  Online: ${light['online'] ?? 'unknown'}'),
-                          trailing: TextButton(
-                            onPressed: () => _addMoesLightAsDevice(light),
-                            child: const Text('Add Device'),
-                          ),
                         ),
                       ),
                     ],
@@ -1541,11 +1543,15 @@ class _ConfigScreenState extends State<ConfigScreen> {
                         OutlinedButton(onPressed: _showTuyaHowTo, child: const Text('How to get Tuya details')),
                         FilledButton.tonal(onPressed: _testTuyaSetup, child: const Text('Test Tuya Setup')),
                         FilledButton.tonal(onPressed: _scanTuyaAndSave, child: const Text('Scan + Save devices.json')),
-                        OutlinedButton(onPressed: _loadSavedTuyaDevices, child: const Text('Load saved devices.json')),
                         OutlinedButton(onPressed: _testTuyaLocal, child: const Text('Scan Tuya Local + Save')),
                         OutlinedButton(onPressed: _testTuyaCloud, child: const Text('Scan Tuya Cloud + Save')),
                         FilledButton(onPressed: _saveTuyaSection, child: const Text('Save section')),
                       ],
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Config only saves credentials and devices.json. To view/add devices use Devices > Tuya > Scan.',
+                      style: TextStyle(fontSize: 12),
                     ),
                     if (_liveActionBusy) ...[
                       const SizedBox(height: 8),
@@ -1556,42 +1562,6 @@ class _ConfigScreenState extends State<ConfigScreen> {
                       Text(
                         'Status: $_liveActionStatus',
                         style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                    if (_tuyaLocalDevices.isNotEmpty) ...[
-                      const SizedBox(height: 10),
-                      const Text('Tuya Local discovered'),
-                      ..._tuyaLocalDevices.map(
-                        (item) => ListTile(
-                          dense: true,
-                          title: Text('${item['id'] ?? ''}'),
-                          subtitle: Text(
-                            'IP: ${item['ip'] ?? ''}  Version: ${item['version'] ?? ''}  '
-                            'LocalKey: ${((item['local_key'] ?? '').toString().trim().isNotEmpty) ? "yes" : "no"}',
-                          ),
-                          trailing: TextButton(
-                            onPressed: () => _addTuyaLocalAsDevice(item),
-                            child: const Text('Add Device'),
-                          ),
-                        ),
-                      ),
-                    ],
-                    if (_tuyaCloudDevices.isNotEmpty) ...[
-                      const SizedBox(height: 10),
-                      const Text('Tuya Cloud discovered'),
-                      ..._tuyaCloudDevices.map(
-                        (item) => ListTile(
-                          dense: true,
-                          title: Text('${item['name'] ?? ''} (${item['id'] ?? ''})'),
-                          subtitle: Text(
-                            'Category: ${item['category'] ?? ''}  Online: ${item['online'] ?? ''}  '
-                            'LocalKey: ${((item['local_key'] ?? '').toString().trim().isNotEmpty) ? "yes" : "no"}',
-                          ),
-                          trailing: TextButton(
-                            onPressed: () => _addTuyaCloudAsDevice(item),
-                            child: const Text('Add Device'),
-                          ),
-                        ),
                       ),
                     ],
                   ],

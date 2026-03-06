@@ -774,6 +774,13 @@ def get_integrations() -> dict[str, Any]:
 @app.put("/api/config/integrations", dependencies=[Depends(require_auth_if_configured)])
 def put_integrations(payload: IntegrationsConfig) -> dict[str, Any]:
     data = payload.model_dump()
+    existing_tuya = get_setting("tuya")
+    incoming_api_device_id = str(data["tuya"].get("api_device_id", "")).strip()
+    if not incoming_api_device_id:
+        preserved_api_device_id = str(existing_tuya.get("api_device_id", "")).strip()
+        if preserved_api_device_id:
+            data["tuya"]["api_device_id"] = preserved_api_device_id
+
     data["spotify"]["client_secret"] = encrypt_secret(data["spotify"].get("client_secret", ""))
     data["spotify"]["refresh_token"] = encrypt_secret(data["spotify"].get("refresh_token", ""))
     data["weather"]["api_key"] = encrypt_secret(data["weather"].get("api_key", ""))
@@ -788,7 +795,18 @@ def put_integrations(payload: IntegrationsConfig) -> dict[str, Any]:
     set_setting("scan", data["scan"])
     set_setting("moes", data["moes"])
     set_setting("ota", data["ota"])
-    append_event("integrations_updated", {"scan": data["scan"]})
+    append_event(
+        "integrations_updated",
+        {
+            "scan": data["scan"],
+            "tuya": {
+                "cloud_region_present": bool(str(data["tuya"].get("cloud_region", "")).strip()),
+                "client_id_present": bool(str(data["tuya"].get("client_id", "")).strip()),
+                "client_secret_present": bool(str(data["tuya"].get("client_secret", "")).strip()),
+                "api_device_id_present": bool(str(data["tuya"].get("api_device_id", "")).strip()),
+            },
+        },
+    )
     return {"saved": True}
 
 
@@ -978,7 +996,7 @@ def post_tuya_scan_save(payload: dict[str, Any] | None = None) -> dict[str, Any]
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/api/integrations/tuya/devices-file", dependencies=[Depends(require_auth_if_configured)])
+@app.get("/api/integrations/tuya/devices-file")
 def get_tuya_devices_file() -> dict[str, Any]:
     try:
         return tuya_devices_file()

@@ -479,7 +479,10 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>> tuyaDevicesFile() async {
-    final res = await _client.get(_uri('/api/integrations/tuya/devices-file'));
+    final res = await _client.get(
+      _uri('/api/integrations/tuya/devices-file'),
+      headers: _jsonHeaders(),
+    );
     if (res.statusCode != 200) {
       throw Exception('Tuya devices file load failed: ${res.body}');
     }
