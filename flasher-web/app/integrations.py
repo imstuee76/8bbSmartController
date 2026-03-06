@@ -225,40 +225,12 @@ def _tuya_effective_cfg(
     api_device_id: str = "",
 ) -> dict[str, Any]:
     tuya_cfg = get_setting("tuya")
-    file_keys, file_name = _load_tuya_app_keys_file()
-
-    file_region = str(
-        file_keys.get("apiRegion")
-        or file_keys.get("region")
-        or file_keys.get("cloud_region")
-        or ""
-    ).strip()
-    file_client_id = str(
-        file_keys.get("apiKey")
-        or file_keys.get("client_id")
-        or file_keys.get("clientId")
-        or ""
-    ).strip()
-    file_client_secret = str(
-        file_keys.get("apiSecret")
-        or file_keys.get("client_secret")
-        or file_keys.get("clientSecret")
-        or ""
-    ).strip()
-    file_api_device_id = str(
-        file_keys.get("apiDeviceID")
-        or file_keys.get("api_device_id")
-        or file_keys.get("apiDeviceId")
-        or ""
-    ).strip()
 
     resolved_secret = client_secret.strip() if client_secret.strip() else decrypt_secret(tuya_cfg.get("client_secret", "")).strip()
-    if not resolved_secret:
-        resolved_secret = file_client_secret
 
-    cloud_region_final = cloud_region.strip() or str(tuya_cfg.get("cloud_region", "")).strip() or file_region
-    client_id_final = client_id.strip() or str(tuya_cfg.get("client_id", "")).strip() or file_client_id
-    api_device_id_final = api_device_id.strip() or str(tuya_cfg.get("api_device_id", "")).strip() or file_api_device_id
+    cloud_region_final = cloud_region.strip() or str(tuya_cfg.get("cloud_region", "")).strip()
+    client_id_final = client_id.strip() or str(tuya_cfg.get("client_id", "")).strip()
+    api_device_id_final = api_device_id.strip() or str(tuya_cfg.get("api_device_id", "")).strip()
     return {
         "cloud_region": cloud_region_final,
         "client_id": client_id_final,
@@ -266,7 +238,7 @@ def _tuya_effective_cfg(
         "api_device_id": api_device_id_final,
         "default_local_key": decrypt_secret(tuya_cfg.get("local_key", "")).strip(),
         "local_scan_enabled": bool(tuya_cfg.get("local_scan_enabled", True)),
-        "app_keys_file": file_name,
+        "app_keys_file": "",
     }
 
 
@@ -276,8 +248,8 @@ def _tuya_cloud_device_list(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     client_secret = str(cfg.get("client_secret", "")).strip()
     api_device_id = str(cfg.get("api_device_id", "")).strip()
 
-    if not region or not client_id or not client_secret:
-        raise ValueError("Tuya cloud credentials missing (region, client_id, client_secret)")
+    if not region or not client_id or not client_secret or not api_device_id:
+        raise ValueError("Tuya cloud credentials missing (region, client_id, client_secret, api_device_id)")
 
     try:
         import tinytuya  # type: ignore
@@ -291,14 +263,35 @@ def _tuya_cloud_device_list(cfg: dict[str, Any]) -> list[dict[str, Any]]:
         apiDeviceID=api_device_id,
     )
     res = cloud.getdevices()
-    if not isinstance(res, dict):
-        raise ValueError("Unexpected Tuya cloud response")
-    if not res.get("success", False):
-        raise ValueError(f"Tuya cloud query failed: {res}")
+    raw_items: list[Any] = []
+    if isinstance(res, list):
+        raw_items = res
+    elif isinstance(res, dict):
+        if res.get("success") is False:
+            detail = res.get("msg") or res.get("code") or res
+            raise ValueError(f"Tuya cloud query failed: {detail}")
+        result_obj = res.get("result")
+        if isinstance(result_obj, list):
+            raw_items = result_obj
+        elif isinstance(result_obj, dict):
+            if isinstance(result_obj.get("list"), list):
+                raw_items = result_obj.get("list", [])
+            elif all(isinstance(v, dict) for v in result_obj.values()):
+                for key, value in result_obj.items():
+                    row = dict(value)
+                    if "id" not in row:
+                        row["id"] = str(key)
+                    raw_items.append(row)
+        elif isinstance(res.get("devices"), list):
+            raw_items = res.get("devices", [])
+    else:
+        preview = str(res)
+        if len(preview) > 300:
+            preview = preview[:300] + "..."
+        raise ValueError(f"Unexpected Tuya cloud response type={type(res).__name__}: {preview}")
 
-    raw_items = res.get("result", [])
     if not isinstance(raw_items, list):
-        return []
+        raw_items = []
 
     normalized: list[dict[str, Any]] = []
     for raw in raw_items:
