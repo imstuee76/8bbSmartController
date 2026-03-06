@@ -52,9 +52,72 @@ def _parse_tuya_devices_file(path: Path) -> tuple[list[dict[str, Any]], str]:
                     if "id" not in row:
                         row["id"] = str(key)
                     rows.append(row)
+    if not rows:
+        rows = _extract_tuya_rows_any_shape(payload)
     if rows:
         return rows, "ok"
     return [], "parsed_but_no_rows"
+
+
+def _looks_like_tuya_row(item: dict[str, Any]) -> bool:
+    keys = {str(k).strip().lower() for k in item.keys()}
+    has_id = any(k in keys for k in ("id", "dev_id", "gwid", "tuya_device_id"))
+    has_net = any(k in keys for k in ("ip", "local_ip", "mac"))
+    has_secret = any(k in keys for k in ("local_key", "key"))
+    has_name = "name" in keys or "friendly_name" in keys
+    return (has_id and (has_net or has_secret or has_name)) or (has_net and has_secret)
+
+
+def _normalize_tuya_candidate_row(item: dict[str, Any]) -> dict[str, Any]:
+    out = dict(item)
+    # Normalize common alternate keys from different Tuya exports.
+    if not str(out.get("id", "")).strip():
+        out["id"] = str(out.get("dev_id", "") or out.get("gwId", "") or out.get("tuya_device_id", "")).strip()
+    if not str(out.get("ip", "")).strip():
+        out["ip"] = str(out.get("local_ip", "")).strip()
+    if not str(out.get("local_key", "")).strip():
+        out["local_key"] = str(out.get("key", "")).strip()
+    if not str(out.get("product_key", "")).strip():
+        out["product_key"] = str(out.get("productKey", "")).strip()
+    return out
+
+
+def _extract_tuya_rows_any_shape(payload: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add_row(row: dict[str, Any]) -> None:
+        normalized = _normalize_tuya_candidate_row(row)
+        if not _looks_like_tuya_row(normalized):
+            return
+        key = _tuya_identity(normalized)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(normalized)
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            add_row(node)
+            # Handle dict keyed by device id.
+            if node and all(isinstance(v, dict) for v in node.values()):
+                for key, value in node.items():
+                    if isinstance(value, dict):
+                        row = dict(value)
+                        if not str(row.get("id", "")).strip():
+                            row["id"] = str(key)
+                        add_row(row)
+            for value in node.values():
+                if isinstance(value, (dict, list)):
+                    walk(value)
+            return
+        if isinstance(node, list):
+            for item in node:
+                if isinstance(item, (dict, list)):
+                    walk(item)
+
+    walk(payload)
+    return out
 
 
 def _tuya_devices_file_diagnostics() -> dict[str, Any]:
