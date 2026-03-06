@@ -197,6 +197,8 @@ main() {
       if service_exists; then
         run_maybe_sudo systemctl stop "$SERVICE_NAME"
         run systemctl status "$SERVICE_NAME" --no-pager || true
+        # Also stop any manual/leftover uvicorn process on the same port.
+        manual_stop || true
       else
         manual_stop
       fi

@@ -13,6 +13,7 @@ ERROR_LOG="$SESSION_DIR/errors-$DAY_LOCAL.log"
 TMP_ROOT="$(mktemp -d)"
 FLUTTER_HOME_DEFAULT="$APP_ROOT/.tools/flutter"
 FLUTTER_BIN=""
+SERVER_WAS_RUNNING="false"
 
 CONTROLLER_SYNC_PATHS=(
   "controller-app"
@@ -67,6 +68,65 @@ run() {
   safe_cmd="$(sanitize_log_text "$*")"
   log "\$ $safe_cmd"
   "$@"
+}
+
+detect_backend_running() {
+  local port="${CONTROLLER_SERVER_PORT:-1111}"
+  if pgrep -f "uvicorn app.main:app.*--port ${port}" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+stop_backend_if_running() {
+  local ctl="$APP_ROOT/linux-controller-server-control.sh"
+  if detect_backend_running; then
+    SERVER_WAS_RUNNING="true"
+    log "Detected running backend on port ${CONTROLLER_SERVER_PORT:-1111}; stopping before update sync."
+    if [[ -x "$ctl" ]]; then
+      run "$ctl" stop || true
+    else
+      local pids
+      pids="$(pgrep -f "uvicorn app.main:app.*--port ${CONTROLLER_SERVER_PORT:-1111}" || true)"
+      if [[ -n "$pids" ]]; then
+        run kill $pids || true
+      fi
+    fi
+    sleep 1
+  fi
+}
+
+start_backend_if_needed() {
+  local ctl="$APP_ROOT/linux-controller-server-control.sh"
+  if [[ "$SERVER_WAS_RUNNING" != "true" ]]; then
+    return 0
+  fi
+  log "Backend was running before update; starting it again."
+  if [[ -x "$ctl" ]]; then
+    run "$ctl" start || true
+  else
+    log "WARNING: server-control script missing; backend was not auto-started."
+  fi
+}
+
+verify_synced_runtime_markers() {
+  local backend_main="$APP_ROOT/flasher-web/app/main.py"
+  if [[ ! -f "$backend_main" ]]; then
+    log "WARNING: Missing backend file after sync: $backend_main"
+    return 0
+  fi
+  local marker
+  marker="$(grep -n '@app.get("/api/integrations/tuya/devices-file")' "$backend_main" || true)"
+  if [[ -n "$marker" ]]; then
+    log "Runtime marker OK: $marker"
+  else
+    log "WARNING: Runtime marker missing in $backend_main (devices-file endpoint line not found)."
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    local sum
+    sum="$(sha256sum "$backend_main" | awk '{print $1}')"
+    log "backend_main_sha256=$sum"
+  fi
 }
 
 on_err() {
@@ -1010,6 +1070,7 @@ main() {
   ensure_cmd curl curl
   ensure_cmd tar tar
   ensure_cmd rsync rsync
+  stop_backend_if_running
   sync_controller_files
   ensure_permissions
   normalize_project_owner_after_sudo
@@ -1017,6 +1078,8 @@ main() {
   ensure_runtime_writable_paths
   install_deps
   ensure_esp_idf_ready
+  verify_synced_runtime_markers
+  start_backend_if_needed
   log "Manual admin scripts:"
   log " - Serial/admin port access: $APP_ROOT/tools/allowPORTadmin.sh"
   log " - Firewall port open: $APP_ROOT/tools/openports.sh"
