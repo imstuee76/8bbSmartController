@@ -901,6 +901,39 @@ class _DevicesScreenState extends State<DevicesScreen> {
     await _loadDeviceStatus(device, showOutput: true);
   }
 
+  Future<void> _findNewIpForDevice(SmartDevice device) async {
+    try {
+      final result = await widget.api.refreshDeviceIp(
+        device.id,
+        subnetHint: _subnetCtl.text.trim(),
+      );
+      if (!mounted) return;
+      await _refresh();
+      final updated = (result['updated'] as bool?) ?? false;
+      final oldHost = (result['old_host'] ?? '').toString();
+      final newHost = (result['new_host'] ?? '').toString();
+      setState(() {
+        _statusOutput = const JsonEncoder.withIndent('  ').convert(result);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            updated
+                ? 'IP updated: ${oldHost.isEmpty ? '(empty)' : oldHost} -> $newHost'
+                : 'IP unchanged: $newHost',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      final msg = _friendlyError(e);
+      setState(() {
+        _statusOutput = msg;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    }
+  }
+
   Future<void> _runControlDialog(SmartDevice device) async {
     final channelCtl = TextEditingController(text: 'relay1');
     final valueCtl = TextEditingController(text: '0');
@@ -1396,6 +1429,10 @@ class _DevicesScreenState extends State<DevicesScreen> {
                                                         await _refresh();
                                                       },
                                                       child: const Text('Rescan'),
+                                                    ),
+                                                    OutlinedButton(
+                                                      onPressed: () => _findNewIpForDevice(d),
+                                                      child: const Text('Find New IP'),
                                                     ),
                                                     FilledButton.tonal(
                                                       onPressed: () async {

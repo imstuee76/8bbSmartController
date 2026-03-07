@@ -101,6 +101,20 @@ class ApiService {
     }
   }
 
+  Future<Map<String, dynamic>> refreshDeviceIp(String deviceId, {String? subnetHint}) async {
+    final res = await _client.post(
+      _uri('/api/devices/$deviceId/refresh-ip'),
+      headers: _jsonHeaders(),
+      body: jsonEncode({
+        'subnet_hint': subnetHint ?? '',
+      }),
+    );
+    if (res.statusCode != 200) {
+      throw Exception('Find new IP failed: ${res.body}');
+    }
+    return (jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
   Future<void> upsertChannel({
     required String deviceId,
     required String channelKey,

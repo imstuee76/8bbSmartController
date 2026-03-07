@@ -104,6 +104,11 @@ _profile_push_executor = ThreadPoolExecutor(max_workers=_PROFILE_PUSH_JOB_WORKER
 _profile_push_jobs_lock = threading.Lock()
 _profile_push_jobs: dict[str, dict[str, Any]] = {}
 OTA_PUSH_LOG_DIR = DATA_DIR / "logs" / "ota_push_jobs"
+_DEVICE_IP_REFRESH_INTERVAL_SECONDS = max(60.0, float(os.environ.get("DEVICE_IP_REFRESH_INTERVAL_SECONDS", "1800")))
+_device_ip_refresh_lock = threading.Lock()
+_device_ip_refresh_thread: threading.Thread | None = None
+_device_ip_refresh_stop = threading.Event()
+_device_ip_refresh_last_run = 0.0
 
 app.add_middleware(
     CORSMiddleware,
@@ -193,6 +198,180 @@ async def request_session_logger(request: Request, call_next: Any) -> Response:
 def on_startup() -> None:
     ensure_data_layout()
     init_db()
+    _start_device_ip_refresh_worker()
+
+
+@app.on_event("shutdown")
+def on_shutdown() -> None:
+    _device_ip_refresh_stop.set()
+
+
+def _normalize_mac(value: Any) -> str:
+    raw = str(value or "").strip().lower().replace("-", ":")
+    if not raw:
+        return ""
+    parts = raw.split(":")
+    if len(parts) != 6:
+        return ""
+    try:
+        normalized = ":".join(f"{int(part, 16):02x}" for part in parts)
+    except ValueError:
+        return ""
+    if normalized == "00:00:00:00:00:00":
+        return ""
+    return normalized
+
+
+def _is_ipv4_host(value: Any) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    try:
+        return isinstance(ipaddress.ip_address(raw), ipaddress.IPv4Address)
+    except ValueError:
+        return False
+
+
+def _find_ip_for_mac(mac: str, subnet_hint: str = "") -> tuple[str, int]:
+    target = _normalize_mac(mac)
+    if not target:
+        return "", 0
+
+    scan_count = 0
+    hint = str(subnet_hint or "").strip()
+    rows = scan_network(subnet_hint=hint or None, resolve_hostnames=False, automation_only=False)
+    scan_count += len(rows)
+    for row in rows:
+        row_mac = _normalize_mac(row.get("mac"))
+        row_ip = str(row.get("ip", "")).strip()
+        if row_mac == target and _is_ipv4_host(row_ip):
+            return row_ip, scan_count
+
+    # Fallback to ARP/neighbor table without subnet filter.
+    if hint:
+        rows = scan_network(subnet_hint=None, resolve_hostnames=False, automation_only=False)
+        scan_count += len(rows)
+        for row in rows:
+            row_mac = _normalize_mac(row.get("mac"))
+            row_ip = str(row.get("ip", "")).strip()
+            if row_mac == target and _is_ipv4_host(row_ip):
+                return row_ip, scan_count
+    return "", scan_count
+
+
+def _refresh_device_ips_by_mac(*, reason: str, force: bool = False) -> dict[str, Any]:
+    global _device_ip_refresh_last_run
+    now_mono = time.monotonic()
+    if not force and (now_mono - _device_ip_refresh_last_run) < _DEVICE_IP_REFRESH_INTERVAL_SECONDS:
+        return {"ok": True, "skipped": True, "reason": "interval_not_elapsed"}
+    if not _device_ip_refresh_lock.acquire(blocking=False):
+        return {"ok": True, "skipped": True, "reason": "refresh_in_progress"}
+
+    started_at = utc_now()
+    try:
+        subnet_hint = ""
+        try:
+            scan_cfg = get_setting("scan")
+            subnet_hint = str(scan_cfg.get("subnet_hint", "")).strip() if isinstance(scan_cfg, dict) else ""
+        except Exception:
+            subnet_hint = ""
+
+        rows = scan_network(subnet_hint=subnet_hint or None, resolve_hostnames=False, automation_only=False)
+        mac_to_ip: dict[str, str] = {}
+        for row in rows:
+            mac = _normalize_mac(row.get("mac"))
+            ip = str(row.get("ip", "")).strip()
+            if mac and _is_ipv4_host(ip):
+                mac_to_ip[mac] = ip
+
+        conn = get_connection()
+        devices = conn.execute(
+            "SELECT id, name, host, mac FROM devices WHERE mac IS NOT NULL AND TRIM(mac) != ''"
+        ).fetchall()
+        checked_devices = len(devices)
+        updates: list[dict[str, str]] = []
+        now = utc_now()
+        for device in devices:
+            device_mac = _normalize_mac(device["mac"])
+            if not device_mac:
+                continue
+            new_ip = mac_to_ip.get(device_mac, "")
+            if not new_ip:
+                continue
+            old_host = str(device["host"] or "").strip()
+            if old_host == new_ip:
+                continue
+            if old_host and not _is_ipv4_host(old_host):
+                continue
+            conn.execute(
+                "UPDATE devices SET host=?, updated_at=? WHERE id=?",
+                (new_ip, now, device["id"]),
+            )
+            updates.append(
+                {
+                    "id": str(device["id"]),
+                    "name": str(device["name"] or ""),
+                    "mac": device_mac,
+                    "old_host": old_host,
+                    "new_host": new_ip,
+                }
+            )
+        if updates:
+            conn.commit()
+        conn.close()
+
+        result = {
+            "ok": True,
+            "reason": reason,
+            "started_at": started_at,
+            "finished_at": utc_now(),
+            "subnet_hint": subnet_hint,
+            "neighbors": len(rows),
+            "mac_candidates": len(mac_to_ip),
+            "devices_checked": checked_devices,
+            "updated": len(updates),
+        }
+        if updates:
+            result["changes"] = updates
+        append_event("device_ip_refresh", result)
+        _device_ip_refresh_last_run = time.monotonic()
+        return result
+    except Exception as exc:
+        error_payload = {
+            "ok": False,
+            "reason": reason,
+            "started_at": started_at,
+            "finished_at": utc_now(),
+            "error": str(exc),
+        }
+        append_event("device_ip_refresh_error", error_payload)
+        # Retry sooner after errors instead of waiting the full interval.
+        _device_ip_refresh_last_run = max(
+            0.0,
+            time.monotonic() - (_DEVICE_IP_REFRESH_INTERVAL_SECONDS - 60.0),
+        )
+        return error_payload
+    finally:
+        _device_ip_refresh_lock.release()
+
+
+def _device_ip_refresh_loop() -> None:
+    _refresh_device_ips_by_mac(reason="startup", force=True)
+    while not _device_ip_refresh_stop.wait(_DEVICE_IP_REFRESH_INTERVAL_SECONDS):
+        _refresh_device_ips_by_mac(reason="interval", force=True)
+
+
+def _start_device_ip_refresh_worker() -> None:
+    global _device_ip_refresh_thread
+    if _device_ip_refresh_thread and _device_ip_refresh_thread.is_alive():
+        return
+    _device_ip_refresh_stop.clear()
+    _device_ip_refresh_thread = threading.Thread(
+        target=_device_ip_refresh_loop,
+        name="device-ip-refresh-worker",
+        daemon=True,
+    )
+    _device_ip_refresh_thread.start()
 
 
 @app.get("/")
@@ -1006,6 +1185,7 @@ def get_tuya_devices_file() -> dict[str, Any]:
 
 @app.get("/api/devices")
 def list_devices() -> list[dict[str, Any]]:
+    _refresh_device_ips_by_mac(reason="devices_list", force=False)
     conn = get_connection()
     rows = conn.execute("SELECT * FROM devices ORDER BY updated_at DESC").fetchall()
     items = [_device_to_dict(r, conn) for r in rows]
@@ -1067,6 +1247,7 @@ def create_device(payload: DeviceCreate) -> dict[str, Any]:
     conn.close()
 
     append_event("device_created", {"id": device_id, "name": payload.name, "type": payload.type})
+    _refresh_device_ips_by_mac(reason="device_added", force=True)
     return data
 
 
@@ -1194,6 +1375,80 @@ def rescan_device(device_id: str) -> dict[str, Any]:
     conn.close()
     append_event("device_rescanned", {"id": device_id})
     return {"rescanned": True, "last_seen_at": now, "status": status}
+
+
+@app.post("/api/devices/{device_id}/refresh-ip", dependencies=[Depends(require_auth_if_configured)])
+def refresh_device_ip(device_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    conn, row = _require_device(device_id)
+    old_host = str(row["host"] or "").strip()
+    device_mac = _normalize_mac(row["mac"])
+    if not device_mac:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Device MAC is not set for this device")
+
+    subnet_hint = ""
+    if isinstance(payload, dict):
+        subnet_hint = str(payload.get("subnet_hint", "")).strip()
+    if not subnet_hint:
+        try:
+            scan_cfg = get_setting("scan")
+            subnet_hint = str(scan_cfg.get("subnet_hint", "")).strip() if isinstance(scan_cfg, dict) else ""
+        except Exception:
+            subnet_hint = ""
+
+    new_ip, scanned_neighbors = _find_ip_for_mac(device_mac, subnet_hint=subnet_hint)
+    if not new_ip:
+        conn.close()
+        append_event(
+            "device_ip_refresh_manual",
+            {
+                "id": device_id,
+                "name": str(row["name"] or ""),
+                "mac": device_mac,
+                "old_host": old_host,
+                "updated": False,
+                "subnet_hint": subnet_hint,
+                "scanned_neighbors": scanned_neighbors,
+                "error": "mac_not_found_on_lan",
+            },
+        )
+        raise HTTPException(status_code=404, detail=f"No LAN IP found for MAC {device_mac}")
+
+    updated = False
+    if old_host != new_ip:
+        now = utc_now()
+        conn.execute("UPDATE devices SET host=?, updated_at=? WHERE id=?", (new_ip, now, device_id))
+        conn.commit()
+        updated = True
+    updated_row = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
+    device = _device_to_dict(updated_row, conn)
+    conn.close()
+
+    append_event(
+        "device_ip_refresh_manual",
+        {
+            "id": device_id,
+            "name": str(row["name"] or ""),
+            "mac": device_mac,
+            "old_host": old_host,
+            "new_host": new_ip,
+            "updated": updated,
+            "subnet_hint": subnet_hint,
+            "scanned_neighbors": scanned_neighbors,
+        },
+    )
+    return {
+        "ok": True,
+        "id": device_id,
+        "name": str(row["name"] or ""),
+        "mac": device_mac,
+        "old_host": old_host,
+        "new_host": new_ip,
+        "updated": updated,
+        "subnet_hint": subnet_hint,
+        "scanned_neighbors": scanned_neighbors,
+        "device": device,
+    }
 
 
 @app.get("/api/devices/{device_id}/status")
@@ -1337,6 +1592,8 @@ def list_tiles() -> list[dict[str, Any]]:
 
 @app.get("/api/main/tile-data")
 def get_tile_data() -> dict[str, Any]:
+    # Main dashboard loads should also opportunistically reconcile DHCP IP changes.
+    _refresh_device_ips_by_mac(reason="main_tile_load", force=False)
     conn = get_connection()
     rows = conn.execute("SELECT * FROM main_tiles ORDER BY updated_at DESC").fetchall()
     device_map = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM devices").fetchall()}
