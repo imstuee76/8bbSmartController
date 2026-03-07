@@ -753,6 +753,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
   Future<void> _openCreateDialog({String presetHost = ''}) async {
     final nameCtl = TextEditingController();
     final hostCtl = TextEditingController(text: presetHost);
+    final macCtl = TextEditingController();
     final passCtl = TextEditingController();
     final staticIpCtl = TextEditingController();
     final gatewayCtl = TextEditingController();
@@ -772,6 +773,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
               children: [
                 TextField(controller: nameCtl, decoration: const InputDecoration(labelText: 'Device name')),
                 TextField(controller: hostCtl, decoration: const InputDecoration(labelText: 'Device host/IP')),
+                TextField(controller: macCtl, decoration: const InputDecoration(labelText: 'MAC address (optional)')),
                 TextField(
                   controller: passCtl,
                   decoration: const InputDecoration(labelText: 'Device passcode'),
@@ -822,6 +824,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
                   name: nameCtl.text.trim(),
                   type: selectedType,
                   host: hostCtl.text.trim().isEmpty ? null : hostCtl.text.trim(),
+                  mac: macCtl.text.trim().isEmpty ? null : macCtl.text.trim(),
                   passcode: passCtl.text.trim().isEmpty ? null : passCtl.text.trim(),
                   ipMode: ipMode,
                   staticIp: staticIpCtl.text.trim().isEmpty ? null : staticIpCtl.text.trim(),
@@ -922,6 +925,91 @@ class _DevicesScreenState extends State<DevicesScreen> {
                 ? 'IP updated: ${oldHost.isEmpty ? '(empty)' : oldHost} -> $newHost'
                 : 'IP unchanged: $newHost',
           ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      final msg = _friendlyError(e);
+      setState(() {
+        _statusOutput = msg;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    }
+  }
+
+  Future<void> _assignMacAddress(SmartDevice device) async {
+    final macCtl = TextEditingController(text: device.mac ?? '');
+    final action = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('Assign MAC: ${device.name}'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Host/IP: ${device.host ?? '(not set)'}'),
+              const SizedBox(height: 8),
+              TextField(
+                controller: macCtl,
+                decoration: const InputDecoration(
+                  labelText: 'MAC address',
+                  hintText: 'aa:bb:cc:dd:ee:ff',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          OutlinedButton(
+            onPressed: () => Navigator.pop(context, 'auto'),
+            child: const Text('Auto From Host'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, 'manual'),
+            child: const Text('Save MAC'),
+          ),
+        ],
+      ),
+    );
+    if (action == null) return;
+
+    try {
+      late final Map<String, dynamic> result;
+      if (action == 'auto') {
+        result = await widget.api.assignDeviceMac(
+          device.id,
+          lookupFromHost: true,
+          subnetHint: _subnetCtl.text.trim(),
+        );
+      } else {
+        final mac = macCtl.text.trim();
+        if (mac.isEmpty) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Enter a MAC or use Auto From Host.')),
+          );
+          return;
+        }
+        result = await widget.api.assignDeviceMac(
+          device.id,
+          mac: mac,
+          lookupFromHost: false,
+          subnetHint: _subnetCtl.text.trim(),
+        );
+      }
+      if (!mounted) return;
+      await _refresh();
+      final newMac = (result['new_mac'] ?? '').toString();
+      final updated = (result['updated'] as bool?) ?? false;
+      setState(() {
+        _statusOutput = const JsonEncoder.withIndent('  ').convert(result);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(updated ? 'MAC assigned: $newMac' : 'MAC unchanged: $newMac'),
         ),
       );
     } catch (e) {
@@ -1067,29 +1155,132 @@ class _DevicesScreenState extends State<DevicesScreen> {
     );
   }
 
-  void _showAdvancedDetails(SmartDevice device) {
-    final pretty = const JsonEncoder.withIndent('  ').convert({
-      'id': device.id,
-      'name': device.name,
-      'type': device.type,
-      'host': device.host,
-      'mac': device.mac,
-      'ip_mode': device.ipMode,
-      'static_ip': device.staticIp,
-      'gateway': device.gateway,
-      'subnet_mask': device.subnetMask,
-      'metadata': device.metadata,
-      'channels': device.channels.map((c) => c.toJson()).toList(),
-    });
-    showDialog<void>(
+  Future<void> _showAdvancedDetails(SmartDevice device) async {
+    final nameCtl = TextEditingController(text: device.name);
+    final typeCtl = TextEditingController(text: device.type);
+    final hostCtl = TextEditingController(text: device.host ?? '');
+    final macCtl = TextEditingController(text: device.mac ?? '');
+    final staticIpCtl = TextEditingController(text: device.staticIp ?? '');
+    final gatewayCtl = TextEditingController(text: device.gateway ?? '');
+    final subnetCtl = TextEditingController(text: device.subnetMask ?? '');
+    final metadataCtl = TextEditingController(
+      text: const JsonEncoder.withIndent('  ').convert(device.metadata),
+    );
+    var ipMode = (device.ipMode == 'static') ? 'static' : 'dhcp';
+    final channelsPretty = const JsonEncoder.withIndent('  ')
+        .convert(device.channels.map((c) => c.toJson()).toList());
+
+    await showDialog<void>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Advanced details'),
-        content: SizedBox(
-          width: 560,
-          child: SingleChildScrollView(
-            child: SelectableText(pretty, style: const TextStyle(fontFamily: 'monospace')),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Advanced: ${device.name}'),
+          content: SizedBox(
+            width: 680,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('Device ID: ${device.id}', style: const TextStyle(fontFamily: 'monospace')),
+                  const SizedBox(height: 8),
+                  TextField(controller: nameCtl, decoration: const InputDecoration(labelText: 'Name')),
+                  TextField(controller: typeCtl, decoration: const InputDecoration(labelText: 'Type')),
+                  TextField(controller: hostCtl, decoration: const InputDecoration(labelText: 'Host/IP')),
+                  TextField(controller: macCtl, decoration: const InputDecoration(labelText: 'MAC')),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<String>(
+                    value: ipMode,
+                    decoration: const InputDecoration(labelText: 'IP Mode'),
+                    items: const [
+                      DropdownMenuItem(value: 'dhcp', child: Text('dhcp')),
+                      DropdownMenuItem(value: 'static', child: Text('static')),
+                    ],
+                    onChanged: (v) {
+                      if (v != null) {
+                        setDialogState(() {
+                          ipMode = v;
+                        });
+                      }
+                    },
+                  ),
+                  TextField(controller: staticIpCtl, decoration: const InputDecoration(labelText: 'Static IP')),
+                  TextField(controller: gatewayCtl, decoration: const InputDecoration(labelText: 'Gateway')),
+                  TextField(controller: subnetCtl, decoration: const InputDecoration(labelText: 'Subnet mask')),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: metadataCtl,
+                    minLines: 6,
+                    maxLines: 12,
+                    decoration: const InputDecoration(
+                      labelText: 'Metadata JSON',
+                      alignLabelWithHint: true,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('Channels (read-only)', style: TextStyle(fontWeight: FontWeight.w600)),
+                  ),
+                  const SizedBox(height: 4),
+                  SelectableText(channelsPretty, style: const TextStyle(fontFamily: 'monospace')),
+                ],
+              ),
+            ),
           ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+            FilledButton(
+              onPressed: () async {
+                Map<String, dynamic> metadata;
+                try {
+                  final raw = metadataCtl.text.trim();
+                  if (raw.isEmpty) {
+                    metadata = <String, dynamic>{};
+                  } else {
+                    final decoded = jsonDecode(raw);
+                    if (decoded is! Map<String, dynamic>) {
+                      throw const FormatException('Metadata must be a JSON object');
+                    }
+                    metadata = decoded;
+                  }
+                } catch (e) {
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Invalid metadata JSON: $e')),
+                  );
+                  return;
+                }
+                try {
+                  await widget.api.updateDevice(
+                    device.id,
+                    {
+                      'name': nameCtl.text.trim(),
+                      'type': typeCtl.text.trim(),
+                      'host': hostCtl.text.trim(),
+                      'mac': macCtl.text.trim(),
+                      'ip_mode': ipMode,
+                      'static_ip': staticIpCtl.text.trim(),
+                      'gateway': gatewayCtl.text.trim(),
+                      'subnet_mask': subnetCtl.text.trim(),
+                      'metadata': metadata,
+                    },
+                  );
+                  if (!mounted) return;
+                  Navigator.pop(context);
+                  await _refresh();
+                  ScaffoldMessenger.of(this.context).showSnackBar(
+                    const SnackBar(content: Text('Advanced details saved')),
+                  );
+                } catch (e) {
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(this.context).showSnackBar(
+                    SnackBar(content: Text(_friendlyError(e))),
+                  );
+                }
+              },
+              child: const Text('Save'),
+            ),
+          ],
         ),
       ),
     );
@@ -1121,6 +1312,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
     }
 
     final host = (item['ip'] ?? '').toString().trim();
+    final mac = (item['mac'] ?? '').toString().trim();
     final nameRaw = (item['name'] ?? '').toString().trim();
     final displayName = nameRaw.isNotEmpty
         ? nameRaw
@@ -1170,6 +1362,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
         name: displayName,
         type: _guessDeviceType(item),
         host: host.isEmpty ? null : host,
+        mac: mac.isEmpty ? null : mac,
         passcode: null,
         metadata: metadata,
       );
@@ -1429,6 +1622,10 @@ class _DevicesScreenState extends State<DevicesScreen> {
                                                         await _refresh();
                                                       },
                                                       child: const Text('Rescan'),
+                                                    ),
+                                                    OutlinedButton(
+                                                      onPressed: () => _assignMacAddress(d),
+                                                      child: const Text('Assign MAC'),
                                                     ),
                                                     OutlinedButton(
                                                       onPressed: () => _findNewIpForDevice(d),

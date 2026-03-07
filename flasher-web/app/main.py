@@ -259,6 +259,31 @@ def _find_ip_for_mac(mac: str, subnet_hint: str = "") -> tuple[str, int]:
     return "", scan_count
 
 
+def _find_mac_for_host(host: str, subnet_hint: str = "") -> tuple[str, int]:
+    target_host = str(host or "").strip()
+    if not _is_ipv4_host(target_host):
+        return "", 0
+
+    scan_count = 0
+    primary_hint = str(subnet_hint or "").strip() or target_host
+    rows = scan_network(subnet_hint=primary_hint, resolve_hostnames=False, automation_only=False)
+    scan_count += len(rows)
+    for row in rows:
+        row_ip = str(row.get("ip", "")).strip()
+        row_mac = _normalize_mac(row.get("mac"))
+        if row_ip == target_host and row_mac:
+            return row_mac, scan_count
+
+    rows = scan_network(subnet_hint=None, resolve_hostnames=False, automation_only=False)
+    scan_count += len(rows)
+    for row in rows:
+        row_ip = str(row.get("ip", "")).strip()
+        row_mac = _normalize_mac(row.get("mac"))
+        if row_ip == target_host and row_mac:
+            return row_mac, scan_count
+    return "", scan_count
+
+
 def _refresh_device_ips_by_mac(*, reason: str, force: bool = False) -> dict[str, Any]:
     global _device_ip_refresh_last_run
     now_mono = time.monotonic()
@@ -1199,6 +1224,24 @@ def create_device(payload: DeviceCreate) -> dict[str, Any]:
     now = utc_now()
     passcode_hash = hash_passcode(payload.passcode) if payload.passcode else None
     passcode_enc = encrypt_secret(payload.passcode or "")
+    host = str(payload.host or "").strip()
+    host_value = host or None
+    mac = _normalize_mac(payload.mac)
+    mac_source = "payload"
+    mac_scan_neighbors = 0
+    if not mac and _is_ipv4_host(host):
+        try:
+            scan_cfg = get_setting("scan")
+            subnet_hint = str(scan_cfg.get("subnet_hint", "")).strip() if isinstance(scan_cfg, dict) else ""
+        except Exception:
+            subnet_hint = ""
+        found_mac, scanned_neighbors = _find_mac_for_host(host, subnet_hint=subnet_hint)
+        mac_scan_neighbors = scanned_neighbors
+        if found_mac:
+            mac = found_mac
+            mac_source = "host_lookup"
+        else:
+            mac_source = "missing"
 
     conn = get_connection()
     conn.execute(
@@ -1210,8 +1253,8 @@ def create_device(payload: DeviceCreate) -> dict[str, Any]:
             device_id,
             payload.name,
             payload.type,
-            payload.host,
-            payload.mac,
+            host_value,
+            mac,
             passcode_hash,
             passcode_enc,
             payload.ip_mode,
@@ -1246,7 +1289,18 @@ def create_device(payload: DeviceCreate) -> dict[str, Any]:
     data = _device_to_dict(row, conn)
     conn.close()
 
-    append_event("device_created", {"id": device_id, "name": payload.name, "type": payload.type})
+    append_event(
+        "device_created",
+        {
+            "id": device_id,
+            "name": payload.name,
+            "type": payload.type,
+            "host": host,
+            "mac": mac,
+            "mac_source": mac_source,
+            "mac_scan_neighbors": mac_scan_neighbors,
+        },
+    )
     _refresh_device_ips_by_mac(reason="device_added", force=True)
     return data
 
@@ -1271,6 +1325,8 @@ def patch_device(device_id: str, payload: DeviceUpdate) -> dict[str, Any]:
         current["passcode_enc"] = encrypt_secret(new_pass)
     if "metadata" in updates:
         current["metadata_json"] = json.dumps(updates.pop("metadata"))
+    if "mac" in updates:
+        current["mac"] = _normalize_mac(updates.pop("mac"))
 
     for k, v in updates.items():
         current[k] = v
@@ -1279,11 +1335,12 @@ def patch_device(device_id: str, payload: DeviceUpdate) -> dict[str, Any]:
     conn.execute(
         """
         UPDATE devices
-        SET name=?, host=?, mac=?, passcode_hash=?, passcode_enc=?, ip_mode=?, static_ip=?, gateway=?, subnet_mask=?, metadata_json=?, updated_at=?
+        SET name=?, type=?, host=?, mac=?, passcode_hash=?, passcode_enc=?, ip_mode=?, static_ip=?, gateway=?, subnet_mask=?, metadata_json=?, updated_at=?
         WHERE id=?
         """,
         (
             current["name"],
+            current["type"],
             current["host"],
             current["mac"],
             current["passcode_hash"],
@@ -1447,6 +1504,82 @@ def refresh_device_ip(device_id: str, payload: dict[str, Any] | None = None) -> 
         "updated": updated,
         "subnet_hint": subnet_hint,
         "scanned_neighbors": scanned_neighbors,
+        "device": device,
+    }
+
+
+@app.post("/api/devices/{device_id}/assign-mac", dependencies=[Depends(require_auth_if_configured)])
+def assign_device_mac(device_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    conn, row = _require_device(device_id)
+    host = str(row["host"] or "").strip()
+    old_mac = _normalize_mac(row["mac"])
+
+    raw_requested_mac = ""
+    requested_mac = ""
+    lookup_from_host = True
+    subnet_hint = ""
+    if isinstance(payload, dict):
+        raw_requested_mac = str(payload.get("mac", "")).strip()
+        requested_mac = _normalize_mac(raw_requested_mac)
+        if "lookup_from_host" in payload:
+            lookup_from_host = bool(payload.get("lookup_from_host"))
+        subnet_hint = str(payload.get("subnet_hint", "")).strip()
+    if raw_requested_mac and not requested_mac:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Invalid MAC format. Use aa:bb:cc:dd:ee:ff")
+    if not subnet_hint:
+        try:
+            scan_cfg = get_setting("scan")
+            subnet_hint = str(scan_cfg.get("subnet_hint", "")).strip() if isinstance(scan_cfg, dict) else ""
+        except Exception:
+            subnet_hint = ""
+
+    scan_neighbors = 0
+    assigned_mac = requested_mac
+    source = "manual"
+    if not assigned_mac and lookup_from_host:
+        assigned_mac, scan_neighbors = _find_mac_for_host(host, subnet_hint=subnet_hint)
+        source = "host_lookup"
+
+    if not assigned_mac:
+        conn.close()
+        if not _is_ipv4_host(host):
+            raise HTTPException(status_code=400, detail="Device host must be a valid IPv4 address to auto-lookup MAC")
+        raise HTTPException(status_code=404, detail=f"No MAC found for host {host}")
+
+    updated = assigned_mac != old_mac
+    now = utc_now()
+    conn.execute("UPDATE devices SET mac=?, updated_at=? WHERE id=?", (assigned_mac, now, device_id))
+    conn.commit()
+    updated_row = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
+    device = _device_to_dict(updated_row, conn)
+    conn.close()
+
+    append_event(
+        "device_mac_assigned",
+        {
+            "id": device_id,
+            "name": str(row["name"] or ""),
+            "host": host,
+            "old_mac": old_mac,
+            "new_mac": assigned_mac,
+            "updated": updated,
+            "source": source,
+            "subnet_hint": subnet_hint,
+            "scanned_neighbors": scan_neighbors,
+        },
+    )
+    return {
+        "ok": True,
+        "id": device_id,
+        "name": str(row["name"] or ""),
+        "host": host,
+        "old_mac": old_mac,
+        "new_mac": assigned_mac,
+        "updated": updated,
+        "source": source,
+        "subnet_hint": subnet_hint,
+        "scanned_neighbors": scan_neighbors,
         "device": device,
     }
 

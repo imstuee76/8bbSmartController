@@ -41,6 +41,8 @@ class TuyaConfig(BaseModel):
     cloud_region: str = ""
     client_id: str = ""
     client_secret: str = ""
+    api_device_id: str = ""
+    local_key: str = ""
     local_scan_enabled: bool = True
 
 
@@ -95,6 +97,7 @@ class DeviceCreate(BaseModel):
 
 class DeviceUpdate(BaseModel):
     name: str | None = None
+    type: DeviceType | None = None
     host: str | None = None
     mac: str | None = None
     passcode: str | None = None

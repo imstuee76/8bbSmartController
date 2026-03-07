@@ -36,6 +36,7 @@ class ApiService {
     required String name,
     required String type,
     String? host,
+    String? mac,
     String? passcode,
     String ipMode = 'dhcp',
     String? staticIp,
@@ -47,6 +48,7 @@ class ApiService {
       'name': name,
       'type': type,
       'host': host,
+      'mac': mac,
       'passcode': passcode,
       'ip_mode': ipMode,
       'static_ip': staticIp,
@@ -111,6 +113,27 @@ class ApiService {
     );
     if (res.statusCode != 200) {
       throw Exception('Find new IP failed: ${res.body}');
+    }
+    return (jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
+  Future<Map<String, dynamic>> assignDeviceMac(
+    String deviceId, {
+    String? mac,
+    bool lookupFromHost = true,
+    String? subnetHint,
+  }) async {
+    final res = await _client.post(
+      _uri('/api/devices/$deviceId/assign-mac'),
+      headers: _jsonHeaders(),
+      body: jsonEncode({
+        'mac': mac ?? '',
+        'lookup_from_host': lookupFromHost,
+        'subnet_hint': subnetHint ?? '',
+      }),
+    );
+    if (res.statusCode != 200) {
+      throw Exception('Assign MAC failed: ${res.body}');
     }
     return (jsonDecode(res.body) as Map<String, dynamic>);
   }
