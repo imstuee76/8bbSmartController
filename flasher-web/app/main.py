@@ -284,6 +284,49 @@ def _find_mac_for_host(host: str, subnet_hint: str = "") -> tuple[str, int]:
     return "", scan_count
 
 
+def _refresh_single_device_ip_by_mac(device_id: str, mac: str, old_host: str = "") -> dict[str, Any]:
+    device_mac = _normalize_mac(mac)
+    if not device_mac:
+        return {"ok": False, "updated": False, "error": "missing_mac"}
+
+    try:
+        scan_cfg = get_setting("scan")
+        subnet_hint = str(scan_cfg.get("subnet_hint", "")).strip() if isinstance(scan_cfg, dict) else ""
+    except Exception:
+        subnet_hint = ""
+
+    new_ip, scanned_neighbors = _find_ip_for_mac(device_mac, subnet_hint=subnet_hint)
+    if not new_ip:
+        return {
+            "ok": False,
+            "updated": False,
+            "error": "mac_not_found_on_lan",
+            "mac": device_mac,
+            "old_host": old_host,
+            "subnet_hint": subnet_hint,
+            "scanned_neighbors": scanned_neighbors,
+        }
+
+    updated = False
+    if old_host != new_ip:
+        now = utc_now()
+        conn = get_connection()
+        conn.execute("UPDATE devices SET host=?, updated_at=? WHERE id=?", (new_ip, now, device_id))
+        conn.commit()
+        conn.close()
+        _dashboard_device_cache.pop(device_id, None)
+        updated = True
+    return {
+        "ok": True,
+        "updated": updated,
+        "mac": device_mac,
+        "old_host": old_host,
+        "new_host": new_ip,
+        "subnet_hint": subnet_hint,
+        "scanned_neighbors": scanned_neighbors,
+    }
+
+
 def _refresh_device_ips_by_mac(*, reason: str, force: bool = False) -> dict[str, Any]:
     global _device_ip_refresh_last_run
     now_mono = time.monotonic()
@@ -1452,10 +1495,9 @@ def refresh_device_ip(device_id: str, payload: dict[str, Any] | None = None) -> 
             subnet_hint = str(scan_cfg.get("subnet_hint", "")).strip() if isinstance(scan_cfg, dict) else ""
         except Exception:
             subnet_hint = ""
-
-    new_ip, scanned_neighbors = _find_ip_for_mac(device_mac, subnet_hint=subnet_hint)
-    if not new_ip:
-        conn.close()
+    conn.close()
+    result = _refresh_single_device_ip_by_mac(device_id, device_mac, old_host=old_host)
+    if not result.get("ok"):
         append_event(
             "device_ip_refresh_manual",
             {
@@ -1465,18 +1507,13 @@ def refresh_device_ip(device_id: str, payload: dict[str, Any] | None = None) -> 
                 "old_host": old_host,
                 "updated": False,
                 "subnet_hint": subnet_hint,
-                "scanned_neighbors": scanned_neighbors,
-                "error": "mac_not_found_on_lan",
+                "scanned_neighbors": result.get("scanned_neighbors", 0),
+                "error": result.get("error", "mac_not_found_on_lan"),
             },
         )
         raise HTTPException(status_code=404, detail=f"No LAN IP found for MAC {device_mac}")
 
-    updated = False
-    if old_host != new_ip:
-        now = utc_now()
-        conn.execute("UPDATE devices SET host=?, updated_at=? WHERE id=?", (new_ip, now, device_id))
-        conn.commit()
-        updated = True
+    conn = get_connection()
     updated_row = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
     device = _device_to_dict(updated_row, conn)
     conn.close()
@@ -1488,10 +1525,10 @@ def refresh_device_ip(device_id: str, payload: dict[str, Any] | None = None) -> 
             "name": str(row["name"] or ""),
             "mac": device_mac,
             "old_host": old_host,
-            "new_host": new_ip,
-            "updated": updated,
-            "subnet_hint": subnet_hint,
-            "scanned_neighbors": scanned_neighbors,
+            "new_host": result.get("new_host", old_host),
+            "updated": bool(result.get("updated")),
+            "subnet_hint": result.get("subnet_hint", subnet_hint),
+            "scanned_neighbors": result.get("scanned_neighbors", 0),
         },
     )
     return {
@@ -1500,10 +1537,10 @@ def refresh_device_ip(device_id: str, payload: dict[str, Any] | None = None) -> 
         "name": str(row["name"] or ""),
         "mac": device_mac,
         "old_host": old_host,
-        "new_host": new_ip,
-        "updated": updated,
-        "subnet_hint": subnet_hint,
-        "scanned_neighbors": scanned_neighbors,
+        "new_host": result.get("new_host", old_host),
+        "updated": bool(result.get("updated")),
+        "subnet_hint": result.get("subnet_hint", subnet_hint),
+        "scanned_neighbors": result.get("scanned_neighbors", 0),
         "device": device,
     }
 
@@ -1614,6 +1651,7 @@ def post_device_command(device_id: str, payload: DeviceCommandRequest) -> dict[s
         (device_id, payload.channel),
     ).fetchone()
     host = (row["host"] or "").strip()
+    device_mac = _normalize_mac(row["mac"])
     passcode = decrypt_secret(row["passcode_enc"] or "")
     metadata = _parse_metadata(row)
     conn.close()
@@ -1659,6 +1697,26 @@ def post_device_command(device_id: str, payload: DeviceCommandRequest) -> dict[s
     try:
         result = send_device_command(host, passcode, cmd)
     except httpx.HTTPError as exc:
+        refresh_result = _refresh_single_device_ip_by_mac(device_id, device_mac, old_host=host) if device_mac else {"ok": False}
+        retry_host = str(refresh_result.get("new_host", "")).strip()
+        if refresh_result.get("ok") and retry_host and retry_host != host:
+            try:
+                result = send_device_command(retry_host, passcode, cmd)
+                append_event(
+                    "device_command_ip_retry",
+                    {
+                        "device_id": device_id,
+                        "channel": payload.channel,
+                        "state": payload.state,
+                        "old_host": host,
+                        "new_host": retry_host,
+                        "mac": device_mac,
+                    },
+                )
+                append_event("device_command", {"device_id": device_id, "channel": payload.channel, "state": payload.state})
+                return result
+            except httpx.HTTPError as retry_exc:
+                raise HTTPException(status_code=502, detail=f"Device command failed after IP refresh retry: {retry_exc}") from retry_exc
         raise HTTPException(status_code=502, detail=f"Device command failed: {exc}") from exc
     append_event("device_command", {"device_id": device_id, "channel": payload.channel, "state": payload.state})
     return result

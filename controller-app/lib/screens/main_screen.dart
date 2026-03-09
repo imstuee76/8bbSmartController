@@ -13,11 +13,12 @@ class MainScreen extends StatefulWidget {
   State<MainScreen> createState() => _MainScreenState();
 }
 
-class _MainScreenState extends State<MainScreen> {
+class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   bool _loading = true;
   bool _refreshing = false;
   String? _error;
   List<Map<String, dynamic>> _tiles = [];
+  DateTime? _lastLoadedAt;
 
   String _friendlyError(Object error) {
     final text = error.toString();
@@ -32,7 +33,24 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load(initial: true);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    final lastLoadedAt = _lastLoadedAt;
+    if (_loading || _refreshing) return;
+    if (lastLoadedAt == null || DateTime.now().difference(lastLoadedAt) > const Duration(seconds: 20)) {
+      unawaited(_load());
+    }
   }
 
   Future<void> _load({bool initial = false}) async {
@@ -50,6 +68,7 @@ class _MainScreenState extends State<MainScreen> {
       if (!mounted) return;
       setState(() {
         _tiles = tiles;
+        _lastLoadedAt = DateTime.now();
       });
     } catch (e) {
       if (!mounted) return;
@@ -108,6 +127,13 @@ class _MainScreenState extends State<MainScreen> {
     if (cloudMode) {
       final ok = await _confirmCloudWarning(label);
       if (!ok) return;
+    }
+    final lastLoadedAt = _lastLoadedAt;
+    if (!_loading &&
+        !_refreshing &&
+        lastLoadedAt != null &&
+        DateTime.now().difference(lastLoadedAt) > const Duration(minutes: 2)) {
+      await _load();
     }
     await widget.api.sendDeviceCommand(
       deviceId: refId,
