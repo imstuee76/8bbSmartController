@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import 'app_version.dart';
@@ -71,6 +72,16 @@ class _SmartControllerBootstrapState extends State<SmartControllerBootstrap> {
     return MaterialApp(
       title: '8bb Smart Controller',
       debugShowCheckedModeBanner: false,
+      scrollBehavior: const MaterialScrollBehavior().copyWith(
+        dragDevices: <PointerDeviceKind>{
+          PointerDeviceKind.touch,
+          PointerDeviceKind.mouse,
+          PointerDeviceKind.trackpad,
+          PointerDeviceKind.stylus,
+          PointerDeviceKind.invertedStylus,
+          PointerDeviceKind.unknown,
+        },
+      ),
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF0B7285), brightness: Brightness.light),
         scaffoldBackgroundColor: const Color(0xFFF4F7F8),
@@ -126,22 +137,24 @@ class _HomeShellState extends State<HomeShell> {
 
     return Scaffold(
       appBar: AppBar(
+        toolbarHeight: 68,
+        titleSpacing: 12,
         title: Row(
-          children: const [
-            Text('8bb Smart Controller'),
-            Spacer(),
-            Text('v$controllerDisplayVersion', style: TextStyle(fontSize: 14)),
+          children: [
+            const Expanded(
+              child: Text(
+                '8bb Smart Controller',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const SizedBox(width: 8),
+            _TabButton(title: 'Main', selected: _index == 0, onTap: () => setState(() => _index = 0)),
+            _TabButton(title: 'Devices', selected: _index == 1, onTap: () => setState(() => _index = 1)),
+            _TabButton(title: 'Config', selected: _index == 2, onTap: () => setState(() => _index = 2)),
+            const SizedBox(width: 10),
+            const Text('v$controllerDisplayVersion', style: TextStyle(fontSize: 13)),
           ],
-        ),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(52),
-          child: Row(
-            children: [
-              _TabButton(title: 'Main', selected: _index == 0, onTap: () => setState(() => _index = 0)),
-              _TabButton(title: 'Devices', selected: _index == 1, onTap: () => setState(() => _index = 1)),
-              _TabButton(title: 'Config', selected: _index == 2, onTap: () => setState(() => _index = 2)),
-            ],
-          ),
         ),
       ),
       body: Container(
@@ -182,15 +195,16 @@ class _TabButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-      child: FilledButton.tonal(
-        onPressed: onTap,
-        style: FilledButton.styleFrom(
-          backgroundColor: selected ? const Color(0xFF0B7285) : const Color(0xFFDCEBED),
-          foregroundColor: selected ? Colors.white : const Color(0xFF0F3A40),
-          minimumSize: const Size(140, 40),
+        child: FilledButton.tonal(
+          onPressed: onTap,
+          style: FilledButton.styleFrom(
+            backgroundColor: selected ? const Color(0xFF0B7285) : const Color(0xFFDCEBED),
+            foregroundColor: selected ? Colors.white : const Color(0xFF0F3A40),
+            minimumSize: const Size(112, 38),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          ),
+          child: Text(title),
         ),
-        child: Text(title),
-      ),
     );
   }
 }

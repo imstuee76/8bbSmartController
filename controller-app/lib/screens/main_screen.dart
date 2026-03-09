@@ -19,6 +19,28 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   String? _error;
   List<Map<String, dynamic>> _tiles = [];
   DateTime? _lastLoadedAt;
+  static const Map<String, IconData> _iconOptions = <String, IconData>{
+    'auto': Icons.auto_awesome,
+    'power': Icons.power_settings_new,
+    'light': Icons.lightbulb_outline,
+    'switch': Icons.toggle_on,
+    'fan': Icons.mode_fan_off_outlined,
+    'lamp': Icons.table_lamp_outlined,
+    'strip': Icons.linear_scale,
+    'scene': Icons.auto_fix_high,
+    'timer': Icons.timer_outlined,
+    'home': Icons.home_outlined,
+    'garage': Icons.garage_outlined,
+    'gate': Icons.sensor_door_outlined,
+    'water': Icons.water_drop_outlined,
+    'pool': Icons.pool_outlined,
+    'speaker': Icons.speaker_outlined,
+    'tv': Icons.tv_outlined,
+    'music': Icons.music_note_outlined,
+    'heater': Icons.local_fire_department_outlined,
+    'camera': Icons.videocam_outlined,
+    'security': Icons.shield_outlined,
+  };
 
   String _friendlyError(Object error) {
     final text = error.toString();
@@ -89,6 +111,67 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     await _load();
   }
 
+  String _deviceDisplayName(Map<String, dynamic> tile) {
+    final payload = (tile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    final label = (tile['label'] ?? '').toString().trim();
+    final channelName = (payload['channel_name'] ?? '').toString().trim();
+    if (channelName.isNotEmpty) return channelName;
+    return label;
+  }
+
+  IconData _iconForTile(Map<String, dynamic> tile) {
+    final tileType = (tile['tile_type'] ?? '').toString();
+    final payload = (tile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    final data = (tile['data'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    final iconKey = (payload['icon_key'] ?? '').toString().trim();
+    if (iconKey.isNotEmpty && _iconOptions.containsKey(iconKey)) {
+      return _iconOptions[iconKey]!;
+    }
+    if (tileType == 'weather') return Icons.cloud_outlined;
+    if (tileType == 'spotify') return Icons.graphic_eq;
+    final type = (data['type'] ?? data['device_type'] ?? '').toString().toLowerCase();
+    if (type.contains('fan')) return Icons.mode_fan_off_outlined;
+    if (type.contains('light')) return Icons.lightbulb_outline;
+    if (type.contains('relay') || type.contains('switch')) return Icons.toggle_on;
+    return Icons.sensors_outlined;
+  }
+
+  bool _isLightTile(Map<String, dynamic> tile) {
+    final payload = (tile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    final data = (tile['data'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    final type = (data['type'] ?? data['device_type'] ?? '').toString().toLowerCase();
+    final channel = (payload['channel'] ?? '').toString().toLowerCase();
+    return type.contains('light') || channel == 'light' || channel == 'rgb' || channel == 'rgbw' || channel == 'dimmer';
+  }
+
+  bool _isAutomated(Map<String, dynamic> tile) {
+    final payload = (tile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    return (payload['automation_enabled'] as bool?) == true || (payload['timers_enabled'] as bool?) == true;
+  }
+
+  Future<void> _sendLightPreset(
+    String refId, {
+    required bool cloudMode,
+    required String label,
+    required String channel,
+    String state = 'set',
+    int? value,
+    Map<String, dynamic>? payload,
+  }) async {
+    if (cloudMode) {
+      final ok = await _confirmCloudWarning(label);
+      if (!ok) return;
+    }
+    await widget.api.sendDeviceCommand(
+      deviceId: refId,
+      channel: channel,
+      state: state,
+      value: value,
+      payload: payload,
+    );
+    await _load();
+  }
+
   Future<bool> _confirmCloudWarning(String label) async {
     final result = await showDialog<bool>(
       context: context,
@@ -147,71 +230,258 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     final tileId = (tile['id'] ?? '').toString().trim();
     if (tileId.isEmpty) return;
     final payload = Map<String, dynamic>.from((tile['payload'] as Map<String, dynamic>?) ?? <String, dynamic>{});
-
+    final refId = (tile['ref_id'] ?? '').toString().trim();
+    final data = (tile['data'] as Map<String, dynamic>?) ?? <String, dynamic>{};
+    final cloudMode =
+        (data['mode'] ?? 'local_lan').toString().toLowerCase().contains('cloud') || (data['provider'] ?? '').toString() == 'tuya_cloud';
+    final deviceLabel = _deviceDisplayName(tile);
     var actionMode = (payload['action_mode'] ?? 'toggle').toString() == 'on_off' ? 'on_off' : 'toggle';
+    var iconKey = (payload['icon_key'] ?? '').toString().trim();
     var showIp = (payload['show_ip'] as bool?) ?? false;
     var showStatus = (payload['show_status'] as bool?) ?? true;
+    var automationEnabled = (payload['automation_enabled'] as bool?) ?? false;
+    var timersEnabled = (payload['timers_enabled'] as bool?) ?? false;
+    final automationCtl = TextEditingController(text: (payload['automation_note'] ?? '').toString());
+    final timerCtl = TextEditingController(text: (payload['timer_note'] ?? '').toString());
+    var panel = 'general';
 
-    final saved = await showDialog<bool>(
+    final action = await showDialog<String>(
       context: context,
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setLocal) => AlertDialog(
-            title: const Text('Device Tile Options'),
+            title: Text(deviceLabel),
             content: SizedBox(
-              width: 420,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Control Buttons'),
-                  const SizedBox(height: 6),
-                  DropdownButtonFormField<String>(
-                    value: actionMode,
-                    items: const [
-                      DropdownMenuItem(value: 'toggle', child: Text('Toggle button')),
-                      DropdownMenuItem(value: 'on_off', child: Text('Separate ON + OFF')),
+              width: 620,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        ChoiceChip(label: const Text('General'), selected: panel == 'general', onSelected: (_) => setLocal(() => panel = 'general')),
+                        if (_isLightTile(tile))
+                          ChoiceChip(label: const Text('Light'), selected: panel == 'light', onSelected: (_) => setLocal(() => panel = 'light')),
+                        ChoiceChip(
+                          label: Text(automationEnabled ? 'Automated' : 'Automation'),
+                          selected: panel == 'automation',
+                          onSelected: (_) => setLocal(() => panel = 'automation'),
+                        ),
+                        ChoiceChip(label: const Text('Timers'), selected: panel == 'timers', onSelected: (_) => setLocal(() => panel = 'timers')),
+                        ChoiceChip(label: const Text('Remove'), selected: panel == 'remove', onSelected: (_) => setLocal(() => panel = 'remove')),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    if (panel == 'general') ...[
+                      const Text('Control Buttons'),
+                      const SizedBox(height: 6),
+                      DropdownButtonFormField<String>(
+                        value: actionMode,
+                        items: const [
+                          DropdownMenuItem(value: 'toggle', child: Text('Toggle button')),
+                          DropdownMenuItem(value: 'on_off', child: Text('Separate ON + OFF')),
+                        ],
+                        onChanged: (v) {
+                          if (v != null) {
+                            setLocal(() => actionMode = v);
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 10),
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        value: showStatus,
+                        onChanged: (v) => setLocal(() => showStatus = v ?? true),
+                        title: const Text('Show Status'),
+                      ),
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        value: showIp,
+                        onChanged: (v) => setLocal(() => showIp = v ?? false),
+                        title: const Text('Show IP'),
+                      ),
+                      const SizedBox(height: 10),
+                      const Text('Icon'),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: _iconOptions.entries
+                            .map(
+                              (entry) => InkWell(
+                                onTap: () => setLocal(() => iconKey = entry.key),
+                                child: Container(
+                                  width: 52,
+                                  height: 52,
+                                  decoration: BoxDecoration(
+                                    color: iconKey == entry.key ? const Color(0xFF0B7285) : const Color(0xFFDCEBED),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Icon(entry.value, color: iconKey == entry.key ? Colors.white : const Color(0xFF0F3A40)),
+                                ),
+                              ),
+                            )
+                            .toList(growable: false),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text('Touch hold or right-click on the card to open this menu again.'),
                     ],
-                    onChanged: (v) {
-                      if (v != null) {
-                        setLocal(() => actionMode = v);
-                      }
-                    },
-                  ),
-                  const SizedBox(height: 10),
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    value: showStatus,
-                    onChanged: (v) => setLocal(() => showStatus = v ?? true),
-                    title: const Text('Show Status'),
-                  ),
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    value: showIp,
-                    onChanged: (v) => setLocal(() => showIp = v ?? false),
-                    title: const Text('Show IP'),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text('Tip: Hold this tile for 5 seconds to open this menu again.'),
-                ],
+                    if (panel == 'light') ...[
+                      const Text('Light Quick Controls'),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          FilledButton.tonal(
+                            onPressed: refId.isEmpty
+                                ? null
+                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: 'light', state: 'on'),
+                            child: const Text('Light On'),
+                          ),
+                          FilledButton.tonal(
+                            onPressed: refId.isEmpty
+                                ? null
+                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: 'light', state: 'off'),
+                            child: const Text('Light Off'),
+                          ),
+                          FilledButton.tonal(
+                            onPressed: refId.isEmpty
+                                ? null
+                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: 'dimmer', value: 25),
+                            child: const Text('25%'),
+                          ),
+                          FilledButton.tonal(
+                            onPressed: refId.isEmpty
+                                ? null
+                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: 'dimmer', value: 60),
+                            child: const Text('60%'),
+                          ),
+                          FilledButton.tonal(
+                            onPressed: refId.isEmpty
+                                ? null
+                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: 'dimmer', value: 100),
+                            child: const Text('100%'),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      const Text('Scenes'),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          FilledButton.tonal(
+                            onPressed: refId.isEmpty
+                                ? null
+                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: 'rgb', payload: {'r': 100, 'g': 76, 'b': 20, 'w': 0}),
+                            child: const Text('Warm'),
+                          ),
+                          FilledButton.tonal(
+                            onPressed: refId.isEmpty
+                                ? null
+                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: 'rgb', payload: {'r': 40, 'g': 65, 'b': 100, 'w': 0}),
+                            child: const Text('Cool'),
+                          ),
+                          FilledButton.tonal(
+                            onPressed: refId.isEmpty
+                                ? null
+                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: 'rgb', payload: {'r': 100, 'g': 0, 'b': 0, 'w': 0}),
+                            child: const Text('Red'),
+                          ),
+                          FilledButton.tonal(
+                            onPressed: refId.isEmpty
+                                ? null
+                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: 'rgb', payload: {'r': 0, 'g': 0, 'b': 100, 'w': 0}),
+                            child: const Text('Blue'),
+                          ),
+                          FilledButton.tonal(
+                            onPressed: refId.isEmpty
+                                ? null
+                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: 'rgb', payload: {'r': 100, 'g': 100, 'b': 100, 'w': 0}),
+                            child: const Text('Bright'),
+                          ),
+                        ],
+                      ),
+                    ],
+                    if (panel == 'automation') ...[
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        value: automationEnabled,
+                        onChanged: (v) => setLocal(() => automationEnabled = v),
+                        title: const Text('Automated'),
+                        subtitle: const Text('Show this tile as automated on Main'),
+                      ),
+                      TextField(
+                        controller: automationCtl,
+                        maxLines: 3,
+                        decoration: const InputDecoration(
+                          labelText: 'Automation note',
+                          hintText: 'Example: Sunset scene, occupancy, pool mode',
+                        ),
+                      ),
+                    ],
+                    if (panel == 'timers') ...[
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        value: timersEnabled,
+                        onChanged: (v) => setLocal(() => timersEnabled = v),
+                        title: const Text('Timers'),
+                        subtitle: const Text('Show timer state on this tile'),
+                      ),
+                      TextField(
+                        controller: timerCtl,
+                        maxLines: 3,
+                        decoration: const InputDecoration(
+                          labelText: 'Timer note',
+                          hintText: 'Example: ON 6:00pm, OFF 11:00pm',
+                        ),
+                      ),
+                    ],
+                    if (panel == 'remove') ...[
+                      const Text('Remove this tile from Main.'),
+                      const SizedBox(height: 10),
+                      FilledButton.tonal(
+                        style: FilledButton.styleFrom(backgroundColor: Colors.red.shade50, foregroundColor: Colors.red.shade800),
+                        onPressed: () => Navigator.pop(context, 'remove'),
+                        child: const Text('Remove Tile'),
+                      ),
+                    ],
+                  ],
+                ),
               ),
             ),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-              FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save')),
+              TextButton(onPressed: () => Navigator.pop(context, 'cancel'), child: const Text('Close')),
+              if (panel != 'remove') FilledButton(onPressed: () => Navigator.pop(context, 'save'), child: const Text('Save')),
             ],
           ),
         );
       },
     );
-
-    if (saved != true) return;
+    if (action == null || action == 'cancel') return;
+    if (action == 'remove') {
+      await widget.api.removeTile(tileId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Tile removed')));
+      await _load();
+      return;
+    }
 
     final newPayload = <String, dynamic>{
       ...payload,
       'action_mode': actionMode,
       'show_ip': showIp,
       'show_status': showStatus,
+      'icon_key': iconKey,
+      'automation_enabled': automationEnabled,
+      'automation_note': automationCtl.text.trim(),
+      'timers_enabled': timersEnabled,
+      'timer_note': timerCtl.text.trim(),
     };
     await widget.api.updateTile(tileId: tileId, payload: newPayload);
     if (!mounted) return;
@@ -226,6 +496,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     final data = (tile['data'] as Map<String, dynamic>?) ?? <String, dynamic>{};
     final payload = (tile['payload'] as Map<String, dynamic>?) ?? <String, dynamic>{};
     final error = tile['error']?.toString();
+    final titleText = tileType == 'device' ? _deviceDisplayName(tile) : label;
+    final tileIcon = _iconForTile(tile);
 
     Widget content;
     if (error != null && error.isNotEmpty) {
@@ -265,49 +537,79 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       final outputs = (data['outputs'] as Map<String, dynamic>?) ?? <String, dynamic>{};
       final provider = (data['provider'] ?? '').toString();
       final mode = (data['mode'] ?? 'local_lan').toString();
-      final source = (data['source_name'] ?? provider).toString();
       final channelKey = (payload['channel'] ?? 'relay1').toString();
-      final channelName = (payload['channel_name'] ?? channelKey).toString();
       final channelValue = outputs[channelKey] ?? outputs['relay1'] ?? outputs['light'] ?? outputs['power'] ?? '--';
       final cloudMode = mode.toLowerCase().contains('cloud') || provider == 'tuya_cloud';
       final actionMode = (payload['action_mode'] ?? 'toggle').toString() == 'on_off' ? 'on_off' : 'toggle';
       final showIp = (payload['show_ip'] as bool?) ?? false;
-      final showStatus = (payload['show_status'] as bool?) ?? true;
       final stateBool = _asBoolState(channelValue);
-      final statusColor = stateBool == null ? Colors.grey : (stateBool ? Colors.green : Colors.red);
+      final statusColor = stateBool == null ? Colors.blueGrey : (stateBool ? Colors.green : Colors.red);
+      final automated = _isAutomated(tile);
       content = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Type: ${(data['type'] ?? data['device_type'] ?? '').toString()}'),
-          Text('Source: $source'),
-          Text('Mode: $mode'),
-          Text('Channel: $channelName'),
-          if (showIp) Text('IP: ${(data['ip'] ?? data['host'] ?? '--').toString()}'),
+          Row(
+            children: [
+              if (automated)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFDCEBED),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: const Text('Automated', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+                ),
+              if (automated) const SizedBox(width: 6),
+              Text(
+                mode,
+                style: const TextStyle(fontSize: 12, color: Color(0xFF546E7A)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (showIp)
+            Text(
+              'IP ${(data['ip'] ?? data['host'] ?? '--').toString()}',
+              style: const TextStyle(fontSize: 12, color: Color(0xFF607D8B)),
+            ),
           if (cloudMode)
             const Text(
               'Warning: cloud dependent',
-              style: TextStyle(color: Colors.orange),
+              style: TextStyle(color: Colors.orange, fontSize: 12),
             ),
-          if (showStatus)
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                stateBool == true ? 'On' : stateBool == false ? 'Off' : channelValue.toString(),
+                style: TextStyle(color: statusColor, fontWeight: FontWeight.w700, fontSize: 22),
+              ),
+            ),
+          ),
+          if ((payload['show_status'] as bool?) ?? true)
             Text(
-              'State: ${channelValue.toString()}',
-              style: TextStyle(color: statusColor, fontWeight: FontWeight.w700),
+              'Status ${channelValue.toString()}',
+              style: TextStyle(color: statusColor, fontWeight: FontWeight.w600, fontSize: 12),
             ),
           const SizedBox(height: 8),
           if (refId.isNotEmpty && actionMode == 'toggle')
-            FilledButton(
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
               onPressed: () => _sendDeviceState(
                 refId,
                 cloudMode: cloudMode,
-                label: label,
+                label: titleText,
                 channel: channelKey,
                 state: 'toggle',
               ),
               style: FilledButton.styleFrom(
                 backgroundColor: stateBool == null ? Colors.blueGrey : (stateBool ? Colors.green : Colors.red),
                 foregroundColor: Colors.white,
+                minimumSize: const Size.fromHeight(42),
               ),
-              child: Text(stateBool == true ? 'ON' : stateBool == false ? 'OFF' : 'Toggle'),
+              child: Text(stateBool == true ? 'ON' : stateBool == false ? 'OFF' : 'TOGGLE'),
+            ),
             ),
           if (refId.isNotEmpty && actionMode == 'on_off')
             Row(
@@ -317,7 +619,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                     onPressed: () => _sendDeviceState(
                       refId,
                       cloudMode: cloudMode,
-                      label: label,
+                      label: titleText,
                       channel: channelKey,
                       state: 'on',
                     ),
@@ -331,7 +633,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                     onPressed: () => _sendDeviceState(
                       refId,
                       cloudMode: cloudMode,
-                      label: label,
+                      label: titleText,
                       channel: channelKey,
                       state: 'off',
                     ),
@@ -341,8 +643,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                 ),
               ],
             ),
-          const SizedBox(height: 6),
-          const Text('Hold 5s to configure this tile', style: TextStyle(fontSize: 12)),
         ],
       );
     } else if (tileType == 'automation') {
@@ -369,50 +669,49 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       elevation: 1,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       child: Padding(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(tileType.toUpperCase(), style: Theme.of(context).textTheme.labelSmall),
-            const SizedBox(height: 6),
-            Text(label, style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
+            Row(
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFDCEBED),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(tileIcon, color: const Color(0xFF0B7285), size: 20),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    titleText,
+                    style: Theme.of(context).textTheme.titleMedium,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
             Expanded(child: content),
-            Align(
-              alignment: Alignment.bottomRight,
-              child: IconButton(
-                tooltip: 'Remove tile',
-                onPressed: () async {
-                  final tileId = (tile['id'] ?? '').toString();
-                  if (tileId.isEmpty) return;
-                  final prev = List<Map<String, dynamic>>.from(_tiles);
-                  setState(() {
-                    _tiles = _tiles.where((t) => (t['id'] ?? '').toString() != tileId).toList();
-                  });
-                  try {
-                    await widget.api.removeTile(tileId);
-                    await _load();
-                  } catch (e) {
-                    if (!mounted) return;
-                    setState(() => _tiles = prev);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Failed to remove tile: $e')),
-                    );
-                  }
-                },
-                icon: const Icon(Icons.delete_outline),
-              ),
-            )
+            const SizedBox(height: 6),
           ],
         ),
       ),
     );
 
     if (tileType == 'device') {
-      return _HoldToConfigure(
-        holdDuration: const Duration(seconds: 5),
-        onHoldComplete: () => _configureDeviceTile(tile),
-        child: baseCard,
+      return MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onLongPress: () => _configureDeviceTile(tile),
+          onSecondaryTap: () => _configureDeviceTile(tile),
+          child: baseCard,
+        ),
       );
     }
     return baseCard;
@@ -443,16 +742,31 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       children: [
         RefreshIndicator(
           onRefresh: _load,
-          child: GridView.builder(
-            padding: const EdgeInsets.all(16),
-            itemCount: _tiles.length,
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 4,
-              mainAxisSpacing: 12,
-              crossAxisSpacing: 12,
-              childAspectRatio: 1.45,
-            ),
-            itemBuilder: (context, index) => _buildTileCard(_tiles[index]),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final width = constraints.maxWidth;
+              final crossAxisCount = width >= 1750
+                  ? 5
+                  : width >= 1400
+                      ? 4
+                      : width >= 1050
+                          ? 3
+                          : width >= 700
+                              ? 2
+                              : 1;
+              final ratio = width >= 1750 ? 1.6 : width >= 1400 ? 1.5 : 1.35;
+              return GridView.builder(
+                padding: const EdgeInsets.all(10),
+                itemCount: _tiles.length,
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: crossAxisCount,
+                  mainAxisSpacing: 10,
+                  crossAxisSpacing: 10,
+                  childAspectRatio: ratio,
+                ),
+                itemBuilder: (context, index) => _buildTileCard(_tiles[index]),
+              );
+            },
           ),
         ),
         if (_refreshing)
@@ -461,66 +775,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             child: LinearProgressIndicator(minHeight: 3),
           ),
       ],
-    );
-  }
-}
-
-class _HoldToConfigure extends StatefulWidget {
-  const _HoldToConfigure({
-    required this.child,
-    required this.onHoldComplete,
-    required this.holdDuration,
-  });
-
-  final Widget child;
-  final VoidCallback onHoldComplete;
-  final Duration holdDuration;
-
-  @override
-  State<_HoldToConfigure> createState() => _HoldToConfigureState();
-}
-
-class _HoldToConfigureState extends State<_HoldToConfigure> {
-  Timer? _holdTimer;
-  bool _fired = false;
-
-  void _start() {
-    _cancel();
-    _fired = false;
-    _holdTimer = Timer(widget.holdDuration, () {
-      _fired = true;
-      widget.onHoldComplete();
-    });
-  }
-
-  void _cancel() {
-    _holdTimer?.cancel();
-    _holdTimer = null;
-  }
-
-  @override
-  void dispose() {
-    _cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Listener(
-      behavior: HitTestBehavior.deferToChild,
-      onPointerDown: (_) => _start(),
-      onPointerUp: (_) {
-        if (!_fired) {
-          _cancel();
-        }
-      },
-      onPointerMove: (_) {
-        if (!_fired) {
-          _cancel();
-        }
-      },
-      onPointerCancel: (_) => _cancel(),
-      child: widget.child,
     );
   }
 }
