@@ -105,6 +105,7 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
   late final TouchKeyboardService _touchKeyboard;
+  final GlobalKey<MainScreenState> _mainScreenKey = GlobalKey<MainScreenState>();
 
   @override
   void initState() {
@@ -122,7 +123,7 @@ class _HomeShellState extends State<HomeShell> {
   @override
   Widget build(BuildContext context) {
     final tabs = [
-      MainScreen(api: widget.api),
+      MainScreen(key: _mainScreenKey, api: widget.api),
       DevicesScreen(api: widget.api, store: widget.store),
       ConfigScreen(
         api: widget.api,
@@ -152,6 +153,24 @@ class _HomeShellState extends State<HomeShell> {
             _TabButton(title: 'Main', selected: _index == 0, onTap: () => setState(() => _index = 0)),
             _TabButton(title: 'Devices', selected: _index == 1, onTap: () => setState(() => _index = 1)),
             _TabButton(title: 'Config', selected: _index == 2, onTap: () => setState(() => _index = 2)),
+            if (_index == 0) ...[
+              const SizedBox(width: 8),
+              _HeaderActionButton(
+                title: 'Groups',
+                icon: Icons.layers,
+                onTap: () {
+                  _mainScreenKey.currentState?.openCreateGroupDialog();
+                },
+              ),
+              const SizedBox(width: 8),
+              _HeaderActionButton(
+                title: 'Automation',
+                icon: Icons.schedule,
+                onTap: () {
+                  _mainScreenKey.currentState?.openAutomationDialog();
+                },
+              ),
+            ],
             const SizedBox(width: 10),
             const Text('v$controllerDisplayVersion', style: TextStyle(fontSize: 13)),
           ],
@@ -195,16 +214,39 @@ class _TabButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        child: FilledButton.tonal(
-          onPressed: onTap,
-          style: FilledButton.styleFrom(
-            backgroundColor: selected ? const Color(0xFF0B7285) : const Color(0xFFDCEBED),
-            foregroundColor: selected ? Colors.white : const Color(0xFF0F3A40),
-            minimumSize: const Size(112, 38),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          ),
-          child: Text(title),
+      child: FilledButton.tonal(
+        onPressed: onTap,
+        style: FilledButton.styleFrom(
+          backgroundColor: selected ? const Color(0xFF0B7285) : const Color(0xFFDCEBED),
+          foregroundColor: selected ? Colors.white : const Color(0xFF0F3A40),
+          minimumSize: const Size(98, 38),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         ),
+        child: Text(title),
+      ),
+    );
+  }
+}
+
+class _HeaderActionButton extends StatelessWidget {
+  const _HeaderActionButton({required this.title, required this.icon, required this.onTap});
+
+  final String title;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return FilledButton.tonalIcon(
+      onPressed: onTap,
+      style: FilledButton.styleFrom(
+        backgroundColor: const Color(0xFFDCEBED),
+        foregroundColor: const Color(0xFF0F3A40),
+        minimumSize: const Size(110, 38),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      ),
+      icon: Icon(icon, size: 18),
+      label: Text(title),
     );
   }
 }

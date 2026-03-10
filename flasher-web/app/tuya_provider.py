@@ -267,15 +267,23 @@ def get_tuya_device_status(metadata: dict[str, Any], quick: bool = False) -> dic
         elif "switch" in cloud_values:
             outputs["power"] = bool(cloud_values["switch"])
             outputs["light"] = bool(cloud_values["switch"])
+        provider_name = "tuya_cloud"
+        mode_name = "cloud"
+        fallback_via_cloud = False
+        if provider == "tuya_local":
+            provider_name = "tuya_local"
+            mode_name = "local_lan"
+            fallback_via_cloud = True
         return {
             "ok": True,
-            "provider": "tuya_cloud",
-            "mode": "cloud",
+            "provider": provider_name,
+            "mode": mode_name,
             "device_id": dev_id,
             "outputs": outputs,
             "cloud_values": cloud_values,
             "raw": status_res,
             "local_error": local_error,
+            "fallback_via_cloud": fallback_via_cloud,
         }
 
     if local_error:

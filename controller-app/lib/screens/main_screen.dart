@@ -12,10 +12,10 @@ class MainScreen extends StatefulWidget {
   final ApiService api;
 
   @override
-  State<MainScreen> createState() => _MainScreenState();
+  MainScreenState createState() => MainScreenState();
 }
 
-class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
+class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   bool _loading = true;
   bool _refreshing = false;
   String? _error;
@@ -443,6 +443,48 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
     }
+  }
+
+  Future<void> openCreateGroupDialog() => _openCreateGroupDialog();
+
+  Future<void> openAutomationDialog() => _openAutomationDialog();
+
+  Future<void> _openAutomationDialog() async {
+    final automationTiles = _tiles.where((tile) {
+      final payload = (tile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+      return (payload['automation_enabled'] as bool?) == true || (payload['timers_enabled'] as bool?) == true;
+    }).toList(growable: false);
+    await showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Automation'),
+        content: SizedBox(
+          width: 520,
+          height: 320,
+          child: automationTiles.isEmpty
+              ? const Center(
+                  child: Text('No automation/timer tiles saved yet.\nLong-press a Main card to configure Automation or Timers.'),
+                )
+              : ListView(
+                  children: automationTiles.map((tile) {
+                    final payload = (tile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+                    final automation = (payload['automation_note'] ?? '').toString().trim();
+                    final timer = (payload['timer_note'] ?? '').toString().trim();
+                    return ListTile(
+                      title: Text((tile['label'] ?? 'Tile').toString()),
+                      subtitle: Text(
+                        'Automation: ${automation.isEmpty ? '(not set)' : automation}\n'
+                        'Timers: ${timer.isEmpty ? '(not set)' : timer}',
+                      ),
+                    );
+                  }).toList(growable: false),
+                ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+        ],
+      ),
+    );
   }
 
   Future<void> _configureDeviceTile(Map<String, dynamic> tile) async {
@@ -1231,48 +1273,28 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
     return Stack(
       children: [
-        Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
-              child: Row(
-                children: [
-                  FilledButton.icon(
-                    onPressed: _openCreateGroupDialog,
-                    icon: const Icon(Icons.layers),
-                    label: const Text('Create Group'),
-                  ),
-                  const SizedBox(width: 8),
-                  const Text('Groups let you control multiple devices from one Main card.'),
-                ],
-              ),
-            ),
-            Expanded(
-              child: RefreshIndicator(
-                onRefresh: _load,
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final width = constraints.maxWidth;
-                    const spacing = 8.0;
-                    final targetTileWidth = width >= 1500 ? 250.0 : width >= 1100 ? 210.0 : width >= 800 ? 230.0 : 280.0;
-                    final crossAxisCount = math.min(5, math.max(1, ((width + spacing) / (targetTileWidth + spacing)).floor()));
-                    final mainAxisExtent = width >= 1500 ? 188.0 : width >= 1100 ? 180.0 : width >= 800 ? 186.0 : 196.0;
-                    return GridView.builder(
-                      padding: const EdgeInsets.all(8),
-                      itemCount: _tiles.length,
-                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: crossAxisCount,
-                        mainAxisSpacing: spacing,
-                        crossAxisSpacing: spacing,
-                        mainAxisExtent: mainAxisExtent,
-                      ),
-                      itemBuilder: (context, index) => _buildTileCard(_tiles[index]),
-                    );
-                  },
+        RefreshIndicator(
+          onRefresh: _load,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final width = constraints.maxWidth;
+              const spacing = 8.0;
+              final targetTileWidth = width >= 1500 ? 250.0 : width >= 1100 ? 210.0 : width >= 800 ? 230.0 : 280.0;
+              final crossAxisCount = math.min(5, math.max(1, ((width + spacing) / (targetTileWidth + spacing)).floor()));
+              final mainAxisExtent = width >= 1500 ? 188.0 : width >= 1100 ? 180.0 : width >= 800 ? 186.0 : 196.0;
+              return GridView.builder(
+                padding: const EdgeInsets.all(8),
+                itemCount: _tiles.length,
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: crossAxisCount,
+                  mainAxisSpacing: spacing,
+                  crossAxisSpacing: spacing,
+                  mainAxisExtent: mainAxisExtent,
                 ),
-              ),
-            ),
-          ],
+                itemBuilder: (context, index) => _buildTileCard(_tiles[index]),
+              );
+            },
+          ),
         ),
         if (_refreshing)
           const Align(

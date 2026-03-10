@@ -1010,7 +1010,13 @@ def _resolve_group_tile_data(payload: dict[str, Any], device_map: dict[str, Any]
     }
 
 
-def _execute_device_command_by_row(device_id: str, row: Any, payload: dict[str, Any]) -> dict[str, Any]:
+def _execute_device_command_by_row(
+    device_id: str,
+    row: Any,
+    payload: dict[str, Any],
+    *,
+    _visited_channels: set[str] | None = None,
+) -> dict[str, Any]:
     channel = str(payload.get("channel", "")).strip()
     state = str(payload.get("state", "")).strip() or None
     value = payload.get("value")
@@ -1038,6 +1044,53 @@ def _execute_device_command_by_row(device_id: str, row: Any, payload: dict[str, 
             channel_payload = {}
         if isinstance(channel_payload, dict):
             cmd["payload"] = {**channel_payload, **cmd["payload"]}
+
+    visited = set(_visited_channels or set())
+    if channel:
+        if channel in visited:
+            raise ValueError(f"Combined channel loop detected at '{channel}'")
+        visited.add(channel)
+
+    member_channels = cmd["payload"].get("member_channels", [])
+    if isinstance(member_channels, list) and member_channels:
+        nested_payload = {
+            key: value
+            for key, value in cmd["payload"].items()
+            if key not in {"member_channels"}
+        }
+        results: list[dict[str, Any]] = []
+        ok_count = 0
+        error_count = 0
+        for raw_member in member_channels:
+            member_channel = str(raw_member or "").strip()
+            if not member_channel:
+                continue
+            try:
+                result = _execute_device_command_by_row(
+                    device_id,
+                    row,
+                    {
+                        "channel": member_channel,
+                        "state": state,
+                        "value": value,
+                        "payload": dict(nested_payload),
+                    },
+                    _visited_channels=visited,
+                )
+                ok_count += 1
+                results.append({"channel": member_channel, "ok": True, "result": result})
+            except Exception as exc:
+                error_count += 1
+                results.append({"channel": member_channel, "ok": False, "error": str(exc)})
+        return {
+            "ok": error_count == 0,
+            "provider": "device_group",
+            "channel": channel,
+            "member_channels": [str(item or "").strip() for item in member_channels if str(item or "").strip()],
+            "ok_count": ok_count,
+            "error_count": error_count,
+            "results": results,
+        }
 
     host = (row["host"] or "").strip()
     device_mac = _normalize_mac(row["mac"])

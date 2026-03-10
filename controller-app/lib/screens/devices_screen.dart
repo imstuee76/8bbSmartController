@@ -567,6 +567,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
     final k = kind.toLowerCase().trim();
     return k.contains('relay') ||
         k.contains('switch') ||
+        k.contains('group') ||
+        k.contains('combined') ||
         k.contains('toggle') ||
         k.contains('power') ||
         k.contains('channel');
@@ -616,15 +618,45 @@ class _DevicesScreenState extends State<DevicesScreen> {
     return List<String>.generate(count, (i) => 'relay${i + 1}');
   }
 
+  bool? _combinedStateFromMemberChannels(Map<String, dynamic> outputs, List<dynamic> members) {
+    var onCount = 0;
+    var offCount = 0;
+    for (final raw in members) {
+      final key = raw.toString().trim();
+      if (key.isEmpty) continue;
+      final state = _asBoolState(outputs[key]);
+      if (state == true) {
+        onCount += 1;
+      } else if (state == false) {
+        offCount += 1;
+      }
+    }
+    if (onCount > 0 && offCount == 0) return true;
+    if (offCount > 0 && onCount == 0) return false;
+    return null;
+  }
+
+  String _slugChannelKey(String value) {
+    final cleaned = value
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+    return cleaned.isEmpty ? 'combined_switch' : cleaned;
+  }
+
   List<_QuickChannel> _inferQuickChannels(SmartDevice device) {
     final status = _deviceStatusCache[device.id];
     final outputs = (status?['outputs'] as Map<String, dynamic>?) ?? <String, dynamic>{};
 
     final channelNameByKey = <String, String>{};
     final channelKindByKey = <String, String>{};
+    final channelPayloadByKey = <String, Map<String, dynamic>>{};
     for (final ch in device.channels) {
       channelNameByKey[ch.channelKey] = ch.channelName;
       channelKindByKey[ch.channelKey] = ch.channelKind;
+      channelPayloadByKey[ch.channelKey] = ch.payload;
     }
 
     final discoveredKeys = <String>{};
@@ -656,7 +688,9 @@ class _DevicesScreenState extends State<DevicesScreen> {
       });
 
     return sorted.map((key) {
-      final state = _asBoolState(outputs[key]);
+      final payload = channelPayloadByKey[key] ?? const <String, dynamic>{};
+      final memberChannels = (payload['member_channels'] as List<dynamic>? ?? const <dynamic>[]);
+      final state = memberChannels.isNotEmpty ? _combinedStateFromMemberChannels(outputs, memberChannels) : _asBoolState(outputs[key]);
       return _QuickChannel(
         key: key,
         name: channelNameByKey[key]?.trim().isNotEmpty == true
@@ -666,6 +700,107 @@ class _DevicesScreenState extends State<DevicesScreen> {
         state: state,
       );
     }).toList(growable: false);
+  }
+
+  Future<void> _combineQuickChannels(SmartDevice device) async {
+    final candidates = _inferQuickChannels(device)
+        .where((channel) => channel.kind.toLowerCase().trim() != 'group')
+        .toList(growable: false);
+    if (candidates.length < 2) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Need at least 2 switch/relay channels to combine')),
+      );
+      return;
+    }
+
+    final nameCtl = TextEditingController();
+    final selected = <String, bool>{for (final channel in candidates) channel.key: false};
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setLocal) => AlertDialog(
+            title: Text('Combine Channels for ${device.name}'),
+            content: SizedBox(
+              width: 520,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: nameCtl,
+                    decoration: const InputDecoration(
+                      labelText: 'Combined name',
+                      hintText: 'Example: Front Lights',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    height: 280,
+                    child: ListView(
+                      shrinkWrap: true,
+                      children: candidates.map((channel) {
+                        final checked = selected[channel.key] ?? false;
+                        return CheckboxListTile(
+                          value: checked,
+                          dense: true,
+                          controlAffinity: ListTileControlAffinity.leading,
+                          title: Text(channel.name),
+                          subtitle: Text('Key: ${channel.key}'),
+                          onChanged: (value) {
+                            setLocal(() {
+                              selected[channel.key] = value ?? false;
+                            });
+                          },
+                        );
+                      }).toList(growable: false),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+              FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save Combined')),
+            ],
+          ),
+        );
+      },
+    );
+    if (saved != true) return;
+
+    final name = nameCtl.text.trim();
+    final memberChannels = candidates.where((channel) => selected[channel.key] == true).map((channel) => channel.key).toList(growable: false);
+    if (name.isEmpty || memberChannels.length < 2) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Name and at least 2 channels are required')),
+      );
+      return;
+    }
+
+    final channelKey = 'group_${_slugChannelKey(name)}';
+    try {
+      await widget.api.upsertChannel(
+        deviceId: device.id,
+        channelKey: channelKey,
+        channelName: name,
+        channelKind: 'group',
+        payload: {
+          'member_channels': memberChannels,
+        },
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Combined control "$name" saved')),
+      );
+      await _refresh();
+      await _loadDeviceStatus(device, showOutput: false);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    }
   }
 
   Future<void> _loadDeviceStatus(SmartDevice device, {bool showOutput = false}) async {
@@ -1698,6 +1833,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
                                                       child: const Text('Advanced Control'),
                                                     ),
                                                     OutlinedButton(onPressed: () => _editChannelDialog(d), child: const Text('Name Buttons')),
+                                                    OutlinedButton(onPressed: () => _combineQuickChannels(d), child: const Text('Combine Switches')),
                                                     if (isEspFirmware) OutlinedButton(onPressed: () => _pushOtaDialog(d), child: const Text('Push OTA')),
                                                     OutlinedButton(onPressed: () => _showAdvancedDetails(d), child: const Text('Advanced')),
                                                     OutlinedButton(
