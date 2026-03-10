@@ -14,7 +14,16 @@ This firmware runtime provides:
 - `POST /api/pair` with `{"passcode":"..."}`
 - `POST /api/config` (name, type, wifi/ap/static IP fields, ota_key, passcode)
 - `POST /api/control` (channel/state/value + passcode)
+- `POST /api/reboot` (`{"passcode":"..."}`)
 - `POST /api/ota/apply` (firmware_url, manifest_url + passcode)
+- `POST /api/ota/upload` (raw `.bin` body + `X-Passcode` header)
+
+Device web UI notes:
+
+- `Save Config` persists changes without reboot.
+- `Reboot Device` is explicit/manual.
+- Relay names and device id are persisted in NVS.
+- Local OTA file upload is available in Config tab and reboots only after successful write.
 
 ## Build
 

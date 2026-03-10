@@ -3,6 +3,6 @@ services:
     build:
       context: ./flasher-web
     ports:
-      - "8088:8088"
+      - "1111:1111"
     volumes:
       - ./data:/app/data

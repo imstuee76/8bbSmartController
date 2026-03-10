@@ -90,7 +90,7 @@ def parse_args() -> argparse.Namespace:
         help="What to run. Apps are intentionally separated.",
     )
     parser.add_argument("--host", default="0.0.0.0", help="Backend bind host.")
-    parser.add_argument("--port", type=int, default=8088, help="Backend bind port.")
+    parser.add_argument("--port", type=int, default=1111, help="Backend bind port.")
     parser.add_argument(
         "--device",
         default="",
