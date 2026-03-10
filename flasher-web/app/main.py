@@ -781,6 +781,18 @@ def _save_automation_rules_for_target(
 
 def _resolve_device_status(row: Any, *, quick: bool = False) -> dict[str, Any]:
     metadata = _parse_metadata(row)
+    host = str(row["host"] or "").strip()
+    device_mac = _normalize_mac(row["mac"])
+    device_name = str(row["name"] or "").strip()
+    if host:
+        metadata.setdefault("host", host)
+        metadata.setdefault("ip", host)
+        metadata.setdefault("tuya_ip", host)
+    if device_mac:
+        metadata.setdefault("mac", device_mac)
+    if device_name:
+        metadata.setdefault("name", device_name)
+        metadata.setdefault("device_name", device_name)
     provider = str(metadata.get("provider", "")).strip().lower()
     if provider == "moes_bhubw":
         out = get_bhubw_light_status(metadata, quick=quick)
@@ -1160,6 +1172,10 @@ def _execute_device_command_by_row(
         metadata.setdefault("tuya_ip", host)
     if device_mac:
         metadata.setdefault("mac", device_mac)
+    device_name = str(row["name"] or "").strip()
+    if device_name:
+        metadata.setdefault("name", device_name)
+        metadata.setdefault("device_name", device_name)
     provider = str(metadata.get("provider", "")).strip().lower()
 
     if provider == "moes_bhubw":

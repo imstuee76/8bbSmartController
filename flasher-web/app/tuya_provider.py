@@ -218,12 +218,21 @@ def _enrich_local_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     dev_id = str(metadata.get("tuya_device_id", "")).strip() or str(metadata.get("id", "")).strip()
     mac = str(metadata.get("mac", "")).strip().lower()
     ip = str(metadata.get("tuya_ip", "")).strip() or str(metadata.get("ip", "")).strip() or str(metadata.get("host", "")).strip()
+    name = str(metadata.get("name", "")).strip().lower() or str(metadata.get("device_name", "")).strip().lower()
 
     match = by_id.get(dev_id) if dev_id else None
     if not match and mac:
         match = by_mac.get(mac)
     if not match and ip:
         match = by_ip.get(ip)
+    if not match and name:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_name = str(row.get("name", "")).strip().lower()
+            if row_name and row_name == name:
+                match = row
+                break
     if not match:
         return dict(metadata)
 
