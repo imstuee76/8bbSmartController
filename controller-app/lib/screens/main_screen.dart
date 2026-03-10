@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -651,71 +652,95 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       final stateBool = _asBoolState(channelValue);
       final statusColor = stateBool == null ? Colors.blueGrey : (stateBool ? Colors.green : Colors.red);
       final automated = _isAutomated(tile);
+      final statusText = stateBool == true ? 'On' : stateBool == false ? 'Off' : channelValue.toString();
       content = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
           Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               if (automated)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                   decoration: BoxDecoration(
                     color: const Color(0xFFDCEBED),
                     borderRadius: BorderRadius.circular(999),
                   ),
-                  child: const Text('Automated', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+                  child: const Text('Automated', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600)),
                 ),
               if (automated) const SizedBox(width: 6),
-              Text(
-                mode,
-                style: const TextStyle(fontSize: 12, color: Color(0xFF546E7A)),
+              Expanded(child: Text(mode, style: const TextStyle(fontSize: 11, color: Color(0xFF546E7A)), maxLines: 1, overflow: TextOverflow.ellipsis)),
+            ],
+          ),
+          if (showIp) ...[
+            const SizedBox(height: 3),
+            Text(
+              'IP ${(data['ip'] ?? data['host'] ?? '--').toString()}',
+              style: const TextStyle(fontSize: 11, color: Color(0xFF607D8B)),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+          if (cloudMode) ...[
+            const SizedBox(height: 3),
+            const Text(
+              'Warning: cloud dependent',
+              style: TextStyle(color: Colors.orange, fontSize: 11),
+            ),
+          ],
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(
+                  color: statusColor,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  statusText,
+                  style: TextStyle(color: statusColor, fontWeight: FontWeight.w700, fontSize: 20),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
             ],
           ),
-          const SizedBox(height: 6),
-          if (showIp)
-            Text(
-              'IP ${(data['ip'] ?? data['host'] ?? '--').toString()}',
-              style: const TextStyle(fontSize: 12, color: Color(0xFF607D8B)),
-            ),
-          if (cloudMode)
-            const Text(
-              'Warning: cloud dependent',
-              style: TextStyle(color: Colors.orange, fontSize: 12),
-            ),
-          Expanded(
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                stateBool == true ? 'On' : stateBool == false ? 'Off' : channelValue.toString(),
-                style: TextStyle(color: statusColor, fontWeight: FontWeight.w700, fontSize: 22),
-              ),
-            ),
-          ),
-          if ((payload['show_status'] as bool?) ?? true)
+          if ((payload['show_status'] as bool?) ?? true) ...[
+            const SizedBox(height: 4),
             Text(
               'Status ${channelValue.toString()}',
-              style: TextStyle(color: statusColor, fontWeight: FontWeight.w600, fontSize: 12),
+              style: TextStyle(color: statusColor, fontWeight: FontWeight.w600, fontSize: 11),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
+          ],
+          const Spacer(),
           const SizedBox(height: 8),
           if (refId.isNotEmpty && actionMode == 'toggle')
             SizedBox(
               width: double.infinity,
               child: FilledButton(
-              onPressed: () => _sendDeviceState(
-                refId,
-                cloudMode: cloudMode,
-                label: titleText,
-                channel: channelKey,
-                state: 'toggle',
+                onPressed: () => _sendDeviceState(
+                  refId,
+                  cloudMode: cloudMode,
+                  label: titleText,
+                  channel: channelKey,
+                  state: 'toggle',
+                ),
+                style: FilledButton.styleFrom(
+                  backgroundColor: stateBool == null ? Colors.blueGrey : (stateBool ? Colors.green : Colors.red),
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size.fromHeight(38),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                ),
+                child: Text(stateBool == true ? 'ON' : stateBool == false ? 'OFF' : 'TOGGLE'),
               ),
-              style: FilledButton.styleFrom(
-                backgroundColor: stateBool == null ? Colors.blueGrey : (stateBool ? Colors.green : Colors.red),
-                foregroundColor: Colors.white,
-                minimumSize: const Size.fromHeight(42),
-              ),
-              child: Text(stateBool == true ? 'ON' : stateBool == false ? 'OFF' : 'TOGGLE'),
-            ),
             ),
           if (refId.isNotEmpty && actionMode == 'on_off')
             Row(
@@ -729,7 +754,12 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                       channel: channelKey,
                       state: 'on',
                     ),
-                    style: FilledButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.green,
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size.fromHeight(38),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    ),
                     child: const Text('ON'),
                   ),
                 ),
@@ -743,7 +773,12 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                       channel: channelKey,
                       state: 'off',
                     ),
-                    style: FilledButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.red,
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size.fromHeight(38),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    ),
                     child: const Text('OFF'),
                   ),
                 ),
@@ -775,35 +810,34 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       elevation: 1,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
                 Container(
-                  width: 34,
-                  height: 34,
+                  width: 30,
+                  height: 30,
                   decoration: BoxDecoration(
                     color: const Color(0xFFDCEBED),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: Icon(tileIcon, color: const Color(0xFF0B7285), size: 20),
+                  child: Icon(tileIcon, color: const Color(0xFF0B7285), size: 18),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 7),
                 Expanded(
                   child: Text(
                     titleText,
-                    style: Theme.of(context).textTheme.titleMedium,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(fontSize: 16, fontWeight: FontWeight.w700),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 8),
             Expanded(child: content),
-            const SizedBox(height: 6),
           ],
         ),
       ),
@@ -851,24 +885,18 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           child: LayoutBuilder(
             builder: (context, constraints) {
               final width = constraints.maxWidth;
-              final crossAxisCount = width >= 1750
-                  ? 5
-                  : width >= 1400
-                      ? 4
-                      : width >= 1050
-                          ? 3
-                          : width >= 700
-                              ? 2
-                              : 1;
-              final ratio = width >= 1750 ? 1.6 : width >= 1400 ? 1.5 : 1.35;
+              const spacing = 8.0;
+              final targetTileWidth = width >= 1500 ? 250.0 : width >= 1100 ? 210.0 : width >= 800 ? 230.0 : 280.0;
+              final crossAxisCount = math.min(5, math.max(1, ((width + spacing) / (targetTileWidth + spacing)).floor()));
+              final mainAxisExtent = width >= 1500 ? 188.0 : width >= 1100 ? 180.0 : width >= 800 ? 186.0 : 196.0;
               return GridView.builder(
-                padding: const EdgeInsets.all(10),
+                padding: const EdgeInsets.all(8),
                 itemCount: _tiles.length,
                 gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: crossAxisCount,
-                  mainAxisSpacing: 10,
-                  crossAxisSpacing: 10,
-                  childAspectRatio: ratio,
+                  mainAxisSpacing: spacing,
+                  crossAxisSpacing: spacing,
+                  mainAxisExtent: mainAxisExtent,
                 ),
                 itemBuilder: (context, index) => _buildTileCard(_tiles[index]),
               );
