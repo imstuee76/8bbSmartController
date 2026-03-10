@@ -7,6 +7,7 @@ import '../services/api_service.dart';
 import '../services/local_store.dart';
 
 enum _DeviceSection { esp32, tuya, moes }
+enum _TuyaScanFilter { all, localOnly, cloudOnly }
 
 class DevicesScreen extends StatefulWidget {
   const DevicesScreen({super.key, required this.api, required this.store});
@@ -36,6 +37,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
   bool _loading = true;
   bool _scanning = false;
   _DeviceSection _activeSection = _DeviceSection.esp32;
+  _TuyaScanFilter _tuyaScanFilter = _TuyaScanFilter.all;
   String? _error;
   List<SmartDevice> _devices = [];
   List<Map<String, dynamic>> _scanResults = [];
@@ -269,18 +271,29 @@ class _DevicesScreenState extends State<DevicesScreen> {
       final provider = (row['provider'] ?? '').toString().trim();
       final isLocal = mode == 'local_lan' || provider == 'tuya_local';
       return <String, dynamic>{
-        'name': row['name'] ?? (isLocal ? 'Tuya Local' : 'Tuya Cloud'),
+        'name': row['name'] ?? '',
         'ip': row['ip'] ?? '',
         'hostname': '',
         'mac': row['mac'] ?? '',
         'device_hint': row['category'] ?? row['product_name'] ?? (isLocal ? 'tuya_local' : 'tuya_cloud'),
-        'provider_hint': isLocal ? 'tuya_local' : 'tuya_cloud',
+        'provider_hint': 'tuya',
         'mode': isLocal ? 'local_lan' : 'cloud',
         'score': isLocal ? 10 : 8,
         'tuya_device_id': row['id'] ?? '',
-        'tuya_version': row['version'] ?? '',
-        'tuya_local_key': row['local_key'] ?? '',
-        'tuya_product_key': row['product_key'] ?? '',
+        'supports_local': isLocal,
+        'supports_cloud': !isLocal,
+        'local_name': isLocal ? (row['name'] ?? '') : '',
+        'local_ip': isLocal ? (row['ip'] ?? '') : '',
+        'local_mac': isLocal ? (row['mac'] ?? '') : '',
+        'local_version': isLocal ? (row['version'] ?? '') : '',
+        'local_key': isLocal ? (row['local_key'] ?? '') : '',
+        'local_product_key': isLocal ? (row['product_key'] ?? '') : '',
+        'cloud_name': isLocal ? '' : (row['name'] ?? ''),
+        'cloud_ip': isLocal ? '' : (row['ip'] ?? ''),
+        'cloud_mac': isLocal ? '' : (row['mac'] ?? ''),
+        'cloud_version': isLocal ? '' : (row['version'] ?? ''),
+        'cloud_local_key': isLocal ? '' : (row['local_key'] ?? ''),
+        'cloud_product_key': isLocal ? '' : (row['product_key'] ?? ''),
         'source': row['source'] ?? '',
       };
     }).toList(growable: false);
@@ -298,6 +311,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
         continue;
       }
       final current = merged[key]!;
+      current['supports_local'] = (current['supports_local'] as bool? ?? false) || (row['supports_local'] as bool? ?? false);
+      current['supports_cloud'] = (current['supports_cloud'] as bool? ?? false) || (row['supports_cloud'] as bool? ?? false);
       row.forEach((field, value) {
         if ((current[field] == null || current[field].toString().trim().isEmpty) &&
             value != null &&
@@ -305,8 +320,59 @@ class _DevicesScreenState extends State<DevicesScreen> {
           current[field] = value;
         }
       });
+      final localName = (current['local_name'] ?? '').toString().trim();
+      final cloudName = (current['cloud_name'] ?? '').toString().trim();
+      if ((current['name'] ?? '').toString().trim().isEmpty) {
+        current['name'] = localName.isNotEmpty ? localName : cloudName;
+      }
+      if ((current['ip'] ?? '').toString().trim().isEmpty) {
+        current['ip'] = (current['local_ip'] ?? '').toString().trim().isNotEmpty
+            ? current['local_ip']
+            : current['cloud_ip'];
+      }
+      if ((current['mac'] ?? '').toString().trim().isEmpty) {
+        current['mac'] = (current['local_mac'] ?? '').toString().trim().isNotEmpty
+            ? current['local_mac']
+            : current['cloud_mac'];
+      }
     }
     return merged.values.toList(growable: false);
+  }
+
+  bool _tuyaSupportsLocal(Map<String, dynamic> item) => (item['supports_local'] as bool?) ?? false;
+
+  bool _tuyaSupportsCloud(Map<String, dynamic> item) => (item['supports_cloud'] as bool?) ?? false;
+
+  bool _matchesTuyaScanFilter(Map<String, dynamic> item) {
+    switch (_tuyaScanFilter) {
+      case _TuyaScanFilter.all:
+        return true;
+      case _TuyaScanFilter.localOnly:
+        return _tuyaSupportsLocal(item);
+      case _TuyaScanFilter.cloudOnly:
+        return _tuyaSupportsCloud(item);
+    }
+  }
+
+  String _tuyaFilterLabel(_TuyaScanFilter filter) {
+    switch (filter) {
+      case _TuyaScanFilter.all:
+        return 'All';
+      case _TuyaScanFilter.localOnly:
+        return 'Local';
+      case _TuyaScanFilter.cloudOnly:
+        return 'Cloud';
+    }
+  }
+
+  String _scanDisplayName(Map<String, dynamic> item) {
+    final name = (item['name'] ?? '').toString().trim();
+    if (name.isNotEmpty) return name;
+    final localName = (item['local_name'] ?? '').toString().trim();
+    if (localName.isNotEmpty) return localName;
+    final cloudName = (item['cloud_name'] ?? '').toString().trim();
+    if (cloudName.isNotEmpty) return cloudName;
+    return (item['ip'] ?? '').toString().trim();
   }
 
   String _tuyaRowIdentity(Map<String, dynamic> row) {
@@ -455,6 +521,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
   }
 
   bool _scanIsCloud(Map<String, dynamic> item) {
+    if (_tuyaSupportsLocal(item) && _tuyaSupportsCloud(item)) return false;
     final mode = (item['mode'] ?? '').toString().trim().toLowerCase();
     if (mode.contains('cloud')) return true;
     final provider = _scanProviderOf(item);
@@ -462,6 +529,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
   }
 
   IconData _connectionIconForScan(Map<String, dynamic> item) {
+    if (_tuyaSupportsLocal(item) && _tuyaSupportsCloud(item)) return Icons.compare_arrows;
     return _scanIsCloud(item) ? Icons.cloud : Icons.lan;
   }
 
@@ -1301,8 +1369,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
     return 'relay_switch';
   }
 
-  Future<void> _addScannedDevice(Map<String, dynamic> item) async {
-    final provider = _scanProviderOf(item);
+  Future<void> _addScannedDevice(Map<String, dynamic> item, {String? forceProvider}) async {
+    final provider = (forceProvider ?? _scanProviderOf(item)).trim().toLowerCase();
     final section = _sectionFromScanProvider(provider);
     if (section != _activeSection) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1311,9 +1379,21 @@ class _DevicesScreenState extends State<DevicesScreen> {
       return;
     }
 
-    final host = (item['ip'] ?? '').toString().trim();
-    final mac = (item['mac'] ?? '').toString().trim();
-    final nameRaw = (item['name'] ?? '').toString().trim();
+    final host = provider == 'tuya_local'
+        ? ((item['local_ip'] ?? item['ip']) ?? '').toString().trim()
+        : provider == 'tuya_cloud'
+            ? ((item['cloud_ip'] ?? item['ip']) ?? '').toString().trim()
+            : (item['ip'] ?? '').toString().trim();
+    final mac = provider == 'tuya_local'
+        ? ((item['local_mac'] ?? item['mac']) ?? '').toString().trim()
+        : provider == 'tuya_cloud'
+            ? ((item['cloud_mac'] ?? item['mac']) ?? '').toString().trim()
+            : (item['mac'] ?? '').toString().trim();
+    final nameRaw = provider == 'tuya_local'
+        ? ((item['local_name'] ?? item['name']) ?? '').toString().trim()
+        : provider == 'tuya_cloud'
+            ? ((item['cloud_name'] ?? item['name']) ?? '').toString().trim()
+            : (item['name'] ?? '').toString().trim();
     final displayName = nameRaw.isNotEmpty
         ? nameRaw
         : (host.isNotEmpty ? host : '${_sectionLabel(_activeSection)} Device');
@@ -1325,7 +1405,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
       return;
     }
 
-    final connectionMode = _scanIsCloud(item) ? 'cloud' : 'local_lan';
+    final connectionMode = provider == 'tuya_cloud' || _scanIsCloud(item) ? 'cloud' : 'local_lan';
     final metadata = <String, dynamic>{
       'provider': provider,
       'source_name': provider == 'moes_bhubw'
@@ -1341,12 +1421,16 @@ class _DevicesScreenState extends State<DevicesScreen> {
       metadata['id'] = (item['tuya_device_id'] ?? '').toString().trim();
       metadata['tuya_ip'] = host;
       metadata['ip'] = host;
-      metadata['tuya_version'] = (item['tuya_version'] ?? '').toString().trim();
-      metadata['version'] = (item['tuya_version'] ?? '').toString().trim();
-      metadata['tuya_product_key'] = (item['tuya_product_key'] ?? '').toString().trim();
-      metadata['product_key'] = (item['tuya_product_key'] ?? '').toString().trim();
-      metadata['tuya_local_key'] = (item['tuya_local_key'] ?? '').toString().trim();
-      metadata['local_key'] = (item['tuya_local_key'] ?? '').toString().trim();
+      metadata['tuya_version'] = (provider == 'tuya_local' ? item['local_version'] : item['cloud_version'] ?? item['local_version'] ?? item['tuya_version'])
+          .toString()
+          .trim();
+      metadata['version'] = metadata['tuya_version'];
+      metadata['tuya_product_key'] = (provider == 'tuya_local' ? item['local_product_key'] : item['cloud_product_key'] ?? item['local_product_key'] ?? item['tuya_product_key'])
+          .toString()
+          .trim();
+      metadata['product_key'] = metadata['tuya_product_key'];
+      metadata['tuya_local_key'] = (provider == 'tuya_local' ? item['local_key'] : item['cloud_local_key'] ?? item['local_key']).toString().trim();
+      metadata['local_key'] = metadata['tuya_local_key'];
     } else if (provider == 'moes_bhubw') {
       metadata['moes_cid'] = (item['moes_cid'] ?? '').toString().trim();
       metadata['cid'] = (item['moes_cid'] ?? '').toString().trim();
@@ -1668,31 +1752,79 @@ class _DevicesScreenState extends State<DevicesScreen> {
                     padding: EdgeInsets.all(12),
                     child: Text('Scan + Output', style: TextStyle(fontWeight: FontWeight.w600)),
                   ),
+                  if (_activeSection == _DeviceSection.tuya)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: _TuyaScanFilter.values
+                            .map(
+                              (filter) => ChoiceChip(
+                                label: Text(_tuyaFilterLabel(filter)),
+                                selected: _tuyaScanFilter == filter,
+                                onSelected: (selected) {
+                                  if (!selected) return;
+                                  setState(() {
+                                    _tuyaScanFilter = filter;
+                                  });
+                                },
+                              ),
+                            )
+                            .toList(growable: false),
+                      ),
+                    ),
                   Expanded(
                     child: ListView(
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                       children: [
-                        ..._scanResults.where(_scanMatchesActiveSection).map(
+                        ..._scanResults.where(_scanMatchesActiveSection).where((item) {
+                          if (_activeSection != _DeviceSection.tuya) return true;
+                          return _matchesTuyaScanFilter(item);
+                        }).map(
                           (item) => ListTile(
                             dense: true,
                             leading: Icon(
                               _connectionIconForScan(item),
-                              color: _scanIsCloud(item) ? Colors.orange : Colors.green,
+                              color: _tuyaSupportsLocal(item) && _tuyaSupportsCloud(item)
+                                  ? Colors.blue
+                                  : (_scanIsCloud(item) ? Colors.orange : Colors.green),
                             ),
                             title: Text(
-                              (item['name']?.toString().trim().isNotEmpty ?? false)
-                                  ? item['name'].toString()
-                                  : (item['ip']?.toString() ?? ''),
+                              _scanDisplayName(item),
                             ),
                             subtitle: Text(
-                              'IP: ${item['ip'] ?? ''}  Host: ${item['hostname'] ?? ''}  MAC: ${item['mac'] ?? ''}\n'
-                              'Hint: ${item['device_hint'] ?? item['provider_hint'] ?? 'unknown'}'
-                              '  Score: ${item['score'] ?? 0}  Mode: ${item['mode'] ?? 'local_lan'}',
+                              _activeSection == _DeviceSection.tuya
+                                  ? 'Local: ${_tuyaSupportsLocal(item) ? 'yes' : 'no'}  Cloud: ${_tuyaSupportsCloud(item) ? 'yes' : 'no'}  '
+                                      'Local IP: ${(item['local_ip'] ?? item['ip'] ?? '').toString()}  MAC: ${(item['local_mac'] ?? item['mac'] ?? '').toString()}\n'
+                                      'Device ID: ${(item['tuya_device_id'] ?? '').toString()}  '
+                                      'Hint: ${item['device_hint'] ?? item['provider_hint'] ?? 'unknown'}'
+                                  : 'IP: ${item['ip'] ?? ''}  Host: ${item['hostname'] ?? ''}  MAC: ${item['mac'] ?? ''}\n'
+                                      'Hint: ${item['device_hint'] ?? item['provider_hint'] ?? 'unknown'}'
+                                      '  Score: ${item['score'] ?? 0}  Mode: ${item['mode'] ?? 'local_lan'}',
                             ),
-                            trailing: IconButton(
-                              icon: const Icon(Icons.add_circle_outline),
-                              onPressed: () => _addScannedDevice(item),
-                            ),
+                            trailing: _activeSection == _DeviceSection.tuya
+                                ? Wrap(
+                                    spacing: 4,
+                                    children: [
+                                      if (_tuyaSupportsLocal(item))
+                                        IconButton(
+                                          tooltip: 'Add Local',
+                                          icon: const Icon(Icons.lan),
+                                          onPressed: () => _addScannedDevice(item, forceProvider: 'tuya_local'),
+                                        ),
+                                      if (_tuyaSupportsCloud(item))
+                                        IconButton(
+                                          tooltip: 'Add Cloud',
+                                          icon: const Icon(Icons.cloud),
+                                          onPressed: () => _addScannedDevice(item, forceProvider: 'tuya_cloud'),
+                                        ),
+                                    ],
+                                  )
+                                : IconButton(
+                                    icon: const Icon(Icons.add_circle_outline),
+                                    onPressed: () => _addScannedDevice(item),
+                                  ),
                           ),
                         ),
                         const Divider(),

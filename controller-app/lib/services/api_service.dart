@@ -275,6 +275,23 @@ class ApiService {
     return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
+  Future<Map<String, dynamic>> sendGroupTileAction({
+    required String tileId,
+    required String state,
+  }) async {
+    final res = await _client.post(
+      _uri('/api/main/tiles/$tileId/group-action'),
+      headers: _jsonHeaders(),
+      body: jsonEncode({
+        'state': state,
+      }),
+    );
+    if (res.statusCode != 200) {
+      throw Exception('Group tile action failed: ${res.body}');
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
   Future<DisplayConfig> fetchDisplayConfig() async {
     final res = await _client.get(_uri('/api/config/display'));
     if (res.statusCode != 200) {

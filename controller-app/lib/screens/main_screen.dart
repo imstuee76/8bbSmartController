@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../models/device_models.dart';
 import '../services/api_service.dart';
 
 class MainScreen extends StatefulWidget {
@@ -19,6 +20,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   bool _refreshing = false;
   String? _error;
   List<Map<String, dynamic>> _tiles = [];
+  final Set<String> _groupActionBusy = <String>{};
   DateTime? _lastLoadedAt;
   static const Map<String, IconData> _iconOptions = <String, IconData>{
     'auto': Icons.auto_awesome,
@@ -232,6 +234,215 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       state: state,
     );
     await _load();
+  }
+
+  List<Map<String, String>> _groupCandidatesForDevice(SmartDevice device) {
+    if (device.channels.isNotEmpty) {
+      return device.channels
+          .map(
+            (channel) => <String, String>{
+              'channel': channel.channelKey,
+              'label': '${device.name} - ${channel.channelName}',
+              'device_name': device.name,
+              'channel_name': channel.channelName,
+              'kind': channel.channelKind,
+            },
+          )
+          .toList(growable: false);
+    }
+
+    final type = device.type.toLowerCase().trim();
+    final channel = type.contains('light')
+        ? 'light'
+        : type.contains('fan')
+            ? 'fan_power'
+            : 'power';
+    return [
+      <String, String>{
+        'channel': channel,
+        'label': device.name,
+        'device_name': device.name,
+        'channel_name': channel,
+        'kind': type,
+      },
+    ];
+  }
+
+  Future<void> _sendGroupState(Map<String, dynamic> tile, String state) async {
+    final tileId = (tile['id'] ?? '').toString().trim();
+    if (tileId.isEmpty || _groupActionBusy.contains(tileId)) return;
+    final data = (tile['data'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    final label = (tile['label'] ?? 'Group').toString();
+    final mode = (data['mode'] ?? '').toString().toLowerCase();
+    final cloudCount = (data['cloud_count'] as num?)?.toInt() ?? 0;
+    if (mode.contains('cloud') || cloudCount > 0) {
+      final ok = await _confirmCloudWarning(label);
+      if (!ok) return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _groupActionBusy.add(tileId);
+    });
+    try {
+      final result = await widget.api.sendGroupTileAction(tileId: tileId, state: state);
+      if (!mounted) return;
+      final okCount = (result['ok_count'] as num?)?.toInt() ?? 0;
+      final errorCount = (result['error_count'] as num?)?.toInt() ?? 0;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Group "$label": $okCount ok, $errorCount failed')),
+      );
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _groupActionBusy.remove(tileId);
+        });
+      }
+    }
+  }
+
+  Future<void> _openCreateGroupDialog() async {
+    List<SmartDevice> devices;
+    try {
+      devices = await widget.api.fetchDevices();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+      return;
+    }
+    if (!mounted) return;
+
+    final nameCtl = TextEditingController();
+    var groupKind = 'switch';
+    final selected = <String, bool>{};
+    final candidates = <Map<String, String>>[];
+    for (final device in devices) {
+      for (final item in _groupCandidatesForDevice(device)) {
+        candidates.add({
+          'device_id': device.id,
+          'device_name': device.name,
+          'channel': item['channel'] ?? '',
+          'label': item['label'] ?? device.name,
+          'channel_name': item['channel_name'] ?? '',
+          'kind': item['kind'] ?? '',
+        });
+      }
+    }
+
+    final created = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setLocal) => AlertDialog(
+            title: const Text('Create Group'),
+            content: SizedBox(
+              width: 720,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: nameCtl,
+                    decoration: const InputDecoration(
+                      labelText: 'Group name',
+                      hintText: 'Example: Lounge Lights',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: groupKind,
+                    decoration: const InputDecoration(labelText: 'Group type'),
+                    items: const [
+                      DropdownMenuItem(value: 'switch', child: Text('Switch Group')),
+                      DropdownMenuItem(value: 'light', child: Text('Light Group')),
+                    ],
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setLocal(() {
+                        groupKind = value;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  const Text('Select devices or channels'),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    height: 320,
+                    child: ListView(
+                      shrinkWrap: true,
+                      children: candidates.map((item) {
+                        final key = '${item['device_id']}::${item['channel']}';
+                        final checked = selected[key] ?? false;
+                        return CheckboxListTile(
+                          value: checked,
+                          dense: true,
+                          controlAffinity: ListTileControlAffinity.leading,
+                          title: Text(item['label'] ?? ''),
+                          subtitle: Text('Device: ${item['device_name']}  Channel: ${item['channel']}'),
+                          onChanged: (value) {
+                            setLocal(() {
+                              selected[key] = value ?? false;
+                            });
+                          },
+                        );
+                      }).toList(growable: false),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+              FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save Group')),
+            ],
+          ),
+        );
+      },
+    );
+    if (created != true) return;
+
+    final groupName = nameCtl.text.trim();
+    final members = candidates
+        .where((item) => selected['${item['device_id']}::${item['channel']}'] == true)
+        .map(
+          (item) => <String, dynamic>{
+            'device_id': item['device_id'],
+            'device_name': item['device_name'],
+            'channel': item['channel'],
+            'label': item['label'],
+          },
+        )
+        .toList(growable: false);
+    if (groupName.isEmpty || members.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Group name and at least one device/channel are required')),
+      );
+      return;
+    }
+
+    try {
+      await widget.api.addTile(
+        tileType: 'group',
+        label: groupName,
+        payload: {
+          'group_kind': groupKind,
+          'members': members,
+          'icon_key': groupKind == 'light' ? 'light' : 'switch',
+        },
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Group "$groupName" added to Main')),
+      );
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    }
   }
 
   Future<void> _configureDeviceTile(Map<String, dynamic> tile) async {
@@ -596,6 +807,63 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     await _load();
   }
 
+  Future<void> _configureGroupTile(Map<String, dynamic> tile) async {
+    final tileId = (tile['id'] ?? '').toString().trim();
+    if (tileId.isEmpty) return;
+    final data = (tile['data'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    final members = (data['members'] as List<dynamic>? ?? const <dynamic>[])
+        .whereType<Map<String, dynamic>>()
+        .toList(growable: false);
+    final action = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text((tile['label'] ?? 'Group').toString()),
+        content: SizedBox(
+          width: 520,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Type: ${(data['group_kind'] ?? 'switch').toString()}'),
+              Text('Members: ${(data['member_count'] ?? members.length).toString()}'),
+              const SizedBox(height: 10),
+              const Text('Included devices'),
+              const SizedBox(height: 6),
+              SizedBox(
+                height: 280,
+                child: ListView(
+                  shrinkWrap: true,
+                  children: members
+                      .map(
+                        (member) => ListTile(
+                          dense: true,
+                          title: Text((member['name'] ?? member['device_name'] ?? '').toString()),
+                          subtitle: Text('Channel: ${(member['channel'] ?? '').toString()}'),
+                        ),
+                      )
+                      .toList(growable: false),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, 'close'), child: const Text('Close')),
+          FilledButton.tonal(
+            onPressed: () => Navigator.pop(context, 'remove'),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade50, foregroundColor: Colors.red.shade800),
+            child: const Text('Remove Group'),
+          ),
+        ],
+      ),
+    );
+    if (action != 'remove') return;
+    await widget.api.removeTile(tileId);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Group removed')));
+    await _load();
+  }
+
   Widget _buildTileCard(Map<String, dynamic> tile) {
     final tileType = (tile['tile_type'] ?? '').toString();
     final label = (tile['label'] ?? '').toString();
@@ -786,6 +1054,89 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             ),
         ],
       );
+    } else if (tileType == 'group') {
+      final mode = (data['mode'] ?? 'local_lan').toString();
+      final memberCount = (data['member_count'] as num?)?.toInt() ?? 0;
+      final groupState = (data['group_state'] ?? 'unknown').toString().toLowerCase();
+      final busy = _groupActionBusy.contains((tile['id'] ?? '').toString());
+      final stateBool = groupState == 'on'
+          ? true
+          : groupState == 'off'
+              ? false
+              : null;
+      final statusColor = groupState == 'mixed'
+          ? Colors.orange
+          : stateBool == null
+              ? Colors.blueGrey
+              : (stateBool ? Colors.green : Colors.red);
+      final actionState = stateBool == true ? 'off' : 'on';
+      final actionLabel = busy
+          ? '...'
+          : stateBool == true
+              ? 'ALL OFF'
+              : stateBool == false
+                  ? 'ALL ON'
+                  : 'SET ON';
+      content = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            mode,
+            style: const TextStyle(fontSize: 11, color: Color(0xFF546E7A)),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(
+                  color: statusColor,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  groupState == 'mixed'
+                      ? 'Mixed'
+                      : stateBool == true
+                          ? 'On'
+                          : stateBool == false
+                              ? 'Off'
+                              : 'Unknown',
+                  style: TextStyle(color: statusColor, fontWeight: FontWeight.w700, fontSize: 20),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '$memberCount item${memberCount == 1 ? '' : 's'}',
+            style: const TextStyle(fontSize: 11, color: Color(0xFF607D8B)),
+          ),
+          const Spacer(),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              onPressed: busy ? null : () => _sendGroupState(tile, actionState),
+              style: FilledButton.styleFrom(
+                backgroundColor: statusColor,
+                foregroundColor: Colors.white,
+                minimumSize: const Size.fromHeight(38),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              ),
+              child: Text(actionLabel),
+            ),
+          ),
+        ],
+      );
     } else if (tileType == 'automation') {
       content = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -843,13 +1194,13 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       ),
     );
 
-    if (tileType == 'device') {
+    if (tileType == 'device' || tileType == 'group') {
       return MouseRegion(
         cursor: SystemMouseCursors.click,
         child: GestureDetector(
           behavior: HitTestBehavior.translucent,
-          onLongPress: () => _configureDeviceTile(tile),
-          onSecondaryTap: () => _configureDeviceTile(tile),
+          onLongPress: () => tileType == 'group' ? _configureGroupTile(tile) : _configureDeviceTile(tile),
+          onSecondaryTap: () => tileType == 'group' ? _configureGroupTile(tile) : _configureDeviceTile(tile),
           child: baseCard,
         ),
       );
@@ -880,28 +1231,48 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
     return Stack(
       children: [
-        RefreshIndicator(
-          onRefresh: _load,
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final width = constraints.maxWidth;
-              const spacing = 8.0;
-              final targetTileWidth = width >= 1500 ? 250.0 : width >= 1100 ? 210.0 : width >= 800 ? 230.0 : 280.0;
-              final crossAxisCount = math.min(5, math.max(1, ((width + spacing) / (targetTileWidth + spacing)).floor()));
-              final mainAxisExtent = width >= 1500 ? 188.0 : width >= 1100 ? 180.0 : width >= 800 ? 186.0 : 196.0;
-              return GridView.builder(
-                padding: const EdgeInsets.all(8),
-                itemCount: _tiles.length,
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: crossAxisCount,
-                  mainAxisSpacing: spacing,
-                  crossAxisSpacing: spacing,
-                  mainAxisExtent: mainAxisExtent,
+        Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+              child: Row(
+                children: [
+                  FilledButton.icon(
+                    onPressed: _openCreateGroupDialog,
+                    icon: const Icon(Icons.layers),
+                    label: const Text('Create Group'),
+                  ),
+                  const SizedBox(width: 8),
+                  const Text('Groups let you control multiple devices from one Main card.'),
+                ],
+              ),
+            ),
+            Expanded(
+              child: RefreshIndicator(
+                onRefresh: _load,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final width = constraints.maxWidth;
+                    const spacing = 8.0;
+                    final targetTileWidth = width >= 1500 ? 250.0 : width >= 1100 ? 210.0 : width >= 800 ? 230.0 : 280.0;
+                    final crossAxisCount = math.min(5, math.max(1, ((width + spacing) / (targetTileWidth + spacing)).floor()));
+                    final mainAxisExtent = width >= 1500 ? 188.0 : width >= 1100 ? 180.0 : width >= 800 ? 186.0 : 196.0;
+                    return GridView.builder(
+                      padding: const EdgeInsets.all(8),
+                      itemCount: _tiles.length,
+                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: crossAxisCount,
+                        mainAxisSpacing: spacing,
+                        crossAxisSpacing: spacing,
+                        mainAxisExtent: mainAxisExtent,
+                      ),
+                      itemBuilder: (context, index) => _buildTileCard(_tiles[index]),
+                    );
+                  },
                 ),
-                itemBuilder: (context, index) => _buildTileCard(_tiles[index]),
-              );
-            },
-          ),
+              ),
+            ),
+          ],
         ),
         if (_refreshing)
           const Align(

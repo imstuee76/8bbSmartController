@@ -13,7 +13,7 @@ DeviceType = Literal[
     "fan",
 ]
 
-TileType = Literal["device", "automation", "spotify", "weather"]
+TileType = Literal["device", "group", "automation", "spotify", "weather"]
 
 
 class DisplayConfig(BaseModel):

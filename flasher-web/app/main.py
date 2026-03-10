@@ -863,6 +863,210 @@ def _dashboard_cached_device_status(row: Any, *, quick: bool = True) -> dict[str
         raise
 
 
+def _coerce_bool_state(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value or "").strip().lower()
+    if text in {"on", "true", "1", "yes"}:
+        return True
+    if text in {"off", "false", "0", "no"}:
+        return False
+    return None
+
+
+def _group_member_channel_value(status: dict[str, Any], channel: str) -> Any:
+    outputs = status.get("outputs", {})
+    if not isinstance(outputs, dict):
+        outputs = {}
+    channel_key = str(channel or "").strip()
+    if channel_key and channel_key in outputs:
+        return outputs[channel_key]
+    for fallback in ("power", "light", "relay1"):
+        if fallback in outputs:
+            return outputs[fallback]
+    for _, value in outputs.items():
+        return value
+    return None
+
+
+def _resolve_group_tile_data(payload: dict[str, Any], device_map: dict[str, Any]) -> dict[str, Any]:
+    members_raw = payload.get("members", [])
+    members: list[dict[str, Any]] = []
+    group_kind = str(payload.get("group_kind", "switch")).strip().lower() or "switch"
+    on_count = 0
+    off_count = 0
+    unknown_count = 0
+    cloud_count = 0
+
+    for item in members_raw if isinstance(members_raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        device_id = str(item.get("device_id", "")).strip()
+        channel = str(item.get("channel", "")).strip()
+        device_row = device_map.get(device_id)
+        if not device_row:
+            members.append(
+                {
+                    "device_id": device_id,
+                    "channel": channel,
+                    "name": str(item.get("label", "")).strip() or "Missing device",
+                    "ok": False,
+                    "error": "Device not found",
+                }
+            )
+            unknown_count += 1
+            continue
+        try:
+            status = _dashboard_cached_device_status(device_row, quick=True)
+            provider = str(status.get("provider", "")).strip().lower()
+            member_value = _group_member_channel_value(status, channel)
+            member_state = _coerce_bool_state(member_value)
+            if provider == "tuya_cloud" or str(status.get("mode", "")).strip().lower().find("cloud") >= 0:
+                cloud_count += 1
+            if member_state is True:
+                on_count += 1
+            elif member_state is False:
+                off_count += 1
+            else:
+                unknown_count += 1
+            members.append(
+                {
+                    "device_id": device_id,
+                    "channel": channel,
+                    "name": str(item.get("label", "")).strip() or str(item.get("device_name", "")).strip() or str(device_row["name"] or "").strip(),
+                    "device_name": str(device_row["name"] or "").strip(),
+                    "value": member_value,
+                    "state": member_state,
+                    "provider": provider,
+                    "mode": str(status.get("mode", "")).strip(),
+                    "ok": True,
+                }
+            )
+        except Exception as exc:
+            members.append(
+                {
+                    "device_id": device_id,
+                    "channel": channel,
+                    "name": str(item.get("label", "")).strip() or str(item.get("device_name", "")).strip() or str(device_row["name"] or "").strip(),
+                    "ok": False,
+                    "error": str(exc),
+                }
+            )
+            unknown_count += 1
+
+    member_count = len(members)
+    aggregate_state = "unknown"
+    power_value: Any = None
+    if member_count > 0 and on_count == member_count:
+        aggregate_state = "on"
+        power_value = True
+    elif member_count > 0 and off_count == member_count:
+        aggregate_state = "off"
+        power_value = False
+    elif on_count > 0 and off_count > 0:
+        aggregate_state = "mixed"
+        power_value = "mixed"
+    elif on_count > 0 and unknown_count > 0:
+        aggregate_state = "mixed"
+        power_value = "mixed"
+    elif off_count > 0 and unknown_count > 0:
+        aggregate_state = "mixed"
+        power_value = "mixed"
+
+    mode = "local_lan"
+    if cloud_count > 0 and cloud_count == member_count:
+        mode = "cloud"
+    elif cloud_count > 0:
+        mode = "hybrid"
+
+    supports_light = group_kind == "light"
+    return {
+        "provider": "group",
+        "mode": mode,
+        "device_type": f"group_{group_kind}",
+        "group_kind": group_kind,
+        "member_count": member_count,
+        "on_count": on_count,
+        "off_count": off_count,
+        "unknown_count": unknown_count,
+        "cloud_count": cloud_count,
+        "group_state": aggregate_state,
+        "outputs": {
+            "power": power_value,
+            "light": power_value if supports_light else None,
+        },
+        "members": members,
+        "capabilities": {
+            "supports_automation": True,
+            "supports_group": True,
+            "supports_light": supports_light,
+            "supports_rgb": False,
+            "supports_scenes": supports_light,
+            "supports_timers": True,
+        },
+        "source_name": "8bb Groups",
+    }
+
+
+def _execute_device_command_by_row(device_id: str, row: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    channel = str(payload.get("channel", "")).strip()
+    state = str(payload.get("state", "")).strip() or None
+    value = payload.get("value")
+    payload_obj = payload.get("payload", {})
+    if not isinstance(payload_obj, dict):
+        payload_obj = {}
+
+    conn = get_connection()
+    channel_row = conn.execute(
+        "SELECT payload_json FROM device_channels WHERE device_id=? AND channel_key=?",
+        (device_id, channel),
+    ).fetchone()
+    conn.close()
+
+    cmd = {
+        "channel": channel,
+        "state": state,
+        "value": value,
+        "payload": dict(payload_obj),
+    }
+    if channel_row:
+        try:
+            channel_payload = json.loads(channel_row["payload_json"])
+        except Exception:
+            channel_payload = {}
+        if isinstance(channel_payload, dict):
+            cmd["payload"] = {**channel_payload, **cmd["payload"]}
+
+    host = (row["host"] or "").strip()
+    device_mac = _normalize_mac(row["mac"])
+    passcode = decrypt_secret(row["passcode_enc"] or "")
+    metadata = _parse_metadata(row)
+    provider = str(metadata.get("provider", "")).strip().lower()
+
+    if provider == "moes_bhubw":
+        return send_bhubw_light_command(metadata=metadata, command=cmd)
+    if provider in ("tuya_local", "tuya_cloud", "tuya"):
+        return send_tuya_device_command(metadata=metadata, command=cmd)
+
+    if not host:
+        raise ValueError("Device host is not set")
+    if not passcode:
+        raise ValueError("Device passcode is not configured")
+
+    merged_cmd = dict(cmd)
+    merged_cmd.update(cmd["payload"])
+    try:
+        return send_device_command(host, passcode, merged_cmd)
+    except httpx.HTTPError as exc:
+        refresh_result = _refresh_single_device_ip_by_mac(device_id, device_mac, old_host=host) if device_mac else {"ok": False}
+        retry_host = str(refresh_result.get("new_host", "")).strip()
+        if refresh_result.get("ok") and retry_host and retry_host != host:
+            return send_device_command(retry_host, passcode, merged_cmd)
+        raise exc
+
+
 def _require_device(device_id: str) -> tuple[Any, Any]:
     conn = get_connection()
     row = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
@@ -1876,79 +2080,19 @@ def get_device_status(device_id: str) -> dict[str, Any]:
 @app.post("/api/devices/{device_id}/command", dependencies=[Depends(require_auth_if_configured)])
 def post_device_command(device_id: str, payload: DeviceCommandRequest) -> dict[str, Any]:
     conn, row = _require_device(device_id)
-    channel_row = conn.execute(
-        "SELECT payload_json FROM device_channels WHERE device_id=? AND channel_key=?",
-        (device_id, payload.channel),
-    ).fetchone()
-    host = (row["host"] or "").strip()
-    device_mac = _normalize_mac(row["mac"])
-    passcode = decrypt_secret(row["passcode_enc"] or "")
-    metadata = _parse_metadata(row)
     conn.close()
-
-    cmd = payload.model_dump()
-    if channel_row:
-        try:
-            channel_payload = json.loads(channel_row["payload_json"])
-        except Exception:
-            channel_payload = {}
-        if isinstance(channel_payload, dict):
-            existing_payload = cmd.get("payload", {})
-            if not isinstance(existing_payload, dict):
-                existing_payload = {}
-            # Channel payload acts as defaults; explicit command payload overrides.
-            cmd["payload"] = {**channel_payload, **existing_payload}
-    provider = str(metadata.get("provider", "")).strip().lower()
-    if provider == "moes_bhubw":
-        try:
-            result = send_bhubw_light_command(metadata=metadata, command=cmd)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"MOES local command failed: {exc}") from exc
-        append_event("device_command", {"device_id": device_id, "channel": payload.channel, "state": payload.state, "provider": "moes_bhubw"})
-        return result
-    if provider in ("tuya_local", "tuya_cloud", "tuya"):
-        try:
-            result = send_tuya_device_command(metadata=metadata, command=cmd)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Tuya command failed: {exc}") from exc
-        append_event("device_command", {"device_id": device_id, "channel": payload.channel, "state": payload.state, "provider": provider})
-        return result
-
-    if not host:
-        raise HTTPException(status_code=400, detail="Device host is not set")
-    if not passcode:
-        raise HTTPException(status_code=400, detail="Device passcode is not configured")
-
-    cmd.update(payload.payload)
     try:
-        result = send_device_command(host, passcode, cmd)
+        result = _execute_device_command_by_row(device_id, row, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except httpx.HTTPError as exc:
-        refresh_result = _refresh_single_device_ip_by_mac(device_id, device_mac, old_host=host) if device_mac else {"ok": False}
-        retry_host = str(refresh_result.get("new_host", "")).strip()
-        if refresh_result.get("ok") and retry_host and retry_host != host:
-            try:
-                result = send_device_command(retry_host, passcode, cmd)
-                append_event(
-                    "device_command_ip_retry",
-                    {
-                        "device_id": device_id,
-                        "channel": payload.channel,
-                        "state": payload.state,
-                        "old_host": host,
-                        "new_host": retry_host,
-                        "mac": device_mac,
-                    },
-                )
-                append_event("device_command", {"device_id": device_id, "channel": payload.channel, "state": payload.state})
-                return result
-            except httpx.HTTPError as retry_exc:
-                raise HTTPException(status_code=502, detail=f"Device command failed after IP refresh retry: {retry_exc}") from retry_exc
         raise HTTPException(status_code=502, detail=f"Device command failed: {exc}") from exc
-    append_event("device_command", {"device_id": device_id, "channel": payload.channel, "state": payload.state})
+    except Exception as exc:
+        metadata = _parse_metadata(row)
+        provider = str(metadata.get("provider", "")).strip().lower()
+        detail_prefix = "Tuya command failed" if provider.startswith("tuya") else "MOES local command failed" if provider == "moes_bhubw" else "Device command failed"
+        raise HTTPException(status_code=502, detail=f"{detail_prefix}: {exc}") from exc
+    append_event("device_command", {"device_id": device_id, "channel": payload.channel, "state": payload.state, "provider": str(_parse_metadata(row).get('provider', '')).strip().lower()})
     return result
 
 
@@ -2039,6 +2183,9 @@ def get_tile_data() -> dict[str, Any]:
                 data = _dashboard_cached_device_status(dev, quick=True)
                 data["device_type"] = dev.get("type")
                 return data, None
+            if tile_type == "group":
+                payload = json.loads(row["payload_json"])
+                return _resolve_group_tile_data(payload if isinstance(payload, dict) else {}, device_map), None
             return {}, None
         except Exception as exc:
             return {}, str(exc)
@@ -2054,12 +2201,12 @@ def get_tile_data() -> dict[str, Any]:
                 "data": {},
                 "error": None,
             }
-            if tile["tile_type"] == "device":
+            if tile["tile_type"] in ("device", "group"):
                 tile["automation_rules"] = _load_automation_rules_for_target("tile", tile["id"])
             tiles.append(tile)
 
             tile_type = row["tile_type"]
-            if tile_type in ("weather", "spotify", "device"):
+            if tile_type in ("weather", "spotify", "device", "group"):
                 future = executor.submit(resolve_live, row)
                 pending[future] = len(tiles) - 1
 
@@ -2096,6 +2243,17 @@ def get_tile_data() -> dict[str, Any]:
                     continue
                 except Exception:
                     pass
+            if tile["tile_type"] == "group":
+                try:
+                    payload = tile.get("payload", {})
+                    if not isinstance(payload, dict):
+                        payload = {}
+                    tile["data"] = _resolve_group_tile_data(payload, device_map)
+                    tile["data"]["stale"] = True
+                    tile["error"] = None
+                    continue
+                except Exception:
+                    pass
             tile["error"] = "Timed out fetching live status"
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
@@ -2115,6 +2273,92 @@ def create_tile(payload: TileCreate) -> dict[str, Any]:
     conn.close()
     append_event("tile_created", {"id": tile_id, "label": payload.label, "tile_type": payload.tile_type})
     return {"id": tile_id}
+
+
+@app.post("/api/main/tiles/{tile_id}/group-action", dependencies=[Depends(require_auth_if_configured)])
+def post_group_tile_action(tile_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be an object")
+    requested_state = str(payload.get("state", "")).strip().lower()
+    if requested_state not in {"on", "off", "toggle"}:
+        raise HTTPException(status_code=400, detail="state must be one of: on, off, toggle")
+
+    conn = get_connection()
+    tile = conn.execute("SELECT * FROM main_tiles WHERE id=?", (tile_id,)).fetchone()
+    if not tile:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Tile not found")
+    if str(tile["tile_type"] or "") != "group":
+        conn.close()
+        raise HTTPException(status_code=400, detail="Tile is not a group")
+    try:
+        tile_payload = json.loads(tile["payload_json"] or "{}")
+    except Exception:
+        tile_payload = {}
+    if not isinstance(tile_payload, dict):
+        tile_payload = {}
+    members_raw = tile_payload.get("members", [])
+    members = [item for item in members_raw if isinstance(item, dict)]
+    if not members:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Group has no members")
+
+    device_ids = [str(item.get("device_id", "")).strip() for item in members if str(item.get("device_id", "")).strip()]
+    placeholders = ",".join("?" for _ in device_ids) or "''"
+    device_rows = {
+        str(row["id"]): row
+        for row in conn.execute(f"SELECT * FROM devices WHERE id IN ({placeholders})", tuple(device_ids)).fetchall()
+    }
+    conn.close()
+
+    results: list[dict[str, Any]] = []
+    ok_count = 0
+    error_count = 0
+    for member in members:
+        device_id = str(member.get("device_id", "")).strip()
+        channel = str(member.get("channel", "")).strip() or "power"
+        label = str(member.get("label", "")).strip() or str(member.get("device_name", "")).strip() or device_id
+        row = device_rows.get(device_id)
+        if not row:
+            error_count += 1
+            results.append({"device_id": device_id, "channel": channel, "label": label, "ok": False, "error": "Device not found"})
+            continue
+        try:
+            result = _execute_device_command_by_row(
+                device_id,
+                row,
+                {
+                    "channel": channel,
+                    "state": requested_state,
+                    "payload": member.get("command_payload", {}) if isinstance(member.get("command_payload"), dict) else {},
+                },
+            )
+            ok_count += 1
+            results.append({"device_id": device_id, "channel": channel, "label": label, "ok": True, "result": result})
+        except Exception as exc:
+            error_count += 1
+            results.append({"device_id": device_id, "channel": channel, "label": label, "ok": False, "error": str(exc)})
+
+    append_event(
+        "group_tile_action",
+        {
+            "tile_id": tile_id,
+            "label": str(tile["label"] or ""),
+            "state": requested_state,
+            "member_count": len(members),
+            "ok_count": ok_count,
+            "error_count": error_count,
+        },
+    )
+    return {
+        "ok": error_count == 0,
+        "tile_id": tile_id,
+        "state": requested_state,
+        "member_count": len(members),
+        "ok_count": ok_count,
+        "error_count": error_count,
+        "results": results,
+    }
 
 
 @app.get("/api/main/tiles/{tile_id}/automation")
