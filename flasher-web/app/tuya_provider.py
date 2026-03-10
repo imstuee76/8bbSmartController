@@ -234,21 +234,24 @@ def _enrich_local_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     repaired_version = _get_file_value(match, "version")
     repaired_product_key = _get_file_value(match, "product_key", "productKey")
 
+    def assign_if_blank(*keys: str, value: str) -> None:
+        if not value:
+            return
+        for key in keys:
+            current = str(enriched.get(key, "")).strip()
+            if not current:
+                enriched[key] = value
+
     if repaired_id:
-        enriched.setdefault("tuya_device_id", repaired_id)
-        enriched.setdefault("id", repaired_id)
+        assign_if_blank("tuya_device_id", "id", value=repaired_id)
     if repaired_ip:
-        enriched.setdefault("tuya_ip", repaired_ip)
-        enriched.setdefault("ip", repaired_ip)
+        assign_if_blank("tuya_ip", "ip", "host", value=repaired_ip)
     if repaired_key:
-        enriched.setdefault("tuya_local_key", repaired_key)
-        enriched.setdefault("local_key", repaired_key)
+        assign_if_blank("tuya_local_key", "local_key", value=repaired_key)
     if repaired_version:
-        enriched.setdefault("tuya_version", repaired_version)
-        enriched.setdefault("version", repaired_version)
+        assign_if_blank("tuya_version", "version", value=repaired_version)
     if repaired_product_key:
-        enriched.setdefault("tuya_product_key", repaired_product_key)
-        enriched.setdefault("product_key", repaired_product_key)
+        assign_if_blank("tuya_product_key", "product_key", value=repaired_product_key)
     return enriched
 
 
