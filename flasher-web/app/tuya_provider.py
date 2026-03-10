@@ -303,7 +303,11 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
     local_error = ""
     if provider in ("tuya_local", "tuya"):
         try:
-            dev, local_id, ip, version = _local_device(metadata)
+            dev, local_id, ip, version = _local_device(
+                metadata,
+                socket_timeout=0.9,
+                retry_limit=0,
+            )
             status = dev.status()
             dps = _extract_dps(status)
             onoff_dp = _resolve_local_toggle_dp(channel, dps)
@@ -357,8 +361,7 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
         except Exception as exc:
             local_error = str(exc)
             if provider == "tuya_local":
-                # local devices can fall back to cloud control if credentials exist
-                pass
+                raise ValueError(f"Tuya local command failed: {local_error}") from exc
 
     # Cloud command path.
     if not dev_id:
