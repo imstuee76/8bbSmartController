@@ -195,6 +195,13 @@ def _pick_cloud_power_code(cloud_values: dict[str, Any], functions: list[dict[st
     return None
 
 
+def _has_complete_local_metadata(metadata: dict[str, Any]) -> bool:
+    dev_id = str(metadata.get("tuya_device_id", "")).strip() or str(metadata.get("id", "")).strip()
+    ip = str(metadata.get("tuya_ip", "")).strip() or str(metadata.get("ip", "")).strip() or str(metadata.get("host", "")).strip()
+    local_key = str(metadata.get("tuya_local_key", "")).strip() or str(metadata.get("local_key", "")).strip()
+    return bool(dev_id and ip and local_key)
+
+
 def _pick_cloud_brightness_code(cloud_values: dict[str, Any], functions: list[dict[str, Any]]) -> str | None:
     candidates = ["bright_value_v2", "bright_value_1", "bright_value", "brightness"]
     for c in candidates:
@@ -301,7 +308,8 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
 
     # Local path first for local/dual devices.
     local_error = ""
-    if provider in ("tuya_local", "tuya"):
+    local_ready = _has_complete_local_metadata(metadata)
+    if provider in ("tuya_local", "tuya") and local_ready:
         try:
             dev, local_id, ip, version = _local_device(
                 metadata,
@@ -368,6 +376,8 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
             local_error = str(exc)
             if provider == "tuya_local":
                 raise ValueError(f"Tuya local command failed: {local_error}") from exc
+    elif provider == "tuya_local":
+        local_error = "Tuya local control requires tuya_device_id + tuya_ip + tuya_local_key"
 
     # Cloud command path.
     if not dev_id:
