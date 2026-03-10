@@ -139,9 +139,16 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   bool _isLightTile(Map<String, dynamic> tile) {
     final payload = (tile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
     final data = (tile['data'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    final capabilities = (data['capabilities'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
     final type = (data['type'] ?? data['device_type'] ?? '').toString().toLowerCase();
     final channel = (payload['channel'] ?? '').toString().toLowerCase();
-    return type.contains('light') || channel == 'light' || channel == 'rgb' || channel == 'rgbw' || channel == 'dimmer';
+    return (capabilities['supports_light'] as bool?) == true ||
+        (capabilities['supports_rgb'] as bool?) == true ||
+        type.contains('light') ||
+        channel == 'light' ||
+        channel == 'rgb' ||
+        channel == 'rgbw' ||
+        channel == 'dimmer';
   }
 
   bool _isAutomated(Map<String, dynamic> tile) {
@@ -241,8 +248,45 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     var showStatus = (payload['show_status'] as bool?) ?? true;
     var automationEnabled = (payload['automation_enabled'] as bool?) ?? false;
     var timersEnabled = (payload['timers_enabled'] as bool?) ?? false;
-    final automationCtl = TextEditingController(text: (payload['automation_note'] ?? '').toString());
-    final timerCtl = TextEditingController(text: (payload['timer_note'] ?? '').toString());
+    Map<String, dynamic> automationData = <String, dynamic>{};
+    try {
+      automationData = await widget.api.fetchTileAutomation(tileId);
+    } catch (_) {}
+    final savedRules = (automationData['rules'] as List<dynamic>? ?? const <dynamic>[])
+        .whereType<Map<String, dynamic>>()
+        .toList(growable: false);
+    Map<String, dynamic>? automationRule;
+    Map<String, dynamic>? timerRule;
+    for (final rule in savedRules) {
+      final kind = (rule['rule_kind'] ?? '').toString();
+      if (kind == 'automation' && automationRule == null) automationRule = rule;
+      if (kind == 'timer' && timerRule == null) timerRule = rule;
+    }
+    final automationCtl = TextEditingController(
+      text: (automationRule?['label'] ?? payload['automation_note'] ?? '').toString(),
+    );
+    final timerCtl = TextEditingController(
+      text: (timerRule?['label'] ?? payload['timer_note'] ?? '').toString(),
+    );
+    final automationStartCtl = TextEditingController(
+      text: ((automationRule?['schedule'] as Map<String, dynamic>?)?['start'] ?? '').toString(),
+    );
+    final automationEndCtl = TextEditingController(
+      text: ((automationRule?['schedule'] as Map<String, dynamic>?)?['end'] ?? '').toString(),
+    );
+    final timerStartCtl = TextEditingController(
+      text: ((timerRule?['schedule'] as Map<String, dynamic>?)?['start'] ?? '').toString(),
+    );
+    final timerEndCtl = TextEditingController(
+      text: ((timerRule?['schedule'] as Map<String, dynamic>?)?['end'] ?? '').toString(),
+    );
+    Map<String, dynamic> iconCatalog = <String, dynamic>{};
+    try {
+      iconCatalog = await widget.api.fetchIconCatalog();
+    } catch (_) {}
+    final customIcons = (iconCatalog['custom'] as List<dynamic>? ?? const <dynamic>[])
+        .whereType<Map<String, dynamic>>()
+        .toList(growable: false);
     var panel = 'general';
 
     final action = await showDialog<String>(
@@ -326,6 +370,24 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                             )
                             .toList(growable: false),
                       ),
+                      if (customIcons.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        const Text('Custom Icons'),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: customIcons
+                              .map(
+                                (item) => ChoiceChip(
+                                  label: Text((item['label'] ?? item['key'] ?? '').toString()),
+                                  selected: iconKey == (item['key'] ?? '').toString(),
+                                  onSelected: (_) => setLocal(() => iconKey = (item['key'] ?? '').toString()),
+                                ),
+                              )
+                              .toList(growable: false),
+                        ),
+                      ],
                       const SizedBox(height: 8),
                       const Text('Touch hold or right-click on the card to open this menu again.'),
                     ],
@@ -424,6 +486,14 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                           hintText: 'Example: Sunset scene, occupancy, pool mode',
                         ),
                       ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(child: TextField(controller: automationStartCtl, decoration: const InputDecoration(labelText: 'Start HH:MM'))),
+                          const SizedBox(width: 8),
+                          Expanded(child: TextField(controller: automationEndCtl, decoration: const InputDecoration(labelText: 'End HH:MM'))),
+                        ],
+                      ),
                     ],
                     if (panel == 'timers') ...[
                       SwitchListTile(
@@ -440,6 +510,14 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                           labelText: 'Timer note',
                           hintText: 'Example: ON 6:00pm, OFF 11:00pm',
                         ),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(child: TextField(controller: timerStartCtl, decoration: const InputDecoration(labelText: 'Start HH:MM'))),
+                          const SizedBox(width: 8),
+                          Expanded(child: TextField(controller: timerEndCtl, decoration: const InputDecoration(labelText: 'End HH:MM'))),
+                        ],
                       ),
                     ],
                     if (panel == 'remove') ...[
@@ -484,6 +562,34 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       'timer_note': timerCtl.text.trim(),
     };
     await widget.api.updateTile(tileId: tileId, payload: newPayload);
+    await widget.api.saveTileAutomation(
+      tileId: tileId,
+      defaultChannelKey: (payload['channel'] ?? 'relay1').toString(),
+      rules: [
+        {
+          'id': automationRule?['id'],
+          'rule_kind': 'automation',
+          'label': automationCtl.text.trim(),
+          'enabled': automationEnabled,
+          'schedule': {
+            'start': automationStartCtl.text.trim(),
+            'end': automationEndCtl.text.trim(),
+          },
+          'payload': {'note': automationCtl.text.trim()},
+        },
+        {
+          'id': timerRule?['id'],
+          'rule_kind': 'timer',
+          'label': timerCtl.text.trim(),
+          'enabled': timersEnabled,
+          'schedule': {
+            'start': timerStartCtl.text.trim(),
+            'end': timerEndCtl.text.trim(),
+          },
+          'payload': {'note': timerCtl.text.trim()},
+        },
+      ],
+    );
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Tile options saved')));
     await _load();

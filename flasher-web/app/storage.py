@@ -102,6 +102,21 @@ def init_db() -> None:
                 started_at TEXT,
                 finished_at TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS automation_rules (
+                id TEXT PRIMARY KEY,
+                target_type TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                device_id TEXT,
+                channel_key TEXT,
+                rule_kind TEXT NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                schedule_json TEXT NOT NULL DEFAULT '{}',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             """
         )
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(devices)").fetchall()}
@@ -153,6 +168,10 @@ DEFAULT_SETTINGS = {
     },
     "ota": {
         "shared_key": "8bb-change-this-ota-key",
+    },
+    "icons": {
+        "custom_icon_folder": "",
+        "allow_custom_icons": True,
     },
     "admin": {
         "username": "",

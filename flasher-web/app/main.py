@@ -109,6 +109,28 @@ _device_ip_refresh_lock = threading.Lock()
 _device_ip_refresh_thread: threading.Thread | None = None
 _device_ip_refresh_stop = threading.Event()
 _device_ip_refresh_last_run = 0.0
+_BUILTIN_ICON_CATALOG: list[dict[str, str]] = [
+    {"key": "auto", "label": "Auto", "kind": "builtin"},
+    {"key": "power", "label": "Power", "kind": "builtin"},
+    {"key": "light", "label": "Light", "kind": "builtin"},
+    {"key": "switch", "label": "Switch", "kind": "builtin"},
+    {"key": "fan", "label": "Fan", "kind": "builtin"},
+    {"key": "lamp", "label": "Lamp", "kind": "builtin"},
+    {"key": "strip", "label": "Strip", "kind": "builtin"},
+    {"key": "scene", "label": "Scene", "kind": "builtin"},
+    {"key": "timer", "label": "Timer", "kind": "builtin"},
+    {"key": "home", "label": "Home", "kind": "builtin"},
+    {"key": "garage", "label": "Garage", "kind": "builtin"},
+    {"key": "gate", "label": "Gate", "kind": "builtin"},
+    {"key": "water", "label": "Water", "kind": "builtin"},
+    {"key": "pool", "label": "Pool", "kind": "builtin"},
+    {"key": "speaker", "label": "Speaker", "kind": "builtin"},
+    {"key": "tv", "label": "TV", "kind": "builtin"},
+    {"key": "music", "label": "Music", "kind": "builtin"},
+    {"key": "heater", "label": "Heater", "kind": "builtin"},
+    {"key": "camera", "label": "Camera", "kind": "builtin"},
+    {"key": "security", "label": "Security", "kind": "builtin"},
+]
 
 app.add_middleware(
     CORSMiddleware,
@@ -588,12 +610,182 @@ def _parse_metadata(row: Any) -> dict[str, Any]:
         return {}
 
 
+def _device_capabilities(row: Any, status: dict[str, Any] | None = None) -> dict[str, Any]:
+    device_type = str((status or {}).get("device_type") or row["type"] or "").strip().lower()
+    outputs = (status or {}).get("outputs", {})
+    if not isinstance(outputs, dict):
+        outputs = {}
+    metadata = _parse_metadata(row)
+    provider = str(metadata.get("provider", "")).strip().lower()
+
+    has_relays = device_type == "relay_switch" or any(str(k).startswith("relay") for k in outputs.keys())
+    relay_channels = sorted(
+        [str(k) for k in outputs.keys() if str(k).startswith("relay")],
+        key=lambda item: (int(re.sub(r"\D+", "", item) or "999"), item),
+    )
+    supports_light = device_type.startswith("light") or any(k in outputs for k in ("light", "dimmer", "rgb_r", "rgb", "rgbw"))
+    supports_rgb = device_type in ("light_rgb", "light_rgbw") or any(k in outputs for k in ("rgb_r", "rgb_g", "rgb_b", "rgb_w"))
+    supports_dimmer = device_type in ("light_dimmer", "light_rgb", "light_rgbw") or "dimmer" in outputs
+    supports_fan = device_type == "fan" or any(k in outputs for k in ("fan", "fan_power", "fan_speed"))
+    supports_scenes = supports_rgb or provider == "moes_bhubw"
+    return {
+        "supports_relays": has_relays,
+        "relay_channels": relay_channels,
+        "supports_light": supports_light,
+        "supports_rgb": supports_rgb,
+        "supports_dimmer": supports_dimmer,
+        "supports_fan": supports_fan,
+        "supports_scenes": supports_scenes,
+        "supports_automation": True,
+        "supports_timers": True,
+    }
+
+
+def _list_custom_icons() -> list[dict[str, str]]:
+    icons_cfg = get_setting("icons")
+    if not isinstance(icons_cfg, dict) or not bool(icons_cfg.get("allow_custom_icons", True)):
+        return []
+    folder = Path(str(icons_cfg.get("custom_icon_folder", "")).strip())
+    if not folder.exists() or not folder.is_dir():
+        return []
+    items: list[dict[str, str]] = []
+    for path in sorted(folder.iterdir()):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in (".png", ".jpg", ".jpeg", ".svg", ".webp"):
+            continue
+        items.append(
+            {
+                "key": f"custom:{path.stem}",
+                "label": path.stem,
+                "kind": "custom",
+                "path": str(path.resolve()),
+            }
+        )
+    return items
+
+
+def _list_icon_catalog() -> dict[str, Any]:
+    custom_icons = _list_custom_icons()
+    icons_cfg = get_setting("icons")
+    return {
+        "builtin": list(_BUILTIN_ICON_CATALOG),
+        "custom": custom_icons,
+        "config": icons_cfg if isinstance(icons_cfg, dict) else {},
+    }
+
+
+def _automation_rule_to_dict(row: Any) -> dict[str, Any]:
+    try:
+        schedule = json.loads(row["schedule_json"] or "{}")
+    except Exception:
+        schedule = {}
+    try:
+        payload = json.loads(row["payload_json"] or "{}")
+    except Exception:
+        payload = {}
+    return {
+        "id": row["id"],
+        "target_type": row["target_type"],
+        "target_id": row["target_id"],
+        "device_id": row["device_id"],
+        "channel_key": row["channel_key"],
+        "rule_kind": row["rule_kind"],
+        "label": row["label"],
+        "enabled": bool(row["enabled"]),
+        "schedule": schedule,
+        "payload": payload,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _load_automation_rules_for_target(target_type: str, target_id: str) -> list[dict[str, Any]]:
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT * FROM automation_rules
+        WHERE target_type=? AND target_id=?
+        ORDER BY rule_kind ASC, updated_at DESC
+        """,
+        (target_type, target_id),
+    ).fetchall()
+    conn.close()
+    return [_automation_rule_to_dict(row) for row in rows]
+
+
+def _save_automation_rules_for_target(
+    *,
+    target_type: str,
+    target_id: str,
+    rules: list[dict[str, Any]],
+    default_device_id: str = "",
+    default_channel_key: str = "",
+) -> list[dict[str, Any]]:
+    conn = get_connection()
+    existing_ids = {
+        str(row["id"])
+        for row in conn.execute(
+            "SELECT id FROM automation_rules WHERE target_type=? AND target_id=?",
+            (target_type, target_id),
+        ).fetchall()
+    }
+    kept_ids: set[str] = set()
+    now = utc_now()
+    for item in rules:
+        if not isinstance(item, dict):
+            continue
+        rule_id = str(item.get("id", "")).strip() or str(uuid.uuid4())
+        kept_ids.add(rule_id)
+        enabled = 1 if bool(item.get("enabled", True)) else 0
+        conn.execute(
+            """
+            INSERT INTO automation_rules(
+                id, target_type, target_id, device_id, channel_key, rule_kind, label, enabled,
+                schedule_json, payload_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                target_type=excluded.target_type,
+                target_id=excluded.target_id,
+                device_id=excluded.device_id,
+                channel_key=excluded.channel_key,
+                rule_kind=excluded.rule_kind,
+                label=excluded.label,
+                enabled=excluded.enabled,
+                schedule_json=excluded.schedule_json,
+                payload_json=excluded.payload_json,
+                updated_at=excluded.updated_at
+            """,
+            (
+                rule_id,
+                target_type,
+                target_id,
+                str(item.get("device_id", default_device_id)).strip(),
+                str(item.get("channel_key", default_channel_key)).strip(),
+                str(item.get("rule_kind", "automation")).strip() or "automation",
+                str(item.get("label", "")).strip(),
+                enabled,
+                json.dumps(item.get("schedule", {})),
+                json.dumps(item.get("payload", {})),
+                now,
+                now,
+            ),
+        )
+    for stale_id in existing_ids - kept_ids:
+        conn.execute("DELETE FROM automation_rules WHERE id=?", (stale_id,))
+    conn.commit()
+    conn.close()
+    return _load_automation_rules_for_target(target_type, target_id)
+
+
 def _resolve_device_status(row: Any, *, quick: bool = False) -> dict[str, Any]:
     metadata = _parse_metadata(row)
     provider = str(metadata.get("provider", "")).strip().lower()
     if provider == "moes_bhubw":
         out = get_bhubw_light_status(metadata, quick=quick)
         out.setdefault("source_name", metadata.get("source_name", "MOES BHUB-W"))
+        out.setdefault("capabilities", _device_capabilities(row, out))
         return out
     if provider in ("tuya_local", "tuya_cloud", "tuya"):
         out = get_tuya_device_status(metadata, quick=quick)
@@ -601,6 +793,7 @@ def _resolve_device_status(row: Any, *, quick: bool = False) -> dict[str, Any]:
             out.setdefault("source_name", metadata.get("source_name", "Tuya Cloud"))
         else:
             out.setdefault("source_name", metadata.get("source_name", "Tuya Local"))
+        out.setdefault("capabilities", _device_capabilities(row, out))
         return out
 
     host = str(row["host"] or "").strip()
@@ -613,6 +806,7 @@ def _resolve_device_status(row: Any, *, quick: bool = False) -> dict[str, Any]:
         status.setdefault("provider", "esp_firmware")
         status.setdefault("mode", "local_lan")
         status.setdefault("source_name", metadata.get("source_name", "8bb Firmware"))
+        status.setdefault("capabilities", _device_capabilities(row, status))
     return status
 
 
@@ -1008,6 +1202,7 @@ def get_integrations() -> dict[str, Any]:
     scan = get_setting("scan")
     moes = get_setting("moes")
     ota = get_setting("ota")
+    icons = get_setting("icons")
     return {
         "spotify": _decrypt_fields(spotify, ["client_secret", "refresh_token"]),
         "weather": _decrypt_fields(weather, ["api_key"]),
@@ -1015,6 +1210,7 @@ def get_integrations() -> dict[str, Any]:
         "scan": scan,
         "moes": _decrypt_fields(moes, ["hub_local_key"]),
         "ota": _decrypt_fields(ota, ["shared_key"]),
+        "icons": icons,
     }
 
 
@@ -1042,10 +1238,12 @@ def put_integrations(payload: IntegrationsConfig) -> dict[str, Any]:
     set_setting("scan", data["scan"])
     set_setting("moes", data["moes"])
     set_setting("ota", data["ota"])
+    set_setting("icons", data.get("icons", {}))
     append_event(
         "integrations_updated",
         {
             "scan": data["scan"],
+            "icons": data.get("icons", {}),
             "tuya": {
                 "cloud_region_present": bool(str(data["tuya"].get("cloud_region", "")).strip()),
                 "client_id_present": bool(str(data["tuya"].get("client_id", "")).strip()),
@@ -1055,6 +1253,11 @@ def put_integrations(payload: IntegrationsConfig) -> dict[str, Any]:
         },
     )
     return {"saved": True}
+
+
+@app.get("/api/icons/catalog")
+def get_icon_catalog() -> dict[str, Any]:
+    return _list_icon_catalog()
 
 
 @app.post("/api/integrations/moes/discover-local", dependencies=[Depends(require_auth_if_configured)])
@@ -1824,6 +2027,8 @@ def get_tile_data() -> dict[str, Any]:
                 "data": {},
                 "error": None,
             }
+            if tile["tile_type"] == "device":
+                tile["automation_rules"] = _load_automation_rules_for_target("tile", tile["id"])
             tiles.append(tile)
 
             tile_type = row["tile_type"]
@@ -1883,6 +2088,43 @@ def create_tile(payload: TileCreate) -> dict[str, Any]:
     conn.close()
     append_event("tile_created", {"id": tile_id, "label": payload.label, "tile_type": payload.tile_type})
     return {"id": tile_id}
+
+
+@app.get("/api/main/tiles/{tile_id}/automation")
+def get_tile_automation(tile_id: str) -> dict[str, Any]:
+    conn = get_connection()
+    tile = conn.execute("SELECT * FROM main_tiles WHERE id=?", (tile_id,)).fetchone()
+    conn.close()
+    if not tile:
+        raise HTTPException(status_code=404, detail="Tile not found")
+    rules = _load_automation_rules_for_target("tile", tile_id)
+    return {
+        "tile_id": tile_id,
+        "tile_type": tile["tile_type"],
+        "ref_id": tile["ref_id"],
+        "rules": rules,
+    }
+
+
+@app.put("/api/main/tiles/{tile_id}/automation", dependencies=[Depends(require_auth_if_configured)])
+def put_tile_automation(tile_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    conn = get_connection()
+    tile = conn.execute("SELECT * FROM main_tiles WHERE id=?", (tile_id,)).fetchone()
+    conn.close()
+    if not tile:
+        raise HTTPException(status_code=404, detail="Tile not found")
+    rules_raw = payload.get("rules", []) if isinstance(payload, dict) else []
+    if not isinstance(rules_raw, list):
+        raise HTTPException(status_code=400, detail="rules must be a list")
+    saved = _save_automation_rules_for_target(
+        target_type="tile",
+        target_id=tile_id,
+        rules=[item for item in rules_raw if isinstance(item, dict)],
+        default_device_id=str(tile["ref_id"] or "").strip(),
+        default_channel_key=str((payload.get("default_channel_key", "") if isinstance(payload, dict) else "")).strip(),
+    )
+    append_event("tile_automation_updated", {"tile_id": tile_id, "rule_count": len(saved)})
+    return {"saved": True, "tile_id": tile_id, "rules": saved}
 
 
 @app.patch("/api/main/tiles/{tile_id}", dependencies=[Depends(require_auth_if_configured)])

@@ -50,6 +50,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
 
   final _scanSubnetCtl = TextEditingController();
   final _otaKeyCtl = TextEditingController();
+  final _iconFolderCtl = TextEditingController();
   final _automationLabelCtl = TextEditingController(text: 'Scene');
   final _adminUserCtl = TextEditingController();
   final _adminPassCtl = TextEditingController();
@@ -74,6 +75,8 @@ class _ConfigScreenState extends State<ConfigScreen> {
   List<Map<String, dynamic>> _tuyaCloudDevices = <Map<String, dynamic>>[];
   List<Map<String, dynamic>> _moesHubs = <Map<String, dynamic>>[];
   List<Map<String, dynamic>> _moesLights = <Map<String, dynamic>>[];
+  List<Map<String, dynamic>> _builtinIcons = <Map<String, dynamic>>[];
+  List<Map<String, dynamic>> _customIcons = <Map<String, dynamic>>[];
 
   final _resolutionOptions = const [
     '1280x720',
@@ -136,6 +139,14 @@ class _ConfigScreenState extends State<ConfigScreen> {
 
       _scanSubnetCtl.text = integrations.scan['subnet_hint']?.toString() ?? '';
       _otaKeyCtl.text = integrations.ota['shared_key']?.toString() ?? '';
+      _iconFolderCtl.text = integrations.icons['custom_icon_folder']?.toString() ?? '';
+      final iconCatalog = await widget.api.fetchIconCatalog();
+      _builtinIcons = (iconCatalog['builtin'] as List<dynamic>? ?? const <dynamic>[])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+      _customIcons = (iconCatalog['custom'] as List<dynamic>? ?? const <dynamic>[])
+          .whereType<Map<String, dynamic>>()
+          .toList();
       _initError = null;
     } catch (e) {
       _initError = _friendlyError(e);
@@ -187,7 +198,33 @@ class _ConfigScreenState extends State<ConfigScreen> {
       ota: {
         'shared_key': _otaKeyCtl.text.trim(),
       },
+      icons: {
+        'custom_icon_folder': _iconFolderCtl.text.trim(),
+        'allow_custom_icons': true,
+      },
     );
+  }
+
+  Future<void> _refreshIconCatalog() async {
+    try {
+      await widget.api.saveIntegrationsConfig(_buildIntegrationsPayload());
+      final iconCatalog = await widget.api.fetchIconCatalog();
+      if (!mounted) return;
+      setState(() {
+        _builtinIcons = (iconCatalog['builtin'] as List<dynamic>? ?? const <dynamic>[])
+            .whereType<Map<String, dynamic>>()
+            .toList();
+        _customIcons = (iconCatalog['custom'] as List<dynamic>? ?? const <dynamic>[])
+            .whereType<Map<String, dynamic>>()
+            .toList();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Icon catalog loaded (${_customIcons.length} custom)')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    }
   }
 
   Future<void> _saveControllerSection() async {
@@ -1569,11 +1606,18 @@ class _ConfigScreenState extends State<ConfigScreen> {
               ),
               ExpansionPanelRadio(
                 value: 'network',
-                headerBuilder: (_, __) => _panelHeader('Network + OTA', 'Subnet hint, OTA key, automation tile'),
+                headerBuilder: (_, __) => _panelHeader('Network + OTA', 'Subnet hint, OTA key, automation tile, icons'),
                 body: _panelBody(
                   [
                     TextField(controller: _scanSubnetCtl, decoration: const InputDecoration(labelText: 'Subnet hint (optional)')),
                     TextField(controller: _otaKeyCtl, decoration: const InputDecoration(labelText: 'OTA shared signing key')),
+                    TextField(
+                      controller: _iconFolderCtl,
+                      decoration: const InputDecoration(
+                        labelText: 'Custom icon folder',
+                        hintText: '/home/arcade/8bbController/data/icons',
+                      ),
+                    ),
                     const SizedBox(height: 8),
                     TextField(controller: _automationLabelCtl, decoration: const InputDecoration(labelText: 'Automation tile label')),
                     const SizedBox(height: 8),
@@ -1581,7 +1625,19 @@ class _ConfigScreenState extends State<ConfigScreen> {
                       spacing: 8,
                       children: [
                         OutlinedButton(onPressed: _createAutomationTile, child: const Text('Add Automation tile to Main')),
+                        FilledButton.tonal(onPressed: _refreshIconCatalog, child: const Text('Load Icons')),
                         FilledButton(onPressed: _saveNetworkOtaSection, child: const Text('Save section')),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Text('Built-in icons: ${_builtinIcons.length}  Custom icons: ${_customIcons.length}'),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        ..._builtinIcons.take(12).map((item) => Chip(label: Text((item['label'] ?? item['key'] ?? '').toString()))),
+                        ..._customIcons.take(12).map((item) => Chip(label: Text((item['label'] ?? item['key'] ?? '').toString()))),
                       ],
                     ),
                   ],

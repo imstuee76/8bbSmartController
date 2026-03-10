@@ -248,6 +248,33 @@ class ApiService {
     }
   }
 
+  Future<Map<String, dynamic>> fetchTileAutomation(String tileId) async {
+    final res = await _client.get(_uri('/api/main/tiles/$tileId/automation'));
+    if (res.statusCode != 200) {
+      throw Exception('Fetch tile automation failed: ${res.body}');
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> saveTileAutomation({
+    required String tileId,
+    required List<Map<String, dynamic>> rules,
+    String defaultChannelKey = '',
+  }) async {
+    final res = await _client.put(
+      _uri('/api/main/tiles/$tileId/automation'),
+      headers: _jsonHeaders(),
+      body: jsonEncode({
+        'rules': rules,
+        'default_channel_key': defaultChannelKey,
+      }),
+    );
+    if (res.statusCode != 200) {
+      throw Exception('Save tile automation failed: ${res.body}');
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
   Future<DisplayConfig> fetchDisplayConfig() async {
     final res = await _client.get(_uri('/api/config/display'));
     if (res.statusCode != 200) {
@@ -284,6 +311,14 @@ class ApiService {
     if (res.statusCode != 200) {
       throw Exception('Save integrations failed: ${res.body}');
     }
+  }
+
+  Future<Map<String, dynamic>> fetchIconCatalog() async {
+    final res = await _client.get(_uri('/api/icons/catalog'));
+    if (res.statusCode != 200) {
+      throw Exception('Fetch icon catalog failed: ${res.body}');
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
   Future<List<String>> fetchFirmwareFiles() async {

@@ -31,6 +31,7 @@ class IntegrationsConfig {
   Map<String, dynamic> scan;
   Map<String, dynamic> moes;
   Map<String, dynamic> ota;
+  Map<String, dynamic> icons;
 
   IntegrationsConfig({
     required this.spotify,
@@ -39,6 +40,7 @@ class IntegrationsConfig {
     required this.scan,
     required this.moes,
     required this.ota,
+    required this.icons,
   });
 
   factory IntegrationsConfig.fromJson(Map<String, dynamic> json) {
@@ -49,6 +51,7 @@ class IntegrationsConfig {
       scan: Map<String, dynamic>.from(json['scan'] as Map? ?? {}),
       moes: Map<String, dynamic>.from(json['moes'] as Map? ?? {}),
       ota: Map<String, dynamic>.from(json['ota'] as Map? ?? {}),
+      icons: Map<String, dynamic>.from(json['icons'] as Map? ?? {}),
     );
   }
 
@@ -59,5 +62,6 @@ class IntegrationsConfig {
         'scan': scan,
         'moes': moes,
         'ota': ota,
+        'icons': icons,
       };
 }

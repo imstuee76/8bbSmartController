@@ -65,6 +65,11 @@ class OTAConfig(BaseModel):
     shared_key: str = ""
 
 
+class IconsConfig(BaseModel):
+    custom_icon_folder: str = ""
+    allow_custom_icons: bool = True
+
+
 class IntegrationsConfig(BaseModel):
     spotify: SpotifyConfig = Field(default_factory=SpotifyConfig)
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
@@ -72,6 +77,7 @@ class IntegrationsConfig(BaseModel):
     scan: ScanConfig = Field(default_factory=ScanConfig)
     moes: MoesConfig = Field(default_factory=MoesConfig)
     ota: OTAConfig = Field(default_factory=OTAConfig)
+    icons: IconsConfig = Field(default_factory=IconsConfig)
 
 
 class DeviceChannel(BaseModel):
