@@ -826,7 +826,34 @@ def _dashboard_cached_device_status(row: Any, *, quick: bool = True) -> dict[str
         payload = _resolve_device_status(row, quick=quick)
         _dashboard_device_cache[device_id] = {"ts": now, "data": dict(payload)}
         return payload
-    except Exception:
+    except Exception as exc:
+        if quick:
+            try:
+                payload = _resolve_device_status(row, quick=False)
+                payload["quick_fallback"] = True
+                payload["quick_error"] = str(exc)
+                _dashboard_device_cache[device_id] = {"ts": now, "data": dict(payload)}
+                append_event(
+                    "dashboard_status_quick_retry",
+                    {
+                        "device_id": device_id,
+                        "device_name": str(row["name"] or ""),
+                        "provider": str(_parse_metadata(row).get("provider", "")).strip().lower(),
+                        "quick_error": str(exc),
+                    },
+                )
+                return payload
+            except Exception as retry_exc:
+                append_event(
+                    "dashboard_status_quick_retry_failed",
+                    {
+                        "device_id": device_id,
+                        "device_name": str(row["name"] or ""),
+                        "provider": str(_parse_metadata(row).get("provider", "")).strip().lower(),
+                        "quick_error": str(exc),
+                        "retry_error": str(retry_exc),
+                    },
+                )
         if cached:
             age = max(0.0, now - float(cached.get("ts", 0.0)))
             payload = dict(cached.get("data") or {})
