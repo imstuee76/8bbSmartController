@@ -21,6 +21,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   String? _error;
   List<Map<String, dynamic>> _tiles = [];
   final Set<String> _groupActionBusy = <String>{};
+  final Set<String> _tileActionBusy = <String>{};
   DateTime? _lastLoadedAt;
   static const Map<String, IconData> _iconOptions = <String, IconData>{
     'auto': Icons.auto_awesome,
@@ -210,30 +211,118 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     return null;
   }
 
+  void _applyOptimisticDeviceTileState({
+    required String refId,
+    required String channel,
+    required String state,
+    bool? previousState,
+  }) {
+    if (!mounted) return;
+    setState(() {
+      _tiles = _tiles.map((tile) {
+        if ((tile['tile_type'] ?? '').toString() != 'device') return tile;
+        if ((tile['ref_id'] ?? '').toString().trim() != refId) return tile;
+        final payload = Map<String, dynamic>.from((tile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{});
+        final tileChannel = (payload['channel'] ?? 'relay1').toString().trim();
+        if (tileChannel != channel) return tile;
+        final data = Map<String, dynamic>.from((tile['data'] as Map<String, dynamic>?) ?? const <String, dynamic>{});
+        final outputs = Map<String, dynamic>.from((data['outputs'] as Map<String, dynamic>?) ?? const <String, dynamic>{});
+        bool? nextState;
+        if (state == 'on') nextState = true;
+        if (state == 'off') nextState = false;
+        if (state == 'toggle') nextState = previousState == null ? null : !previousState;
+        if (nextState != null) {
+          outputs[channel] = nextState;
+          if (channel == 'power' || channel == 'light') {
+            outputs['power'] = nextState;
+            outputs['light'] = nextState;
+          }
+          data['outputs'] = outputs;
+          return {
+            ...tile,
+            'data': data,
+            'error': null,
+          };
+        }
+        return tile;
+      }).toList(growable: false);
+      _lastLoadedAt = DateTime.now();
+    });
+  }
+
+  void _applyOptimisticGroupTileState({
+    required String tileId,
+    required String state,
+  }) {
+    if (!mounted) return;
+    setState(() {
+      _tiles = _tiles.map((tile) {
+        if ((tile['id'] ?? '').toString().trim() != tileId) return tile;
+        if ((tile['tile_type'] ?? '').toString() != 'group') return tile;
+        final data = Map<String, dynamic>.from((tile['data'] as Map<String, dynamic>?) ?? const <String, dynamic>{});
+        if (state == 'on') {
+          data['group_state'] = 'on';
+          data['outputs'] = {
+            ...(data['outputs'] as Map<String, dynamic>? ?? const <String, dynamic>{}),
+            'power': true,
+            'light': true,
+          };
+        } else if (state == 'off') {
+          data['group_state'] = 'off';
+          data['outputs'] = {
+            ...(data['outputs'] as Map<String, dynamic>? ?? const <String, dynamic>{}),
+            'power': false,
+            'light': false,
+          };
+        }
+        return {
+          ...tile,
+          'data': data,
+          'error': null,
+        };
+      }).toList(growable: false);
+      _lastLoadedAt = DateTime.now();
+    });
+  }
+
   Future<void> _sendDeviceState(
     String refId, {
+    String? tileId,
+    bool? currentState,
     required bool cloudMode,
     required String label,
     required String channel,
     required String state,
   }) async {
+    final busyKey = '${tileId ?? refId}::$channel';
+    if (_tileActionBusy.contains(busyKey)) return;
     if (cloudMode) {
       final ok = await _confirmCloudWarning(label);
       if (!ok) return;
     }
-    final lastLoadedAt = _lastLoadedAt;
-    if (!_loading &&
-        !_refreshing &&
-        lastLoadedAt != null &&
-        DateTime.now().difference(lastLoadedAt) > const Duration(minutes: 2)) {
-      await _load();
+    if (!mounted) return;
+    setState(() {
+      _tileActionBusy.add(busyKey);
+    });
+    _applyOptimisticDeviceTileState(refId: refId, channel: channel, state: state, previousState: currentState);
+    try {
+      await widget.api.sendDeviceCommand(
+        deviceId: refId,
+        channel: channel,
+        state: state,
+      );
+      unawaited(_load());
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+      unawaited(_load());
+    } finally {
+      if (mounted) {
+        setState(() {
+          _tileActionBusy.remove(busyKey);
+        });
+      }
     }
-    await widget.api.sendDeviceCommand(
-      deviceId: refId,
-      channel: channel,
-      state: state,
-    );
-    await _load();
   }
 
   List<Map<String, String>> _groupCandidatesForDevice(SmartDevice device) {
@@ -283,6 +372,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     setState(() {
       _groupActionBusy.add(tileId);
     });
+    _applyOptimisticGroupTileState(tileId: tileId, state: state);
     try {
       final result = await widget.api.sendGroupTileAction(tileId: tileId, state: state);
       if (!mounted) return;
@@ -291,10 +381,11 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Group "$label": $okCount ok, $errorCount failed')),
       );
-      await _load();
+      unawaited(_load());
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+      unawaited(_load());
     } finally {
       if (mounted) {
         setState(() {
@@ -962,7 +1053,9 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       final stateBool = _asBoolState(channelValue);
       final statusColor = stateBool == null ? Colors.blueGrey : (stateBool ? Colors.green : Colors.red);
       final automated = _isAutomated(tile);
+      final tileId = (tile['id'] ?? '').toString().trim();
       final statusText = stateBool == true ? 'On' : stateBool == false ? 'Off' : channelValue.toString();
+      final busy = _tileActionBusy.contains('$tileId::$channelKey');
       content = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
@@ -1036,8 +1129,12 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             SizedBox(
               width: double.infinity,
               child: FilledButton(
-                onPressed: () => _sendDeviceState(
+                onPressed: busy
+                    ? null
+                    : () => _sendDeviceState(
                   refId,
+                  tileId: tileId,
+                  currentState: stateBool,
                   cloudMode: cloudMode,
                   label: titleText,
                   channel: channelKey,
@@ -1049,7 +1146,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                   minimumSize: const Size.fromHeight(38),
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                 ),
-                child: Text(stateBool == true ? 'ON' : stateBool == false ? 'OFF' : 'TOGGLE'),
+                child: Text(busy ? '...' : stateBool == true ? 'ON' : stateBool == false ? 'OFF' : 'TOGGLE'),
               ),
             ),
           if (refId.isNotEmpty && actionMode == 'on_off')
@@ -1057,8 +1154,12 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               children: [
                 Expanded(
                   child: FilledButton(
-                    onPressed: () => _sendDeviceState(
+                    onPressed: busy
+                        ? null
+                        : () => _sendDeviceState(
                       refId,
+                      tileId: tileId,
+                      currentState: stateBool,
                       cloudMode: cloudMode,
                       label: titleText,
                       channel: channelKey,
@@ -1076,8 +1177,12 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                 const SizedBox(width: 8),
                 Expanded(
                   child: FilledButton(
-                    onPressed: () => _sendDeviceState(
+                    onPressed: busy
+                        ? null
+                        : () => _sendDeviceState(
                       refId,
+                      tileId: tileId,
+                      currentState: stateBool,
                       cloudMode: cloudMode,
                       label: titleText,
                       channel: channelKey,

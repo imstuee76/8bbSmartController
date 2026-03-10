@@ -45,6 +45,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
   final Set<String> _statusLoading = <String>{};
   final Set<String> _channelCommandBusy = <String>{};
   final TextEditingController _subnetCtl = TextEditingController();
+  final TextEditingController _scanSearchCtl = TextEditingController();
   String _statusOutput = '';
 
   String _friendlyError(Object error) {
@@ -448,7 +449,27 @@ class _DevicesScreenState extends State<DevicesScreen> {
   @override
   void dispose() {
     _subnetCtl.dispose();
+    _scanSearchCtl.dispose();
     super.dispose();
+  }
+
+  bool _matchesScanSearch(Map<String, dynamic> item) {
+    final query = _scanSearchCtl.text.trim().toLowerCase();
+    if (query.isEmpty) return true;
+    final blob = [
+      item['name'],
+      item['ip'],
+      item['hostname'],
+      item['mac'],
+      item['device_hint'],
+      item['provider_hint'],
+      item['tuya_device_id'],
+      item['local_name'],
+      item['cloud_name'],
+      item['local_ip'],
+      item['cloud_ip'],
+    ].map((value) => value?.toString().toLowerCase() ?? '').join(' ');
+    return blob.contains(query);
   }
 
   String _providerOf(SmartDevice device) {
@@ -1914,10 +1935,21 @@ class _DevicesScreenState extends State<DevicesScreen> {
                     child: ListView(
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                       children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+                          child: TextField(
+                            controller: _scanSearchCtl,
+                            decoration: const InputDecoration(
+                              labelText: 'Search found devices',
+                              prefixIcon: Icon(Icons.search),
+                            ),
+                            onChanged: (_) => setState(() {}),
+                          ),
+                        ),
                         ..._scanResults.where(_scanMatchesActiveSection).where((item) {
                           if (_activeSection != _DeviceSection.tuya) return true;
                           return _matchesTuyaScanFilter(item);
-                        }).map(
+                        }).where(_matchesScanSearch).map(
                           (item) => ListTile(
                             dense: true,
                             leading: Icon(
