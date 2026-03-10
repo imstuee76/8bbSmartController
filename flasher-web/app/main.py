@@ -863,6 +863,64 @@ def _dashboard_cached_device_status(row: Any, *, quick: bool = True) -> dict[str
         raise
 
 
+def _guess_output_bool(outputs: dict[str, Any], channel: str) -> bool | None:
+    candidates = [str(channel or "").strip(), "power", "light"]
+    for key in candidates:
+        if not key:
+            continue
+        current = _coerce_bool_state(outputs.get(key))
+        if current is not None:
+            return current
+    return None
+
+
+def _apply_dashboard_command_cache(device_id: str, row: Any, command: dict[str, Any]) -> None:
+    state = str(command.get("state", "")).strip().lower()
+    channel = str(command.get("channel", "")).strip() or "power"
+    target = _coerce_bool_state(state)
+
+    cached = _dashboard_device_cache.get(device_id)
+    payload = dict(cached.get("data") or {}) if cached else {}
+    outputs = dict(payload.get("outputs") or {})
+
+    if state == "toggle":
+        current = _guess_output_bool(outputs, channel)
+        if current is not None:
+            target = not current
+
+    if target is None:
+        _dashboard_device_cache.pop(device_id, None)
+        return
+
+    outputs[channel] = target
+    channel_lower = channel.lower()
+    if channel_lower in {"power", "light"}:
+        outputs["power"] = target
+        outputs["light"] = target
+    elif (
+        channel_lower.startswith("relay")
+        or channel_lower.startswith("switch")
+        or channel_lower.startswith("dp_")
+        or channel_lower.startswith("channel")
+        or channel_lower.startswith("out")
+        or channel_lower.startswith("gang")
+    ):
+        if "power" in outputs:
+            outputs["power"] = target
+        if "light" in outputs:
+            outputs["light"] = target
+
+    payload["ok"] = True
+    payload["outputs"] = outputs
+    payload["cached"] = False
+    payload["cache_age_s"] = 0.0
+    payload["last_command_state"] = state
+    payload["last_command_channel"] = channel
+    payload.setdefault("provider", str(_parse_metadata(row).get("provider", "")).strip().lower())
+    payload.setdefault("device_type", row["type"])
+    _dashboard_device_cache[device_id] = {"ts": time.time(), "data": payload}
+
+
 def _coerce_bool_state(value: Any) -> bool | None:
     if isinstance(value, bool):
         return value
@@ -2134,8 +2192,9 @@ def get_device_status(device_id: str) -> dict[str, Any]:
 def post_device_command(device_id: str, payload: DeviceCommandRequest) -> dict[str, Any]:
     conn, row = _require_device(device_id)
     conn.close()
+    command = payload.model_dump()
     try:
-        result = _execute_device_command_by_row(device_id, row, payload.model_dump())
+        result = _execute_device_command_by_row(device_id, row, command)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except httpx.HTTPError as exc:
@@ -2145,6 +2204,7 @@ def post_device_command(device_id: str, payload: DeviceCommandRequest) -> dict[s
         provider = str(metadata.get("provider", "")).strip().lower()
         detail_prefix = "Tuya command failed" if provider.startswith("tuya") else "MOES local command failed" if provider == "moes_bhubw" else "Device command failed"
         raise HTTPException(status_code=502, detail=f"{detail_prefix}: {exc}") from exc
+    _apply_dashboard_command_cache(device_id, row, command)
     append_event("device_command", {"device_id": device_id, "channel": payload.channel, "state": payload.state, "provider": str(_parse_metadata(row).get('provider', '')).strip().lower()})
     return result
 
@@ -2377,15 +2437,17 @@ def post_group_tile_action(tile_id: str, payload: dict[str, Any]) -> dict[str, A
             results.append({"device_id": device_id, "channel": channel, "label": label, "ok": False, "error": "Device not found"})
             continue
         try:
+            command_payload = {
+                "channel": channel,
+                "state": requested_state,
+                "payload": member.get("command_payload", {}) if isinstance(member.get("command_payload"), dict) else {},
+            }
             result = _execute_device_command_by_row(
                 device_id,
                 row,
-                {
-                    "channel": channel,
-                    "state": requested_state,
-                    "payload": member.get("command_payload", {}) if isinstance(member.get("command_payload"), dict) else {},
-                },
+                command_payload,
             )
+            _apply_dashboard_command_cache(device_id, row, command_payload)
             ok_count += 1
             results.append({"device_id": device_id, "channel": channel, "label": label, "ok": True, "result": result})
         except Exception as exc:

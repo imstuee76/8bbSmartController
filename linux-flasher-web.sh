@@ -3,18 +3,17 @@ set -Eeuo pipefail
 
 APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_DIR="${SMART_CONTROLLER_DATA_DIR:-$APP_ROOT/data}"
-LOG_BASE="$DATA_DIR/logs/flasher-launch/sessions"
+LOG_BASE="$DATA_DIR/logs/flasher-launch"
 DAY_LOCAL="$(date +%Y%m%d)"
 SESSION_STAMP="$(date +%Y%m%dT%H%M%S%z)"
 SESSION_ID="flasher-launch-${SESSION_STAMP}-$$"
-SESSION_DIR="$LOG_BASE/$SESSION_ID"
-ACTIVITY_LOG="$SESSION_DIR/activity-$DAY_LOCAL.log"
-ERROR_LOG="$SESSION_DIR/errors-$DAY_LOCAL.log"
+ACTIVITY_LOG="$LOG_BASE/activity-$DAY_LOCAL.log"
+ERROR_LOG="$LOG_BASE/errors-$DAY_LOCAL.log"
 
-mkdir -p "$SESSION_DIR"
+mkdir -p "$LOG_BASE"
 
 exec > >(tee -a "$ACTIVITY_LOG")
-exec 2> >(tee -a "$ERROR_LOG" >&2)
+exec 2> >(tee -a "$ACTIVITY_LOG" "$ERROR_LOG" >&2)
 
 log() {
   printf '[8bb-flasher] %s\n' "$*"

@@ -11,11 +11,11 @@ $DataDir = if ($env:SMART_CONTROLLER_DATA_DIR) { $env:SMART_CONTROLLER_DATA_DIR 
 $DayLocal = Get-Date -Format "yyyyMMdd"
 $SessionStamp = Get-Date -Format "yyyyMMddTHHmmssK"
 $SessionId = "win-updater-$SessionStamp-$PID"
-$SessionDir = Join-Path $DataDir "logs\updater\sessions\$SessionId"
-$ActivityLog = Join-Path $SessionDir "activity-$DayLocal.log"
-$ErrorLog = Join-Path $SessionDir "errors-$DayLocal.log"
+$LogDir = Join-Path $DataDir "logs\updater"
+$ActivityLog = Join-Path $LogDir "activity-$DayLocal.log"
+$ErrorLog = Join-Path $LogDir "errors-$DayLocal.log"
 
-New-Item -ItemType Directory -Force -Path $SessionDir | Out-Null
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 New-Item -ItemType File -Force -Path $ActivityLog | Out-Null
 New-Item -ItemType File -Force -Path $ErrorLog | Out-Null
 
