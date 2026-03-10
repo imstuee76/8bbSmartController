@@ -868,7 +868,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
       await widget.api.sendDeviceCommand(
         deviceId: device.id,
         channel: channel.key,
-        state: 'toggle',
+        state: channel.state == true ? 'off' : channel.state == false ? 'on' : 'toggle',
       );
       if (!mounted) return;
       await _loadDeviceStatus(device, showOutput: false);

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../models/device_models.dart';
 import '../services/api_service.dart';
+import '../services/session_logger.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key, required this.api});
@@ -305,15 +306,47 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       _tileActionBusy.add(busyKey);
     });
     _applyOptimisticDeviceTileState(refId: refId, channel: channel, state: state, previousState: currentState);
+    unawaited(
+      SessionLogger.instance.logActivity('main_tile_command_started', <String, dynamic>{
+        'device_id': refId,
+        'tile_id': tileId ?? '',
+        'channel': channel,
+        'state': state,
+        'cloud_mode': cloudMode,
+        'label': label,
+      }),
+    );
     try {
       await widget.api.sendDeviceCommand(
         deviceId: refId,
         channel: channel,
         state: state,
       );
+      unawaited(
+        SessionLogger.instance.logActivity('main_tile_command_finished', <String, dynamic>{
+          'device_id': refId,
+          'tile_id': tileId ?? '',
+          'channel': channel,
+          'state': state,
+        }),
+      );
       unawaited(_load());
     } catch (e) {
       if (!mounted) return;
+      unawaited(
+        SessionLogger.instance.logError(
+          'main_tile_command_failed',
+          e,
+          payload: <String, dynamic>{
+            'device_id': refId,
+            'tile_id': tileId ?? '',
+            'channel': channel,
+            'state': state,
+            'cloud_mode': cloudMode,
+            'label': label,
+          },
+        ),
+      );
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
       unawaited(_load());
     } finally {
@@ -373,17 +406,44 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       _groupActionBusy.add(tileId);
     });
     _applyOptimisticGroupTileState(tileId: tileId, state: state);
+    unawaited(
+      SessionLogger.instance.logActivity('group_tile_command_started', <String, dynamic>{
+        'tile_id': tileId,
+        'state': state,
+        'label': label,
+      }),
+    );
     try {
       final result = await widget.api.sendGroupTileAction(tileId: tileId, state: state);
       if (!mounted) return;
       final okCount = (result['ok_count'] as num?)?.toInt() ?? 0;
       final errorCount = (result['error_count'] as num?)?.toInt() ?? 0;
+      unawaited(
+        SessionLogger.instance.logActivity('group_tile_command_finished', <String, dynamic>{
+          'tile_id': tileId,
+          'state': state,
+          'label': label,
+          'ok_count': okCount,
+          'error_count': errorCount,
+        }),
+      );
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Group "$label": $okCount ok, $errorCount failed')),
       );
       unawaited(_load());
     } catch (e) {
       if (!mounted) return;
+      unawaited(
+        SessionLogger.instance.logError(
+          'group_tile_command_failed',
+          e,
+          payload: <String, dynamic>{
+            'tile_id': tileId,
+            'state': state,
+            'label': label,
+          },
+        ),
+      );
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
       unawaited(_load());
     } finally {
@@ -1138,7 +1198,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                   cloudMode: cloudMode,
                   label: titleText,
                   channel: channelKey,
-                  state: 'toggle',
+                  state: stateBool == true ? 'off' : stateBool == false ? 'on' : 'toggle',
                 ),
                 style: FilledButton.styleFrom(
                   backgroundColor: stateBool == null ? Colors.blueGrey : (stateBool ? Colors.green : Colors.red),

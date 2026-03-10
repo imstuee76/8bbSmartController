@@ -308,9 +308,15 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
                 socket_timeout=0.9,
                 retry_limit=0,
             )
-            status = dev.status()
-            dps = _extract_dps(status)
-            onoff_dp = _resolve_local_toggle_dp(channel, dps)
+            status: dict[str, Any] | None = None
+            dps: dict[str, Any] = {}
+            dp_hint = _channel_to_dp_hint(channel)
+            if state in ("on", "off") and dp_hint is not None:
+                onoff_dp = dp_hint
+            else:
+                status = dev.status()
+                dps = _extract_dps(status)
+                onoff_dp = _resolve_local_toggle_dp(channel, dps)
 
             if state in ("on", "off", "toggle"):
                 target = state == "on"

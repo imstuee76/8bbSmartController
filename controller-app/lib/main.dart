@@ -116,6 +116,7 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   void dispose() {
+    unawaited(SessionLogger.instance.logActivity('session_ended'));
     unawaited(_touchKeyboard.dispose());
     super.dispose();
   }
