@@ -24,22 +24,22 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     'power': Icons.power_settings_new,
     'light': Icons.lightbulb_outline,
     'switch': Icons.toggle_on,
-    'fan': Icons.mode_fan_off_outlined,
-    'lamp': Icons.table_lamp_outlined,
+    'fan': Icons.toys,
+    'lamp': Icons.lightbulb_outline,
     'strip': Icons.linear_scale,
     'scene': Icons.auto_fix_high,
-    'timer': Icons.timer_outlined,
-    'home': Icons.home_outlined,
-    'garage': Icons.garage_outlined,
-    'gate': Icons.sensor_door_outlined,
-    'water': Icons.water_drop_outlined,
-    'pool': Icons.pool_outlined,
-    'speaker': Icons.speaker_outlined,
-    'tv': Icons.tv_outlined,
-    'music': Icons.music_note_outlined,
-    'heater': Icons.local_fire_department_outlined,
-    'camera': Icons.videocam_outlined,
-    'security': Icons.shield_outlined,
+    'timer': Icons.timer,
+    'home': Icons.home,
+    'garage': Icons.home,
+    'gate': Icons.meeting_room,
+    'water': Icons.opacity,
+    'pool': Icons.pool,
+    'speaker': Icons.speaker,
+    'tv': Icons.tv,
+    'music': Icons.music_note,
+    'heater': Icons.whatshot,
+    'camera': Icons.videocam,
+    'security': Icons.security,
   };
 
   String _friendlyError(Object error) {
@@ -127,13 +127,13 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     if (iconKey.isNotEmpty && _iconOptions.containsKey(iconKey)) {
       return _iconOptions[iconKey]!;
     }
-    if (tileType == 'weather') return Icons.cloud_outlined;
+    if (tileType == 'weather') return Icons.cloud;
     if (tileType == 'spotify') return Icons.graphic_eq;
     final type = (data['type'] ?? data['device_type'] ?? '').toString().toLowerCase();
-    if (type.contains('fan')) return Icons.mode_fan_off_outlined;
+    if (type.contains('fan')) return Icons.toys;
     if (type.contains('light')) return Icons.lightbulb_outline;
     if (type.contains('relay') || type.contains('switch')) return Icons.toggle_on;
-    return Icons.sensors_outlined;
+    return Icons.settings_remote;
   }
 
   bool _isLightTile(Map<String, dynamic> tile) {
