@@ -202,6 +202,56 @@ def _has_complete_local_metadata(metadata: dict[str, Any]) -> bool:
     return bool(dev_id and ip and local_key)
 
 
+def _enrich_local_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    if _has_complete_local_metadata(metadata):
+        return dict(metadata)
+    try:
+        from .integrations import _get_file_value, _load_tuya_devices_file, _tuya_devices_file_indexes
+    except Exception:
+        return dict(metadata)
+
+    rows, _ = _load_tuya_devices_file()
+    if not rows:
+        return dict(metadata)
+
+    by_id, by_mac, by_ip = _tuya_devices_file_indexes(rows)
+    dev_id = str(metadata.get("tuya_device_id", "")).strip() or str(metadata.get("id", "")).strip()
+    mac = str(metadata.get("mac", "")).strip().lower()
+    ip = str(metadata.get("tuya_ip", "")).strip() or str(metadata.get("ip", "")).strip() or str(metadata.get("host", "")).strip()
+
+    match = by_id.get(dev_id) if dev_id else None
+    if not match and mac:
+        match = by_mac.get(mac)
+    if not match and ip:
+        match = by_ip.get(ip)
+    if not match:
+        return dict(metadata)
+
+    enriched = dict(metadata)
+    repaired_id = _get_file_value(match, "id", "gwId", "dev_id", "tuya_device_id")
+    repaired_ip = _get_file_value(match, "ip", "local_ip")
+    repaired_key = _get_file_value(match, "local_key", "key")
+    repaired_version = _get_file_value(match, "version")
+    repaired_product_key = _get_file_value(match, "product_key", "productKey")
+
+    if repaired_id:
+        enriched.setdefault("tuya_device_id", repaired_id)
+        enriched.setdefault("id", repaired_id)
+    if repaired_ip:
+        enriched.setdefault("tuya_ip", repaired_ip)
+        enriched.setdefault("ip", repaired_ip)
+    if repaired_key:
+        enriched.setdefault("tuya_local_key", repaired_key)
+        enriched.setdefault("local_key", repaired_key)
+    if repaired_version:
+        enriched.setdefault("tuya_version", repaired_version)
+        enriched.setdefault("version", repaired_version)
+    if repaired_product_key:
+        enriched.setdefault("tuya_product_key", repaired_product_key)
+        enriched.setdefault("product_key", repaired_product_key)
+    return enriched
+
+
 def _pick_cloud_brightness_code(cloud_values: dict[str, Any], functions: list[dict[str, Any]]) -> str | None:
     candidates = ["bright_value_v2", "bright_value_1", "bright_value", "brightness"]
     for c in candidates:
@@ -215,6 +265,7 @@ def _pick_cloud_brightness_code(cloud_values: dict[str, Any], functions: list[di
 
 
 def get_tuya_device_status(metadata: dict[str, Any], quick: bool = False) -> dict[str, Any]:
+    metadata = _enrich_local_metadata(metadata)
     provider = str(metadata.get("provider", "tuya_local")).strip().lower()
     dev_id = str(metadata.get("tuya_device_id", "")).strip() or str(metadata.get("id", "")).strip()
     local_error = ""
@@ -299,6 +350,7 @@ def get_tuya_device_status(metadata: dict[str, Any], quick: bool = False) -> dic
 
 
 def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) -> dict[str, Any]:
+    metadata = _enrich_local_metadata(metadata)
     provider = str(metadata.get("provider", "tuya_local")).strip().lower()
     dev_id = str(metadata.get("tuya_device_id", "")).strip() or str(metadata.get("id", "")).strip()
     state = str(command.get("state", "")).strip().lower()

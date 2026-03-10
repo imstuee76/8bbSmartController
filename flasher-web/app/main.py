@@ -1154,6 +1154,12 @@ def _execute_device_command_by_row(
     device_mac = _normalize_mac(row["mac"])
     passcode = decrypt_secret(row["passcode_enc"] or "")
     metadata = _parse_metadata(row)
+    if host:
+        metadata.setdefault("host", host)
+        metadata.setdefault("ip", host)
+        metadata.setdefault("tuya_ip", host)
+    if device_mac:
+        metadata.setdefault("mac", device_mac)
     provider = str(metadata.get("provider", "")).strip().lower()
 
     if provider == "moes_bhubw":
