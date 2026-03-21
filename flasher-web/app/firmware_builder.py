@@ -394,12 +394,28 @@ def _run_idf_install_repair(idf_cmd: list[str], log_file: Path) -> bool:
         _append_log(log_file, "repair_install=skipped reason=idf_script_not_resolved")
         return False
     idf_root = script.parent.parent
-    install_script = idf_root / "install.sh"
-    if not install_script.exists():
-        _append_log(log_file, f"repair_install=skipped reason=missing_install_script path={install_script}")
+    if os.name == "nt":
+        install_candidates = [idf_root / "install.bat", idf_root / "install.ps1", idf_root / "install.sh"]
+    else:
+        install_candidates = [idf_root / "install.sh", idf_root / "install.bat", idf_root / "install.ps1"]
+    install_script = next((p for p in install_candidates if p.exists()), None)
+    if not install_script:
+        _append_log(
+            log_file,
+            "repair_install=skipped reason=missing_install_script "
+            + "candidates="
+            + ", ".join(str(p) for p in install_candidates),
+        )
         return False
 
-    cmd = [str(install_script), "esp32"]
+    suffix = install_script.suffix.lower()
+    if suffix in (".bat", ".cmd"):
+        cmd = ["cmd.exe", "/c", str(install_script), "esp32"]
+    elif suffix == ".ps1":
+        cmd = ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", str(install_script), "esp32"]
+    else:
+        cmd = [str(install_script), "esp32"]
+    _append_log(log_file, f"repair_install_script={install_script}")
     _append_log(log_file, f"$ {' '.join(cmd)}")
     clean_env = os.environ.copy()
     for key in ("IDF_PYTHON_ENV_PATH", "IDF_CMD", "IDF_PY_PATH", "ESP_IDF_PYTHON", "IDF_PATH"):
