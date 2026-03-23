@@ -46,6 +46,12 @@ class _DevicesScreenState extends State<DevicesScreen> {
     '#455A64',
     '#5D4037',
   ];
+  static const List<Map<String, String>> _lightScenes = <Map<String, String>>[
+    {'id': '1', 'label': 'Relax'},
+    {'id': '2', 'label': 'Focus'},
+    {'id': '3', 'label': 'Party'},
+    {'id': '4', 'label': 'Night'},
+  ];
 
   bool _loading = true;
   bool _scanning = false;
@@ -1053,6 +1059,156 @@ class _DevicesScreenState extends State<DevicesScreen> {
     }
   }
 
+  Future<void> _showLightDesigner(SmartDevice device) async {
+    final type = device.type.toLowerCase().trim();
+    final isRgbw = type.contains('rgbw');
+    final initial = HSVColor.fromColor(isRgbw ? const Color(0xFFFFF4D6) : const Color(0xFFFF7A30));
+    var hue = initial.hue;
+    var saturation = initial.saturation;
+    var value = initial.value;
+    var brightness = 100.0;
+    var whiteLevel = isRgbw ? 70.0 : 0.0;
+    var colorTemp = 0.0;
+
+    await showDialog<void>(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final preview = HSVColor.fromAHSV(1, hue, saturation, value).toColor();
+          return AlertDialog(
+            title: Text('Light Control: ${device.name}'),
+            content: SizedBox(
+              width: 420,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      height: 64,
+                      decoration: BoxDecoration(
+                        color: preview,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: Colors.black12),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text('Hue ${hue.round()}'),
+                    Slider(
+                      value: hue,
+                      min: 0,
+                      max: 360,
+                      onChanged: (v) => setDialogState(() => hue = v),
+                    ),
+                    Text('Saturation ${(saturation * 100).round()}%'),
+                    Slider(
+                      value: saturation,
+                      min: 0,
+                      max: 1,
+                      onChanged: (v) => setDialogState(() => saturation = v),
+                    ),
+                    Text('Colour Brightness ${(value * 100).round()}%'),
+                    Slider(
+                      value: value,
+                      min: 0.1,
+                      max: 1,
+                      onChanged: (v) => setDialogState(() => value = v),
+                    ),
+                    Text('Output Brightness ${brightness.round()}%'),
+                    Slider(
+                      value: brightness,
+                      min: 1,
+                      max: 100,
+                      onChanged: (v) => setDialogState(() => brightness = v),
+                    ),
+                    if (isRgbw) ...[
+                      Text('White ${whiteLevel.round()}%'),
+                      Slider(
+                        value: whiteLevel,
+                        min: 0,
+                        max: 100,
+                        onChanged: (v) => setDialogState(() => whiteLevel = v),
+                      ),
+                      Text('White Temp ${colorTemp.round()}%'),
+                      Slider(
+                        value: colorTemp,
+                        min: 0,
+                        max: 100,
+                        onChanged: (v) => setDialogState(() => colorTemp = v),
+                      ),
+                    ],
+                    const SizedBox(height: 8),
+                    const Text('Scenes / Effects', style: TextStyle(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: _lightScenes
+                          .map(
+                            (scene) => FilledButton.tonal(
+                              onPressed: () async {
+                                await _sendLightCommand(
+                                  device,
+                                  channel: 'scene',
+                                  state: 'scene',
+                                  payload: {'scene': scene['id']},
+                                );
+                                if (mounted && context.mounted) Navigator.of(context).pop();
+                              },
+                              child: Text(scene['label']!),
+                            ),
+                          )
+                          .toList(growable: false),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+              if (isRgbw)
+                OutlinedButton(
+                  onPressed: () async {
+                    await _sendLightCommand(
+                      device,
+                      channel: 'rgbw',
+                      state: 'set',
+                      payload: {
+                        'mode': 'white',
+                        'white': whiteLevel.round(),
+                        'color_temp': colorTemp.round(),
+                      },
+                    );
+                    if (mounted && context.mounted) Navigator.of(context).pop();
+                  },
+                  child: const Text('Apply White'),
+                ),
+              FilledButton(
+                onPressed: () async {
+                  final rgb = HSVColor.fromAHSV(1, hue, saturation, value).toColor();
+                  await _sendLightCommand(
+                    device,
+                    channel: isRgbw ? 'rgbw' : 'rgb',
+                    state: 'set',
+                    payload: {
+                      'r': rgb.red,
+                      'g': rgb.green,
+                      'b': rgb.blue,
+                      'w': isRgbw ? whiteLevel.round() : 0,
+                      'brightness': brightness.round(),
+                    },
+                  );
+                  if (mounted && context.mounted) Navigator.of(context).pop();
+                },
+                child: const Text('Apply Colour'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   Widget _buildDeviceStatusStrip(SmartDevice device) {
     final online = _deviceOnline(device);
     final ip = _deviceIp(device);
@@ -1204,6 +1360,31 @@ class _DevicesScreenState extends State<DevicesScreen> {
               ],
             ),
           ),
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              FilledButton.tonalIcon(
+                onPressed: () => _showLightDesigner(device),
+                icon: const Icon(Icons.palette_outlined),
+                label: const Text('Colour / Scenes'),
+              ),
+              ..._lightScenes.map(
+                (scene) => OutlinedButton(
+                  onPressed: () => _sendLightCommand(
+                    device,
+                    channel: 'scene',
+                    state: 'scene',
+                    payload: {'scene': scene['id']},
+                  ),
+                  child: Text(scene['label']!),
+                ),
+              ),
+            ],
+          ),
+        ),
       ],
     );
   }

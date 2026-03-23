@@ -46,6 +46,12 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     'camera': Icons.videocam,
     'security': Icons.security,
   };
+  static const List<Map<String, String>> _lightScenes = <Map<String, String>>[
+    {'id': '1', 'label': 'Relax'},
+    {'id': '2', 'label': 'Focus'},
+    {'id': '3', 'label': 'Party'},
+    {'id': '4', 'label': 'Night'},
+  ];
 
   String _friendlyError(Object error) {
     final text = error.toString();
@@ -242,6 +248,135 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       payload: payload,
     );
     await _load();
+  }
+
+  Future<void> _showLightDesigner({
+    required String refId,
+    required bool cloudMode,
+    required String label,
+    required bool isRgbw,
+  }) async {
+    final initial = HSVColor.fromColor(isRgbw ? const Color(0xFFFFF4D6) : const Color(0xFFFF7A30));
+    var hue = initial.hue;
+    var saturation = initial.saturation;
+    var value = initial.value;
+    var brightness = 100.0;
+    var whiteLevel = isRgbw ? 70.0 : 0.0;
+    var colorTemp = 0.0;
+
+    await showDialog<void>(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final preview = HSVColor.fromAHSV(1, hue, saturation, value).toColor();
+          return AlertDialog(
+            title: Text('Light Control: $label'),
+            content: SizedBox(
+              width: 420,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      height: 64,
+                      decoration: BoxDecoration(
+                        color: preview,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: Colors.black12),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text('Hue ${hue.round()}'),
+                    Slider(value: hue, min: 0, max: 360, onChanged: (v) => setDialogState(() => hue = v)),
+                    Text('Saturation ${(saturation * 100).round()}%'),
+                    Slider(value: saturation, min: 0, max: 1, onChanged: (v) => setDialogState(() => saturation = v)),
+                    Text('Colour Brightness ${(value * 100).round()}%'),
+                    Slider(value: value, min: 0.1, max: 1, onChanged: (v) => setDialogState(() => value = v)),
+                    Text('Output Brightness ${brightness.round()}%'),
+                    Slider(value: brightness, min: 1, max: 100, onChanged: (v) => setDialogState(() => brightness = v)),
+                    if (isRgbw) ...[
+                      Text('White ${whiteLevel.round()}%'),
+                      Slider(value: whiteLevel, min: 0, max: 100, onChanged: (v) => setDialogState(() => whiteLevel = v)),
+                      Text('White Temp ${colorTemp.round()}%'),
+                      Slider(value: colorTemp, min: 0, max: 100, onChanged: (v) => setDialogState(() => colorTemp = v)),
+                    ],
+                    const SizedBox(height: 8),
+                    const Text('Scenes / Effects', style: TextStyle(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: _lightScenes
+                          .map(
+                            (scene) => FilledButton.tonal(
+                              onPressed: () async {
+                                await _sendLightPreset(
+                                  refId,
+                                  cloudMode: cloudMode,
+                                  label: label,
+                                  channel: 'scene',
+                                  state: 'scene',
+                                  payload: {'scene': scene['id']},
+                                );
+                                if (mounted && context.mounted) Navigator.of(context).pop();
+                              },
+                              child: Text(scene['label']!),
+                            ),
+                          )
+                          .toList(growable: false),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+              if (isRgbw)
+                OutlinedButton(
+                  onPressed: () async {
+                    await _sendLightPreset(
+                      refId,
+                      cloudMode: cloudMode,
+                      label: label,
+                      channel: 'rgbw',
+                      state: 'set',
+                      payload: {
+                        'mode': 'white',
+                        'white': whiteLevel.round(),
+                        'color_temp': colorTemp.round(),
+                      },
+                    );
+                    if (mounted && context.mounted) Navigator.of(context).pop();
+                  },
+                  child: const Text('Apply White'),
+                ),
+              FilledButton(
+                onPressed: () async {
+                  final rgb = HSVColor.fromAHSV(1, hue, saturation, value).toColor();
+                  await _sendLightPreset(
+                    refId,
+                    cloudMode: cloudMode,
+                    label: label,
+                    channel: isRgbw ? 'rgbw' : 'rgb',
+                    state: 'set',
+                    payload: {
+                      'r': rgb.red,
+                      'g': rgb.green,
+                      'b': rgb.blue,
+                      'w': isRgbw ? whiteLevel.round() : 0,
+                      'brightness': brightness.round(),
+                    },
+                  );
+                  if (mounted && context.mounted) Navigator.of(context).pop();
+                },
+                child: const Text('Apply Colour'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   Future<bool> _confirmCloudWarning(String label) async {
@@ -857,6 +992,11 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                       const Text('Touch hold or right-click on the card to open this menu again.'),
                     ],
                     if (panel == 'light') ...[
+                      ...() {
+                        final type = (data['type'] ?? data['device_type'] ?? '').toString().toLowerCase();
+                        final tileChannel = (payload['channel'] ?? '').toString().toLowerCase();
+                        final isRgbw = type.contains('rgbw') || tileChannel == 'rgbw';
+                        return <Widget>[
                       const Text('Light Quick Controls'),
                       const SizedBox(height: 10),
                       Wrap(
@@ -905,35 +1045,64 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                           FilledButton.tonal(
                             onPressed: refId.isEmpty
                                 ? null
-                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: 'rgb', payload: {'r': 100, 'g': 76, 'b': 20, 'w': 0}),
+                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: isRgbw ? 'rgbw' : 'rgb', payload: {'r': 100, 'g': 76, 'b': 20, 'w': 0}),
                             child: const Text('Warm'),
                           ),
                           FilledButton.tonal(
                             onPressed: refId.isEmpty
                                 ? null
-                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: 'rgb', payload: {'r': 40, 'g': 65, 'b': 100, 'w': 0}),
+                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: isRgbw ? 'rgbw' : 'rgb', payload: {'r': 40, 'g': 65, 'b': 100, 'w': 0}),
                             child: const Text('Cool'),
                           ),
                           FilledButton.tonal(
                             onPressed: refId.isEmpty
                                 ? null
-                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: 'rgb', payload: {'r': 100, 'g': 0, 'b': 0, 'w': 0}),
+                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: isRgbw ? 'rgbw' : 'rgb', payload: {'r': 100, 'g': 0, 'b': 0, 'w': 0}),
                             child: const Text('Red'),
                           ),
                           FilledButton.tonal(
                             onPressed: refId.isEmpty
                                 ? null
-                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: 'rgb', payload: {'r': 0, 'g': 0, 'b': 100, 'w': 0}),
+                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: isRgbw ? 'rgbw' : 'rgb', payload: {'r': 0, 'g': 0, 'b': 100, 'w': 0}),
                             child: const Text('Blue'),
                           ),
                           FilledButton.tonal(
                             onPressed: refId.isEmpty
                                 ? null
-                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: 'rgb', payload: {'r': 100, 'g': 100, 'b': 100, 'w': 0}),
+                                : () => _sendLightPreset(refId, cloudMode: cloudMode, label: deviceLabel, channel: isRgbw ? 'rgbw' : 'rgb', payload: {'r': 100, 'g': 100, 'b': 100, 'w': 0}),
                             child: const Text('Bright'),
+                          ),
+                          ..._lightScenes.map(
+                            (scene) => FilledButton.tonal(
+                              onPressed: refId.isEmpty
+                                  ? null
+                                  : () => _sendLightPreset(
+                                        refId,
+                                        cloudMode: cloudMode,
+                                        label: deviceLabel,
+                                        channel: 'scene',
+                                        state: 'scene',
+                                        payload: {'scene': scene['id']},
+                                      ),
+                              child: Text(scene['label']!),
+                            ),
+                          ),
+                          FilledButton.icon(
+                            onPressed: refId.isEmpty
+                                ? null
+                                : () => _showLightDesigner(
+                                      refId: refId,
+                                      cloudMode: cloudMode,
+                                      label: deviceLabel,
+                                      isRgbw: isRgbw,
+                                    ),
+                            icon: const Icon(Icons.palette_outlined),
+                            label: const Text('Colour / Scenes'),
                           ),
                         ],
                       ),
+                        ];
+                      }(),
                     ],
                     if (panel == 'automation') ...[
                       SwitchListTile(

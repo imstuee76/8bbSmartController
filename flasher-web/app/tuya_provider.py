@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import colorsys
 from typing import Any
 
 from .security import decrypt_secret
@@ -107,6 +108,87 @@ def _brightness_dp_from_dps(dps: dict[str, Any]) -> str | int | None:
                 return int(key)
             except Exception:
                 return key
+    return None
+
+
+def _clamp_pct(value: Any, fallback: int = 100) -> int:
+    try:
+        out = int(float(value))
+    except Exception:
+        return fallback
+    return max(0, min(100, out))
+
+
+def _rgb_component(value: Any) -> int:
+    try:
+        numeric = float(value)
+    except Exception:
+        return 0
+    if numeric <= 1:
+        numeric *= 255
+    elif numeric <= 100:
+        numeric = numeric * 2.55
+    return max(0, min(255, int(round(numeric))))
+
+
+def _rgb_payload(payload: dict[str, Any]) -> tuple[int, int, int] | None:
+    if not isinstance(payload, dict):
+        return None
+    if not any(key in payload for key in ("r", "g", "b")):
+        return None
+    return (
+        _rgb_component(payload.get("r", 0)),
+        _rgb_component(payload.get("g", 0)),
+        _rgb_component(payload.get("b", 0)),
+    )
+
+
+def _rgb_to_tuya_hsv_json(r: int, g: int, b: int, brightness_pct: int | None = None) -> str:
+    r_f, g_f, b_f = (max(0, min(255, c)) / 255.0 for c in (r, g, b))
+    h, s, v = colorsys.rgb_to_hsv(r_f, g_f, b_f)
+    out_v = int(round(v * 1000))
+    if brightness_pct is not None:
+        out_v = max(0, min(1000, int(round(max(0, min(100, brightness_pct)) * 10))))
+    return '{{"h":{h},"s":{s},"v":{v}}}'.format(
+        h=max(0, min(360, int(round(h * 360)))),
+        s=max(0, min(1000, int(round(s * 1000)))),
+        v=max(0, min(1000, out_v)),
+    )
+
+
+def _pick_cloud_color_code(cloud_values: dict[str, Any], functions: list[dict[str, Any]]) -> str | None:
+    candidates = ["colour_data_v2", "colour_data", "color_data_v2", "color_data"]
+    for c in candidates:
+        if c in cloud_values:
+            return c
+    fn_codes = {str(f.get("code", "")).strip() for f in functions}
+    for c in candidates:
+        if c in fn_codes:
+            return c
+    return None
+
+
+def _pick_cloud_mode_code(cloud_values: dict[str, Any], functions: list[dict[str, Any]]) -> str | None:
+    candidates = ["work_mode", "work_mode_1", "light_mode"]
+    for c in candidates:
+        if c in cloud_values:
+            return c
+    fn_codes = {str(f.get("code", "")).strip() for f in functions}
+    for c in candidates:
+        if c in fn_codes:
+            return c
+    return None
+
+
+def _pick_cloud_scene_code(cloud_values: dict[str, Any], functions: list[dict[str, Any]]) -> str | None:
+    candidates = ["scene_data_v2", "scene_data"]
+    for c in candidates:
+        if c in cloud_values:
+            return c
+    fn_codes = {str(f.get("code", "")).strip() for f in functions}
+    for c in candidates:
+        if c in fn_codes:
+            return c
     return None
 
 
@@ -455,6 +537,11 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
     channel = str(command.get("channel", "")).strip().lower()
     payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
     value = command.get("value")
+    brightness_value = value if value is not None else payload.get("brightness")
+    rgb = _rgb_payload(payload)
+    requested_scene = payload.get("scene", payload.get("effect"))
+    requested_mode = str(payload.get("mode", "")).strip().lower()
+    light_channel = channel in ("light", "rgb", "rgbw", "dimmer", "brightness", "scene", "effect") or _is_light_device(metadata)
 
     # Local path first for local/dual devices.
     local_error = ""
@@ -494,7 +581,42 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
                         if not dps and _is_light_device(metadata):
                             onoff_dp = _default_onoff_dp(metadata)
 
-                    if state in ("on", "off", "toggle"):
+                    if light_channel:
+                        bulb, local_id, ip, version = _local_bulb_device(
+                            metadata,
+                            version_override=version_candidate,
+                            socket_timeout=0.9,
+                            retry_limit=0,
+                        )
+                        if state in ("on", "off"):
+                            raw = bulb.turn_on() if state == "on" else bulb.turn_off()
+                        elif state in ("scene", "effect") or requested_scene is not None:
+                            scene_value = requested_scene if requested_scene is not None else payload.get("value", "1")
+                            raw = bulb.set_mode("scene")
+                            scene_raw = bulb.set_scene(scene_value)
+                            if scene_raw is not None:
+                                raw = scene_raw
+                        elif state == "set" and rgb is not None:
+                            raw = bulb.set_mode("colour")
+                            colour_raw = bulb.set_colour(*rgb)
+                            if colour_raw is not None:
+                                raw = colour_raw
+                            if brightness_value is not None:
+                                bright_raw = bulb.set_brightness_percentage(_clamp_pct(brightness_value, fallback=100))
+                                if bright_raw is not None:
+                                    raw = bright_raw
+                        elif state == "set" and (requested_mode == "white" or payload.get("white") is not None):
+                            white_level = _clamp_pct(payload.get("white", brightness_value), fallback=100)
+                            color_temp = _clamp_pct(payload.get("color_temp", payload.get("colour_temp", 0)), fallback=0)
+                            raw = bulb.set_mode("white")
+                            white_raw = bulb.set_white_percentage(white_level, color_temp)
+                            if white_raw is not None:
+                                raw = white_raw
+                        elif state == "set" and brightness_value is not None:
+                            raw = bulb.set_brightness_percentage(_clamp_pct(brightness_value, fallback=100))
+                        else:
+                            raise ValueError(f"Unsupported Tuya local light state '{state}'")
+                    elif state in ("on", "off", "toggle"):
                         target = state == "on"
                         if state == "toggle":
                             target = not bool(dps.get(str(onoff_dp)))
@@ -503,7 +625,6 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
                         raw = dev.set_multiple_values(payload.get("dps", {}))
                     else:
                         brightness_dp = _brightness_dp_from_dps(dps)
-                        brightness_value = value if value is not None else payload.get("brightness")
                         if state == "set" and brightness_dp is not None and brightness_value is not None:
                             target = int(brightness_value)
                             current = dps.get(str(brightness_dp))
@@ -567,6 +688,36 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
     commands: list[dict[str, Any]] = []
     if isinstance(payload.get("commands"), list):
         commands = [c for c in payload.get("commands", []) if isinstance(c, dict)]
+    elif light_channel and (state in ("scene", "effect") or requested_scene is not None):
+        mode_code = _pick_cloud_mode_code(status_values, functions)
+        scene_code = _pick_cloud_scene_code(status_values, functions)
+        scene_value = str(requested_scene if requested_scene is not None else "1")
+        if mode_code:
+            commands.append({"code": mode_code, "value": "scene"})
+        if scene_code:
+            commands.append({"code": scene_code, "value": scene_value})
+    elif light_channel and state == "set" and rgb is not None:
+        mode_code = _pick_cloud_mode_code(status_values, functions)
+        color_code = _pick_cloud_color_code(status_values, functions)
+        if mode_code:
+            commands.append({"code": mode_code, "value": "colour"})
+        if color_code:
+            commands.append({"code": color_code, "value": _rgb_to_tuya_hsv_json(*rgb, brightness_pct=_clamp_pct(brightness_value, fallback=100) if brightness_value is not None else None)})
+        elif brightness_value is not None:
+            brightness_code = _pick_cloud_brightness_code(status_values, functions)
+            if brightness_code is not None:
+                commands.append({"code": brightness_code, "value": int(brightness_value)})
+    elif light_channel and state == "set" and (requested_mode == "white" or payload.get("white") is not None):
+        mode_code = _pick_cloud_mode_code(status_values, functions)
+        brightness_code = _pick_cloud_brightness_code(status_values, functions)
+        if mode_code:
+            commands.append({"code": mode_code, "value": "white"})
+        if brightness_code is not None:
+            commands.append({"code": brightness_code, "value": _clamp_pct(payload.get("white", brightness_value), fallback=100)})
+    elif light_channel and state == "set" and brightness_value is not None:
+        brightness_code = _pick_cloud_brightness_code(status_values, functions)
+        if brightness_code is not None:
+            commands.append({"code": brightness_code, "value": _clamp_pct(brightness_value, fallback=100)})
     elif state in ("on", "off", "toggle"):
         power_code = _resolve_cloud_power_code(channel, status_values, functions)
         if not power_code:
@@ -580,7 +731,6 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
             commands = [{"code": payload.get("code"), "value": payload.get("value")}]
         else:
             brightness_code = _pick_cloud_brightness_code(status_values, functions)
-            brightness_value = value if value is not None else payload.get("brightness")
             if brightness_code is not None and brightness_value is not None:
                 commands = [{"code": brightness_code, "value": int(brightness_value)}]
 
