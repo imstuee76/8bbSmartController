@@ -82,14 +82,31 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
   Future<void> _load({bool initial = false}) async {
     if (!mounted) return;
+    final showInitialLoader = initial && _tiles.isEmpty;
     setState(() {
-      if (initial || _tiles.isEmpty) {
+      if (showInitialLoader) {
         _loading = true;
       } else {
         _refreshing = true;
       }
       _error = null;
     });
+
+    if (showInitialLoader) {
+      try {
+        final shellTiles = await widget.api.fetchTiles();
+        if (!mounted) return;
+        setState(() {
+          _tiles = shellTiles.map(_shellTileToDisplayTile).toList(growable: false);
+          _loading = false;
+          _refreshing = true;
+          _lastLoadedAt = DateTime.now();
+        });
+      } catch (_) {
+        // Keep the loader visible and let the full tile-data request report the error.
+      }
+    }
+
     try {
       final tiles = await widget.api.fetchTileData();
       if (!mounted) return;
@@ -114,6 +131,49 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   Future<void> _runSpotifyAction(String action) async {
     await widget.api.spotifyAction(action);
     await _load();
+  }
+
+  Map<String, dynamic> _shellTileToDisplayTile(MainTile tile) {
+    final payload = Map<String, dynamic>.from(tile.payload);
+    final tileType = tile.tileType;
+    final fallbackType = tileType == 'device'
+        ? ((payload['device_type'] ?? payload['type'] ?? '').toString().trim())
+        : tileType == 'group'
+            ? ((payload['group_kind'] ?? 'switch').toString().trim())
+            : tileType;
+    final channelKey = (payload['channel'] ?? 'relay1').toString().trim();
+    final placeholderOutputs = <String, dynamic>{};
+    if (tileType == 'device') {
+      placeholderOutputs[channelKey] = null;
+      if (channelKey == 'light' || channelKey == 'power') {
+        placeholderOutputs['power'] = null;
+        placeholderOutputs['light'] = null;
+      }
+    }
+    return <String, dynamic>{
+      'id': tile.id,
+      'tile_type': tile.tileType,
+      'ref_id': tile.refId ?? '',
+      'label': tile.label,
+      'payload': payload,
+      'data': <String, dynamic>{
+        'type': fallbackType,
+        'device_type': fallbackType,
+        'mode': (payload['mode'] ?? 'local_lan').toString(),
+        'provider': (payload['provider'] ?? '').toString(),
+        'ip': (payload['ip'] ?? payload['host'] ?? '').toString(),
+        'host': (payload['host'] ?? '').toString(),
+        if (tileType == 'device') 'outputs': placeholderOutputs,
+        if (tileType == 'group')
+          'member_count': (payload['members'] as List<dynamic>?)?.length ?? 0,
+        if (tileType == 'group')
+          'members': payload['members'] ?? const <dynamic>[],
+        if (tileType == 'group')
+          'group_kind': (payload['group_kind'] ?? 'switch').toString(),
+        if (tileType == 'group') 'group_state': 'unknown',
+      },
+      'error': null,
+    };
   }
 
   String _deviceDisplayName(Map<String, dynamic> tile) {
@@ -1420,7 +1480,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     if (_loading) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null) {
+    if (_error != null && _tiles.isEmpty) {
       return Center(child: Text('Error: $_error'));
     }
     if (_tiles.isEmpty) {
@@ -1465,6 +1525,31 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           const Align(
             alignment: Alignment.topCenter,
             child: LinearProgressIndicator(minHeight: 3),
+          ),
+        if (_error != null && _tiles.isNotEmpty)
+          Positioned(
+            top: 10,
+            left: 12,
+            right: 12,
+            child: IgnorePointer(
+              child: Material(
+                color: Colors.transparent,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF3E0),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFFFCC80)),
+                  ),
+                  child: Text(
+                    'Live refresh warning: $_error',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Color(0xFF8A4B00), fontSize: 12),
+                  ),
+                ),
+              ),
+            ),
           ),
       ],
     );

@@ -2,12 +2,14 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
+import '../models/config_models.dart';
 import '../models/device_models.dart';
 import '../services/api_service.dart';
 import '../services/local_store.dart';
 
 enum _DeviceSection { esp32, tuya, moes }
 enum _TuyaScanFilter { all, localOnly, cloudOnly }
+enum _DeviceSort { group, alphaAsc, alphaDesc, connected, ipAsc }
 
 class DevicesScreen extends StatefulWidget {
   const DevicesScreen({super.key, required this.api, required this.store});
@@ -34,13 +36,26 @@ class _QuickChannel {
 }
 
 class _DevicesScreenState extends State<DevicesScreen> {
+  static const List<String> _groupColorChoices = <String>[
+    '#2E7D32',
+    '#1565C0',
+    '#6A1B9A',
+    '#EF6C00',
+    '#C62828',
+    '#00838F',
+    '#455A64',
+    '#5D4037',
+  ];
+
   bool _loading = true;
   bool _scanning = false;
   _DeviceSection _activeSection = _DeviceSection.esp32;
   _TuyaScanFilter _tuyaScanFilter = _TuyaScanFilter.all;
+  _DeviceSort _deviceSort = _DeviceSort.group;
   String? _error;
   List<SmartDevice> _devices = [];
   List<Map<String, dynamic>> _scanResults = [];
+  List<GroupConfig> _groups = <GroupConfig>[];
   final Map<String, Map<String, dynamic>> _deviceStatusCache = <String, Map<String, dynamic>>{};
   final Set<String> _statusLoading = <String>{};
   final Set<String> _channelCommandBusy = <String>{};
@@ -81,10 +96,16 @@ class _DevicesScreenState extends State<DevicesScreen> {
       _error = null;
     });
     try {
-      _devices = await widget.api.fetchDevices();
+      final results = await Future.wait<dynamic>([
+        widget.api.fetchDevices(),
+        widget.api.fetchDisplayConfig(),
+      ]);
+      _devices = (results[0] as List<SmartDevice>);
+      _groups = (results[1] as DisplayConfig).groups;
       _error = null;
     } catch (e) {
       _devices = <SmartDevice>[];
+      _groups = <GroupConfig>[];
       _error = _friendlyError(e);
       _statusOutput = _error!;
     } finally {
@@ -566,8 +587,117 @@ class _DevicesScreenState extends State<DevicesScreen> {
     return _sectionFromScanProvider(provider) == _activeSection;
   }
 
+  String _groupIdOf(SmartDevice device) => (device.metadata['group_id'] ?? '').toString().trim();
+
+  String _groupNameOf(SmartDevice device) {
+    final metadataName = (device.metadata['group_name'] ?? '').toString().trim();
+    if (metadataName.isNotEmpty) return metadataName;
+    final id = _groupIdOf(device);
+    for (final group in _groups) {
+      if (group.id == id) return group.name;
+    }
+    return '';
+  }
+
+  String _groupColorOf(SmartDevice device) {
+    final metadataColor = (device.metadata['group_color'] ?? '').toString().trim();
+    if (metadataColor.isNotEmpty) return metadataColor;
+    final id = _groupIdOf(device);
+    for (final group in _groups) {
+      if (group.id == id) return group.color;
+    }
+    return '';
+  }
+
+  Color _colorFromHex(String raw, {Color fallback = const Color(0xFF4CAF50)}) {
+    var value = raw.trim().replaceAll('#', '');
+    if (value.isEmpty) return fallback;
+    if (value.length == 6) value = 'FF$value';
+    if (value.length != 8) return fallback;
+    final parsed = int.tryParse(value, radix: 16);
+    if (parsed == null) return fallback;
+    return Color(parsed);
+  }
+
+  bool _deviceOnline(SmartDevice device) {
+    if (_deviceStatusCache.containsKey(device.id)) return true;
+    final lastSeen = (device.lastSeenAt ?? '').trim();
+    return lastSeen.isNotEmpty;
+  }
+
+  String _deviceIp(SmartDevice device) {
+    final status = _deviceStatusCache[device.id];
+    final network = (status?['network'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    final staIp = (network['sta_ip'] ?? '').toString().trim();
+    if (staIp.isNotEmpty) return staIp;
+    final ip = (status?['ip'] ?? device.metadata['tuya_ip'] ?? device.host ?? '').toString().trim();
+    return ip;
+  }
+
+  String _devicePowerSummary(SmartDevice device) {
+    final status = _deviceStatusCache[device.id];
+    final outputs = (status?['outputs'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    final light = _asBoolState(outputs['light']);
+    final power = _asBoolState(outputs['power']);
+    if (light != null) return light ? 'On' : 'Off';
+    if (power != null) return power ? 'On' : 'Off';
+    final channels = _inferQuickChannels(device);
+    final onCount = channels.where((channel) => channel.state == true).length;
+    final offCount = channels.where((channel) => channel.state == false).length;
+    if (onCount > 0 && offCount == 0) return 'On';
+    if (offCount > 0 && onCount == 0) return 'Off';
+    if (onCount > 0 || offCount > 0) return 'Mixed';
+    return 'Unknown';
+  }
+
+  String _deviceSortLabel(_DeviceSort sort) {
+    switch (sort) {
+      case _DeviceSort.group:
+        return 'Group';
+      case _DeviceSort.alphaAsc:
+        return 'A-Z';
+      case _DeviceSort.alphaDesc:
+        return 'Z-A';
+      case _DeviceSort.connected:
+        return 'Connected';
+      case _DeviceSort.ipAsc:
+        return 'IP';
+    }
+  }
+
+  int _compareIpStrings(String a, String b) {
+    final aa = a.split('.').map((part) => int.tryParse(part) ?? -1).toList(growable: false);
+    final bb = b.split('.').map((part) => int.tryParse(part) ?? -1).toList(growable: false);
+    for (var i = 0; i < 4; i += 1) {
+      final av = i < aa.length ? aa[i] : -1;
+      final bv = i < bb.length ? bb[i] : -1;
+      final cmp = av.compareTo(bv);
+      if (cmp != 0) return cmp;
+    }
+    return a.compareTo(b);
+  }
+
   List<SmartDevice> _visibleDevices() {
-    return _devices.where((d) => _matchesSection(d, _activeSection)).toList(growable: false);
+    final items = _devices.where((d) => _matchesSection(d, _activeSection)).toList(growable: false);
+    items.sort((a, b) {
+      switch (_deviceSort) {
+        case _DeviceSort.group:
+          final groupCmp = _groupNameOf(a).toLowerCase().compareTo(_groupNameOf(b).toLowerCase());
+          if (groupCmp != 0) return groupCmp;
+          return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+        case _DeviceSort.alphaAsc:
+          return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+        case _DeviceSort.alphaDesc:
+          return b.name.toLowerCase().compareTo(a.name.toLowerCase());
+        case _DeviceSort.connected:
+          final onlineCmp = (_deviceOnline(b) ? 1 : 0).compareTo(_deviceOnline(a) ? 1 : 0);
+          if (onlineCmp != 0) return onlineCmp;
+          return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+        case _DeviceSort.ipAsc:
+          return _compareIpStrings(_deviceIp(a), _deviceIp(b));
+      }
+    });
+    return items;
   }
 
   int _suffixNumber(String key) {
@@ -884,6 +1014,193 @@ class _DevicesScreenState extends State<DevicesScreen> {
     }
   }
 
+  bool _isLightDevice(SmartDevice device) {
+    final type = device.type.toLowerCase().trim();
+    return type.contains('light') || type.contains('rgb');
+  }
+
+  Future<void> _sendLightCommand(
+    SmartDevice device, {
+    required String channel,
+    required String state,
+    int? value,
+    Map<String, dynamic>? payload,
+  }) async {
+    if (_isCloudMode(device)) {
+      final ok = await _confirmCloudUse('Controlling this light', device);
+      if (!ok) return;
+    }
+    try {
+      await widget.api.sendDeviceCommand(
+        deviceId: device.id,
+        channel: channel,
+        state: state,
+        value: value,
+        payload: payload,
+      );
+      if (!mounted) return;
+      await _loadDeviceStatus(device, showOutput: false);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    }
+  }
+
+  Widget _buildDeviceStatusStrip(SmartDevice device) {
+    final online = _deviceOnline(device);
+    final ip = _deviceIp(device);
+    final power = _devicePowerSummary(device);
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 8, bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.blueGrey.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Wrap(
+        spacing: 12,
+        runSpacing: 6,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(online ? Icons.check_circle : Icons.cloud_off, size: 18, color: online ? Colors.green : Colors.redAccent),
+              const SizedBox(width: 6),
+              Text('Device ${online ? 'online' : 'unknown'}'),
+            ],
+          ),
+          Text('IP: ${ip.isEmpty ? '(not set)' : ip}'),
+          Text('Power: $power'),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLightControls(SmartDevice device) {
+    if (!_isLightDevice(device)) return const SizedBox.shrink();
+    final type = device.type.toLowerCase().trim();
+    final isRgbw = type.contains('rgbw');
+    final isRgb = type.contains('rgb');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(top: 8, bottom: 4),
+          child: Text('Light Controls', style: TextStyle(fontWeight: FontWeight.w600)),
+        ),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            FilledButton(
+              onPressed: () => _sendLightCommand(device, channel: 'light', state: 'on'),
+              child: const Text('Light ON'),
+            ),
+            OutlinedButton(
+              onPressed: () => _sendLightCommand(device, channel: 'light', state: 'off'),
+              child: const Text('Light OFF'),
+            ),
+            OutlinedButton(
+              onPressed: () => _sendLightCommand(
+                device,
+                channel: type.contains('dimmer') ? 'dimmer' : 'light',
+                state: 'set',
+                value: 25,
+              ),
+              child: const Text('25%'),
+            ),
+            OutlinedButton(
+              onPressed: () => _sendLightCommand(
+                device,
+                channel: type.contains('dimmer') ? 'dimmer' : 'light',
+                state: 'set',
+                value: 50,
+              ),
+              child: const Text('50%'),
+            ),
+            OutlinedButton(
+              onPressed: () => _sendLightCommand(
+                device,
+                channel: type.contains('dimmer') ? 'dimmer' : 'light',
+                state: 'set',
+                value: 100,
+              ),
+              child: const Text('100%'),
+            ),
+          ],
+        ),
+        if (isRgb)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.tonal(
+                  onPressed: () => _sendLightCommand(
+                    device,
+                    channel: isRgbw ? 'rgbw' : 'rgb',
+                    state: 'set',
+                    payload: {
+                      'r': 100,
+                      'g': 0,
+                      'b': 0,
+                      'w': 0,
+                    },
+                  ),
+                  child: const Text('Red'),
+                ),
+                FilledButton.tonal(
+                  onPressed: () => _sendLightCommand(
+                    device,
+                    channel: isRgbw ? 'rgbw' : 'rgb',
+                    state: 'set',
+                    payload: {
+                      'r': 0,
+                      'g': 100,
+                      'b': 0,
+                      'w': 0,
+                    },
+                  ),
+                  child: const Text('Green'),
+                ),
+                FilledButton.tonal(
+                  onPressed: () => _sendLightCommand(
+                    device,
+                    channel: isRgbw ? 'rgbw' : 'rgb',
+                    state: 'set',
+                    payload: {
+                      'r': 0,
+                      'g': 0,
+                      'b': 100,
+                      'w': 0,
+                    },
+                  ),
+                  child: const Text('Blue'),
+                ),
+                if (isRgbw)
+                  FilledButton.tonal(
+                    onPressed: () => _sendLightCommand(
+                      device,
+                      channel: 'rgbw',
+                      state: 'set',
+                      payload: {
+                        'r': 0,
+                        'g': 0,
+                        'b': 0,
+                        'w': 100,
+                      },
+                    ),
+                    child: const Text('White'),
+                  ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
   Future<void> _addChannelToMain(SmartDevice device, _QuickChannel channel) async {
     if (_isCloudMode(device)) {
       final ok = await _confirmCloudUse('Adding this channel to Main', device);
@@ -1095,6 +1412,169 @@ class _DevicesScreenState extends State<DevicesScreen> {
         );
       },
     );
+  }
+
+  Future<void> _saveGroupsConfig() async {
+    final current = await widget.api.fetchDisplayConfig();
+    current.groups = _groups;
+    await widget.api.saveDisplayConfig(current);
+  }
+
+  String _slugId(String raw) {
+    final cleaned = raw
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+    return cleaned.isEmpty ? 'group_${DateTime.now().millisecondsSinceEpoch}' : cleaned;
+  }
+
+  Future<GroupConfig?> _openGroupEditor({GroupConfig? existing, String initialName = ''}) async {
+    final nameCtl = TextEditingController(text: existing?.name ?? initialName);
+    var selectedColor = (existing?.color.isNotEmpty ?? false) ? existing!.color : _groupColorChoices.first;
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(existing == null ? 'New Group' : 'Edit Group'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: nameCtl,
+                  decoration: const InputDecoration(labelText: 'Group name'),
+                ),
+                const SizedBox(height: 12),
+                const Text('Group colour'),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: _groupColorChoices.map((hex) {
+                    final color = _colorFromHex(hex);
+                    final selected = hex == selectedColor;
+                    return InkWell(
+                      onTap: () => setDialogState(() => selectedColor = hex),
+                      borderRadius: BorderRadius.circular(22),
+                      child: Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(
+                          color: color,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: selected ? Colors.white : Colors.black26,
+                            width: selected ? 3 : 1,
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(growable: false),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save')),
+          ],
+        ),
+      ),
+    );
+    if (saved != true) return null;
+    final name = nameCtl.text.trim();
+    if (name.isEmpty) return null;
+    return GroupConfig(
+      id: existing?.id.isNotEmpty == true ? existing!.id : _slugId(name),
+      name: name,
+      color: selectedColor,
+    );
+  }
+
+  Future<GroupConfig?> _ensureGroupFromPrompt({String initialName = ''}) async {
+    final created = await _openGroupEditor(initialName: initialName);
+    if (created == null) return null;
+    final next = <GroupConfig>[
+      ..._groups.where((group) => group.id != created.id),
+      created,
+    ];
+    setState(() {
+      _groups = next;
+    });
+    await _saveGroupsConfig();
+    return created;
+  }
+
+  Future<void> _assignDeviceToGroup(SmartDevice device, GroupConfig? group) async {
+    final metadata = Map<String, dynamic>.from(device.metadata);
+    if (group == null) {
+      metadata.remove('group_id');
+      metadata.remove('group_name');
+      metadata.remove('group_color');
+    } else {
+      metadata['group_id'] = group.id;
+      metadata['group_name'] = group.name;
+      metadata['group_color'] = group.color;
+    }
+    await widget.api.updateDevice(device.id, {'metadata': metadata});
+    await _refresh();
+  }
+
+  Future<void> _showAssignGroupDialog(SmartDevice device) async {
+    final currentId = _groupIdOf(device);
+    final selectedId = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('Assign Group: ${device.name}'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                dense: true,
+                title: const Text('No group'),
+                trailing: currentId.isEmpty ? const Icon(Icons.check) : null,
+                onTap: () => Navigator.pop(context, ''),
+              ),
+              ..._groups.map((group) => ListTile(
+                    dense: true,
+                    leading: CircleAvatar(backgroundColor: _colorFromHex(group.color), radius: 9),
+                    title: Text(group.name),
+                    trailing: currentId == group.id ? const Icon(Icons.check) : null,
+                    onTap: () => Navigator.pop(context, group.id),
+                  )),
+              const Divider(),
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.add),
+                title: const Text('New group'),
+                onTap: () => Navigator.pop(context, '__new__'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (selectedId == null) return;
+    if (selectedId == '__new__') {
+      final created = await _ensureGroupFromPrompt();
+      if (created == null) return;
+      await _assignDeviceToGroup(device, created);
+      return;
+    }
+    GroupConfig? group;
+    for (final item in _groups) {
+      if (item.id == selectedId) {
+        group = item;
+        break;
+      }
+    }
+    await _assignDeviceToGroup(device, group);
   }
 
   Future<void> _setPasscode(SmartDevice device) async {
@@ -1525,7 +2005,11 @@ class _DevicesScreenState extends State<DevicesScreen> {
     return 'relay_switch';
   }
 
-  Future<void> _addScannedDevice(Map<String, dynamic> item, {String? forceProvider}) async {
+  Future<void> _addScannedDevice(
+    Map<String, dynamic> item, {
+    String? forceProvider,
+    GroupConfig? group,
+  }) async {
     final provider = (forceProvider ?? _scanProviderOf(item)).trim().toLowerCase();
     final section = _sectionFromScanProvider(provider);
     if (section != _activeSection) {
@@ -1571,6 +2055,11 @@ class _DevicesScreenState extends State<DevicesScreen> {
               : (provider == 'tuya_local' ? 'Tuya Local' : '8bb Firmware')),
       'connection_mode': connectionMode,
     };
+    if (group != null) {
+      metadata['group_id'] = group.id;
+      metadata['group_name'] = group.name;
+      metadata['group_color'] = group.color;
+    }
 
     if (provider.startsWith('tuya')) {
       metadata['tuya_device_id'] = (item['tuya_device_id'] ?? '').toString().trim();
@@ -1615,6 +2104,151 @@ class _DevicesScreenState extends State<DevicesScreen> {
     }
   }
 
+  Future<void> _showScanContextMenu(
+    BuildContext context,
+    Offset globalPosition,
+    Map<String, dynamic> item,
+  ) async {
+    final supportsLocal = _activeSection != _DeviceSection.tuya || _tuyaSupportsLocal(item);
+    final supportsCloud = _activeSection == _DeviceSection.tuya && _tuyaSupportsCloud(item);
+    final entries = <PopupMenuEntry<String>>[];
+
+    if (supportsLocal) {
+      entries.add(const PopupMenuItem<String>(value: 'local_direct', child: Text('Add Local')));
+      for (final group in _groups) {
+        entries.add(
+          PopupMenuItem<String>(
+            value: 'local_group:${group.id}',
+            child: Text('Add Local to ${group.name}'),
+          ),
+        );
+      }
+      entries.add(const PopupMenuItem<String>(value: 'local_new_group', child: Text('New Group + Add Local')));
+    }
+
+    if (supportsCloud) {
+      if (entries.isNotEmpty) entries.add(const PopupMenuDivider());
+      entries.add(const PopupMenuItem<String>(value: 'cloud_direct', child: Text('Add Cloud')));
+      for (final group in _groups) {
+        entries.add(
+          PopupMenuItem<String>(
+            value: 'cloud_group:${group.id}',
+            child: Text('Add Cloud to ${group.name}'),
+          ),
+        );
+      }
+      entries.add(const PopupMenuItem<String>(value: 'cloud_new_group', child: Text('New Group + Add Cloud')));
+    }
+
+    if (entries.isEmpty) return;
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final selected = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(globalPosition.dx, globalPosition.dy, 1, 1),
+        Offset.zero & overlay.size,
+      ),
+      items: entries,
+    );
+    if (selected == null) return;
+
+    Future<GroupConfig?> resolveGroup(String id) async {
+      if (id == '__new__') {
+        return _ensureGroupFromPrompt(initialName: _scanDisplayName(item));
+      }
+      for (final group in _groups) {
+        if (group.id == id) return group;
+      }
+      return null;
+    }
+
+    if (selected == 'local_direct') {
+      await _addScannedDevice(item, forceProvider: _activeSection == _DeviceSection.tuya ? 'tuya_local' : null);
+      return;
+    }
+    if (selected == 'cloud_direct') {
+      await _addScannedDevice(item, forceProvider: 'tuya_cloud');
+      return;
+    }
+    if (selected == 'local_new_group') {
+      final group = await resolveGroup('__new__');
+      if (group == null) return;
+      await _addScannedDevice(
+        item,
+        forceProvider: _activeSection == _DeviceSection.tuya ? 'tuya_local' : null,
+        group: group,
+      );
+      return;
+    }
+    if (selected == 'cloud_new_group') {
+      final group = await resolveGroup('__new__');
+      if (group == null) return;
+      await _addScannedDevice(item, forceProvider: 'tuya_cloud', group: group);
+      return;
+    }
+    if (selected.startsWith('local_group:')) {
+      final group = await resolveGroup(selected.substring('local_group:'.length));
+      if (group == null) return;
+      await _addScannedDevice(
+        item,
+        forceProvider: _activeSection == _DeviceSection.tuya ? 'tuya_local' : null,
+        group: group,
+      );
+      return;
+    }
+    if (selected.startsWith('cloud_group:')) {
+      final group = await resolveGroup(selected.substring('cloud_group:'.length));
+      if (group == null) return;
+      await _addScannedDevice(item, forceProvider: 'tuya_cloud', group: group);
+    }
+  }
+
+  Future<void> _showScanGroupDialog(Map<String, dynamic> item, {required String provider}) async {
+    final selectedId = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('Add ${_scanDisplayName(item)} to group'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ..._groups.map(
+                (group) => ListTile(
+                  dense: true,
+                  leading: CircleAvatar(backgroundColor: _colorFromHex(group.color), radius: 9),
+                  title: Text(group.name),
+                  onTap: () => Navigator.pop(context, group.id),
+                ),
+              ),
+              const Divider(),
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.add),
+                title: const Text('New group'),
+                onTap: () => Navigator.pop(context, '__new__'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (selectedId == null) return;
+    GroupConfig? group;
+    if (selectedId == '__new__') {
+      group = await _ensureGroupFromPrompt(initialName: _scanDisplayName(item));
+    } else {
+      for (final candidate in _groups) {
+        if (candidate.id == selectedId) {
+          group = candidate;
+          break;
+        }
+      }
+    }
+    if (group == null) return;
+    await _addScannedDevice(item, forceProvider: provider, group: group);
+  }
+
   Widget _buildQuickControls(SmartDevice device) {
     final statusLoading = _statusLoading.contains(device.id);
     final channels = _inferQuickChannels(device);
@@ -1632,15 +2266,24 @@ class _DevicesScreenState extends State<DevicesScreen> {
     }
 
     if (channels.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.all(8),
-        child: Text('No relay/switch channels detected yet. Tap Status once to detect channels.'),
+      return Padding(
+        padding: const EdgeInsets.all(8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildDeviceStatusStrip(device),
+            if (_isLightDevice(device)) _buildLightControls(device),
+            if (!_isLightDevice(device))
+              const Text('No relay/switch channels detected yet. Tap Status once to detect channels.'),
+          ],
+        ),
       );
     }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        _buildDeviceStatusStrip(device),
         const Padding(
           padding: EdgeInsets.only(top: 8, bottom: 4),
           child: Text('Relay / Switch Controls', style: TextStyle(fontWeight: FontWeight.w600)),
@@ -1703,6 +2346,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
             ),
           );
         }),
+        _buildLightControls(device),
       ],
     );
   }
@@ -1753,6 +2397,28 @@ class _DevicesScreenState extends State<DevicesScreen> {
                             FilledButton(onPressed: () => _openCreateDialog(), child: const Text('Add Device')),
                             const SizedBox(width: 8),
                             OutlinedButton(onPressed: _refresh, child: const Text('Refresh')),
+                            const SizedBox(width: 8),
+                            SizedBox(
+                              width: 150,
+                              child: DropdownButtonFormField<_DeviceSort>(
+                                value: _deviceSort,
+                                decoration: const InputDecoration(labelText: 'Sort'),
+                                items: _DeviceSort.values
+                                    .map(
+                                      (sort) => DropdownMenuItem<_DeviceSort>(
+                                        value: sort,
+                                        child: Text(_deviceSortLabel(sort)),
+                                      ),
+                                    )
+                                    .toList(growable: false),
+                                onChanged: (value) {
+                                  if (value == null) return;
+                                  setState(() {
+                                    _deviceSort = value;
+                                  });
+                                },
+                              ),
+                            ),
                             const Spacer(),
                             SizedBox(
                               width: 220,
@@ -1803,19 +2469,38 @@ class _DevicesScreenState extends State<DevicesScreen> {
                                       final source = _sourceOf(d);
                                       final mode = _modeOf(d);
                                       final isEspFirmware = provider == 'esp_firmware';
+                                      final groupName = _groupNameOf(d);
+                                      final groupColor = _groupColorOf(d);
                                       return ExpansionTile(
-                                        leading: Icon(
-                                          _connectionIconForDevice(d),
-                                          color: _connectionColorForDevice(d),
-                                        ),
                                         onExpansionChanged: (expanded) {
                                           if (expanded) {
                                             _loadDeviceStatus(d, showOutput: false);
                                           }
                                         },
-                                        title: Text('${d.name} (${d.type})'),
-                                        subtitle: Text(
-                                          '${d.host ?? d.mac ?? 'No host yet'}\nSource: $source  Mode: $mode',
+                                        title: Row(
+                                          children: [
+                                            if (groupName.isNotEmpty)
+                                              Container(
+                                                width: 10,
+                                                height: 10,
+                                                margin: const EdgeInsets.only(right: 8),
+                                                decoration: BoxDecoration(
+                                                  color: _colorFromHex(groupColor),
+                                                  shape: BoxShape.circle,
+                                                ),
+                                              ),
+                                            Expanded(
+                                              child: Text(
+                                                d.name,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Icon(
+                                              _connectionIconForDevice(d),
+                                              color: _connectionColorForDevice(d),
+                                            ),
+                                          ],
                                         ),
                                         children: [
                                           Padding(
@@ -1827,7 +2512,26 @@ class _DevicesScreenState extends State<DevicesScreen> {
                                                   spacing: 8,
                                                   runSpacing: 8,
                                                   children: [
+                                                    Chip(label: Text(source)),
+                                                    Chip(label: Text(mode)),
+                                                    if (groupName.isNotEmpty)
+                                                      Chip(
+                                                        avatar: CircleAvatar(
+                                                          radius: 7,
+                                                          backgroundColor: _colorFromHex(groupColor),
+                                                        ),
+                                                        label: Text(groupName),
+                                                      ),
+                                                    Chip(label: Text(d.host ?? d.mac ?? 'No host yet')),
+                                                  ],
+                                                ),
+                                                const SizedBox(height: 8),
+                                                Wrap(
+                                                  spacing: 8,
+                                                  runSpacing: 8,
+                                                  children: [
                                                     OutlinedButton(onPressed: () => _renameDevice(d), child: const Text('Rename')),
+                                                    OutlinedButton(onPressed: () => _showAssignGroupDialog(d), child: const Text('Assign Group')),
                                                     OutlinedButton(onPressed: () => _setPasscode(d), child: const Text('Set Passcode')),
                                                     OutlinedButton(
                                                       onPressed: () async {
@@ -1950,49 +2654,74 @@ class _DevicesScreenState extends State<DevicesScreen> {
                           if (_activeSection != _DeviceSection.tuya) return true;
                           return _matchesTuyaScanFilter(item);
                         }).where(_matchesScanSearch).map(
-                          (item) => ListTile(
-                            dense: true,
-                            leading: Icon(
-                              _connectionIconForScan(item),
-                              color: _tuyaSupportsLocal(item) && _tuyaSupportsCloud(item)
-                                  ? Colors.blue
-                                  : (_scanIsCloud(item) ? Colors.orange : Colors.green),
+                          (item) => Builder(
+                            builder: (tileContext) => GestureDetector(
+                              onSecondaryTapDown: (details) => _showScanContextMenu(tileContext, details.globalPosition, item),
+                              child: ListTile(
+                                dense: true,
+                                leading: Icon(
+                                  _connectionIconForScan(item),
+                                  color: _tuyaSupportsLocal(item) && _tuyaSupportsCloud(item)
+                                      ? Colors.blue
+                                      : (_scanIsCloud(item) ? Colors.orange : Colors.green),
+                                ),
+                                title: Text(_scanDisplayName(item)),
+                                subtitle: Text(
+                                  _activeSection == _DeviceSection.tuya
+                                      ? 'Local: ${_tuyaSupportsLocal(item) ? 'yes' : 'no'}  Cloud: ${_tuyaSupportsCloud(item) ? 'yes' : 'no'}  '
+                                          'Local IP: ${(item['local_ip'] ?? item['ip'] ?? '').toString()}  MAC: ${(item['local_mac'] ?? item['mac'] ?? '').toString()}\n'
+                                          'Device ID: ${(item['tuya_device_id'] ?? '').toString()}  '
+                                          'Hint: ${item['device_hint'] ?? item['provider_hint'] ?? 'unknown'}'
+                                      : 'IP: ${item['ip'] ?? ''}  Host: ${item['hostname'] ?? ''}  MAC: ${item['mac'] ?? ''}\n'
+                                          'Hint: ${item['device_hint'] ?? item['provider_hint'] ?? 'unknown'}'
+                                          '  Score: ${item['score'] ?? 0}  Mode: ${item['mode'] ?? 'local_lan'}',
+                                ),
+                                trailing: _activeSection == _DeviceSection.tuya
+                                    ? Wrap(
+                                        spacing: 4,
+                                        children: [
+                                          if (_tuyaSupportsLocal(item))
+                                            IconButton(
+                                              tooltip: 'Add Local',
+                                              icon: const Icon(Icons.lan),
+                                              onPressed: () => _addScannedDevice(item, forceProvider: 'tuya_local'),
+                                            ),
+                                          if (_tuyaSupportsLocal(item))
+                                            IconButton(
+                                              tooltip: 'Add Local to Group',
+                                              icon: const Icon(Icons.folder_open),
+                                              onPressed: () => _showScanGroupDialog(item, provider: 'tuya_local'),
+                                            ),
+                                          if (_tuyaSupportsCloud(item))
+                                            IconButton(
+                                              tooltip: 'Add Cloud',
+                                              icon: const Icon(Icons.cloud),
+                                              onPressed: () => _addScannedDevice(item, forceProvider: 'tuya_cloud'),
+                                            ),
+                                          if (_tuyaSupportsCloud(item))
+                                            IconButton(
+                                              tooltip: 'Add Cloud to Group',
+                                              icon: const Icon(Icons.folder_special),
+                                              onPressed: () => _showScanGroupDialog(item, provider: 'tuya_cloud'),
+                                            ),
+                                        ],
+                                      )
+                                    : Wrap(
+                                        spacing: 4,
+                                        children: [
+                                          IconButton(
+                                            icon: const Icon(Icons.add_circle_outline),
+                                            onPressed: () => _addScannedDevice(item),
+                                          ),
+                                          IconButton(
+                                            tooltip: 'Add to Group',
+                                            icon: const Icon(Icons.folder_open),
+                                            onPressed: () => _showScanGroupDialog(item, provider: _scanProviderOf(item)),
+                                          ),
+                                        ],
+                                      ),
+                              ),
                             ),
-                            title: Text(
-                              _scanDisplayName(item),
-                            ),
-                            subtitle: Text(
-                              _activeSection == _DeviceSection.tuya
-                                  ? 'Local: ${_tuyaSupportsLocal(item) ? 'yes' : 'no'}  Cloud: ${_tuyaSupportsCloud(item) ? 'yes' : 'no'}  '
-                                      'Local IP: ${(item['local_ip'] ?? item['ip'] ?? '').toString()}  MAC: ${(item['local_mac'] ?? item['mac'] ?? '').toString()}\n'
-                                      'Device ID: ${(item['tuya_device_id'] ?? '').toString()}  '
-                                      'Hint: ${item['device_hint'] ?? item['provider_hint'] ?? 'unknown'}'
-                                  : 'IP: ${item['ip'] ?? ''}  Host: ${item['hostname'] ?? ''}  MAC: ${item['mac'] ?? ''}\n'
-                                      'Hint: ${item['device_hint'] ?? item['provider_hint'] ?? 'unknown'}'
-                                      '  Score: ${item['score'] ?? 0}  Mode: ${item['mode'] ?? 'local_lan'}',
-                            ),
-                            trailing: _activeSection == _DeviceSection.tuya
-                                ? Wrap(
-                                    spacing: 4,
-                                    children: [
-                                      if (_tuyaSupportsLocal(item))
-                                        IconButton(
-                                          tooltip: 'Add Local',
-                                          icon: const Icon(Icons.lan),
-                                          onPressed: () => _addScannedDevice(item, forceProvider: 'tuya_local'),
-                                        ),
-                                      if (_tuyaSupportsCloud(item))
-                                        IconButton(
-                                          tooltip: 'Add Cloud',
-                                          icon: const Icon(Icons.cloud),
-                                          onPressed: () => _addScannedDevice(item, forceProvider: 'tuya_cloud'),
-                                        ),
-                                    ],
-                                  )
-                                : IconButton(
-                                    icon: const Icon(Icons.add_circle_outline),
-                                    onPressed: () => _addScannedDevice(item),
-                                  ),
                           ),
                         ),
                         const Divider(),

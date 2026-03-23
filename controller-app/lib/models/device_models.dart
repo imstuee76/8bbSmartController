@@ -38,6 +38,7 @@ class SmartDevice {
   final String? staticIp;
   final String? gateway;
   final String? subnetMask;
+  final String? lastSeenAt;
   final Map<String, dynamic> metadata;
   final List<DeviceChannel> channels;
 
@@ -51,6 +52,7 @@ class SmartDevice {
     required this.staticIp,
     required this.gateway,
     required this.subnetMask,
+    required this.lastSeenAt,
     required this.metadata,
     required this.channels,
   });
@@ -71,6 +73,7 @@ class SmartDevice {
       staticIp: json['static_ip']?.toString(),
       gateway: json['gateway']?.toString(),
       subnetMask: json['subnet_mask']?.toString(),
+      lastSeenAt: json['last_seen_at']?.toString(),
       metadata: (json['metadata'] as Map<String, dynamic>?) ?? <String, dynamic>{},
       channels: channelList,
     );

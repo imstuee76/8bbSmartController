@@ -1,12 +1,40 @@
+class GroupConfig {
+  String id;
+  String name;
+  String color;
+
+  GroupConfig({
+    required this.id,
+    required this.name,
+    required this.color,
+  });
+
+  factory GroupConfig.fromJson(Map<String, dynamic> json) {
+    return GroupConfig(
+      id: (json['id'] ?? '').toString(),
+      name: (json['name'] ?? '').toString(),
+      color: (json['color'] ?? '#4CAF50').toString(),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'color': color,
+      };
+}
+
 class DisplayConfig {
   String resolution;
   String orientation;
   double scale;
+  List<GroupConfig> groups;
 
   DisplayConfig({
     required this.resolution,
     required this.orientation,
     required this.scale,
+    required this.groups,
   });
 
   factory DisplayConfig.fromJson(Map<String, dynamic> json) {
@@ -14,6 +42,10 @@ class DisplayConfig {
       resolution: (json['resolution'] ?? '1920x1080').toString(),
       orientation: (json['orientation'] ?? 'landscape').toString(),
       scale: (json['scale'] as num?)?.toDouble() ?? 1.0,
+      groups: (json['groups'] as List<dynamic>? ?? const <dynamic>[])
+          .whereType<Map<String, dynamic>>()
+          .map(GroupConfig.fromJson)
+          .toList(growable: false),
     );
   }
 
@@ -21,6 +53,7 @@ class DisplayConfig {
         'resolution': resolution,
         'orientation': orientation,
         'scale': scale,
+        'groups': groups.map((group) => group.toJson()).toList(growable: false),
       };
 }
 

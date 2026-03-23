@@ -20,6 +20,7 @@ class DisplayConfig(BaseModel):
     resolution: str = "1920x1080"
     orientation: Literal["landscape", "portrait"] = "landscape"
     scale: float = 1.0
+    groups: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SpotifyConfig(BaseModel):

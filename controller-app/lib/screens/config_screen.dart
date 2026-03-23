@@ -25,6 +25,17 @@ class ConfigScreen extends StatefulWidget {
 }
 
 class _ConfigScreenState extends State<ConfigScreen> {
+  static const List<String> _groupColorChoices = <String>[
+    '#2E7D32',
+    '#1565C0',
+    '#6A1B9A',
+    '#EF6C00',
+    '#C62828',
+    '#00838F',
+    '#455A64',
+    '#5D4037',
+  ];
+
   final _serverCtl = TextEditingController();
 
   final _spotifyIdCtl = TextEditingController();
@@ -77,6 +88,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
   List<Map<String, dynamic>> _moesLights = <Map<String, dynamic>>[];
   List<Map<String, dynamic>> _builtinIcons = <Map<String, dynamic>>[];
   List<Map<String, dynamic>> _customIcons = <Map<String, dynamic>>[];
+  List<GroupConfig> _groups = <GroupConfig>[];
 
   final _resolutionOptions = const [
     '1280x720',
@@ -113,6 +125,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
 
       _resolution = display.resolution;
       _scale = display.scale;
+      _groups = display.groups;
 
       _spotifyIdCtl.text = integrations.spotify['client_id']?.toString() ?? '';
       _spotifySecretCtl.text = integrations.spotify['client_secret']?.toString() ?? '';
@@ -240,6 +253,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
           resolution: _resolution,
           orientation: 'landscape',
           scale: _scale,
+          groups: _groups,
         ),
       );
       if (!mounted) return;
@@ -328,6 +342,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
           resolution: _resolution,
           orientation: 'landscape',
           scale: _scale,
+          groups: _groups,
         ),
       );
       await widget.api.saveIntegrationsConfig(_buildIntegrationsPayload());
@@ -348,6 +363,100 @@ class _ConfigScreenState extends State<ConfigScreen> {
   Future<void> _saveWeatherSection() => _saveIntegrationsSection('Weather');
   Future<void> _saveTuyaSection() => _saveIntegrationsSection('Tuya');
   Future<void> _saveNetworkOtaSection() => _saveIntegrationsSection('Network/OTA');
+  Future<void> _saveGroupsSection() => _saveControllerSection();
+
+  Color _colorFromHex(String raw, {Color fallback = const Color(0xFF4CAF50)}) {
+    var value = raw.trim().replaceAll('#', '');
+    if (value.isEmpty) return fallback;
+    if (value.length == 6) value = 'FF$value';
+    final parsed = int.tryParse(value, radix: 16);
+    if (parsed == null) return fallback;
+    return Color(parsed);
+  }
+
+  String _slugId(String raw) {
+    final cleaned = raw
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+    return cleaned.isEmpty ? 'group_${DateTime.now().millisecondsSinceEpoch}' : cleaned;
+  }
+
+  Future<void> _editGroup({GroupConfig? existing}) async {
+    final nameCtl = TextEditingController(text: existing?.name ?? '');
+    var color = existing?.color ?? _groupColorChoices.first;
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(existing == null ? 'New Group' : 'Edit Group'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: nameCtl,
+                  decoration: const InputDecoration(labelText: 'Group name'),
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: _groupColorChoices.map((hex) {
+                    final selected = color == hex;
+                    return InkWell(
+                      onTap: () => setDialogState(() => color = hex),
+                      borderRadius: BorderRadius.circular(24),
+                      child: Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: _colorFromHex(hex),
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: selected ? Colors.white : Colors.black26,
+                            width: selected ? 3 : 1,
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(growable: false),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save')),
+          ],
+        ),
+      ),
+    );
+    if (saved != true) return;
+    final name = nameCtl.text.trim();
+    if (name.isEmpty) return;
+    final next = <GroupConfig>[
+      ..._groups.where((group) => group.id != existing?.id),
+      GroupConfig(
+        id: existing?.id ?? _slugId(name),
+        name: name,
+        color: color,
+      ),
+    ]..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    setState(() {
+      _groups = next;
+    });
+  }
+
+  void _removeGroup(GroupConfig group) {
+    setState(() {
+      _groups = _groups.where((item) => item.id != group.id).toList(growable: false);
+    });
+  }
 
   Future<void> _saveAuthSection() async {
     if (_saving) return;
@@ -1527,6 +1636,49 @@ class _ConfigScreenState extends State<ConfigScreen> {
                         FilledButton(onPressed: _saveSpotifySection, child: const Text('Save section')),
                       ],
                     ),
+                  ],
+                ),
+              ),
+              ExpansionPanelRadio(
+                value: 'groups',
+                headerBuilder: (_, __) => _panelHeader('Groups', 'Device grouping + colour tags'),
+                body: _panelBody(
+                  [
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        OutlinedButton(onPressed: () => _editGroup(), child: const Text('New Group')),
+                        FilledButton(onPressed: _saveGroupsSection, child: const Text('Save section')),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    if (_groups.isEmpty)
+                      const Text('No groups yet. Add one here, then assign devices to it from Devices.')
+                    else
+                      ..._groups.map(
+                        (group) => ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: CircleAvatar(backgroundColor: _colorFromHex(group.color), radius: 10),
+                          title: Text(group.name),
+                          subtitle: Text(group.color),
+                          trailing: Wrap(
+                            spacing: 8,
+                            children: [
+                              IconButton(
+                                tooltip: 'Edit',
+                                onPressed: () => _editGroup(existing: group),
+                                icon: const Icon(Icons.edit_outlined),
+                              ),
+                              IconButton(
+                                tooltip: 'Remove',
+                                onPressed: () => _removeGroup(group),
+                                icon: const Icon(Icons.delete_outline),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
