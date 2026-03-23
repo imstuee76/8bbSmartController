@@ -291,6 +291,13 @@ class _DevicesScreenState extends State<DevicesScreen> {
     return rows.map((row) {
       final mode = (row['mode'] ?? '').toString().toLowerCase().trim();
       final provider = (row['provider'] ?? '').toString().trim();
+      final availableModes = (row['available_modes'] as List<dynamic>? ?? const <dynamic>[])
+          .map((value) => value.toString().trim().toLowerCase())
+          .where((value) => value.isNotEmpty)
+          .toSet();
+      final hasLocalKey = (row['local_key'] ?? '').toString().trim().isNotEmpty;
+      final hasLocalMode = availableModes.contains('local_lan') || mode == 'local_lan' || provider == 'tuya_local' || hasLocalKey;
+      final hasCloudMode = availableModes.contains('cloud') || mode == 'cloud' || provider == 'tuya_cloud';
       final isLocal = mode == 'local_lan' || provider == 'tuya_local';
       return <String, dynamic>{
         'name': row['name'] ?? '',
@@ -302,20 +309,20 @@ class _DevicesScreenState extends State<DevicesScreen> {
         'mode': isLocal ? 'local_lan' : 'cloud',
         'score': isLocal ? 10 : 8,
         'tuya_device_id': row['id'] ?? '',
-        'supports_local': isLocal,
-        'supports_cloud': !isLocal,
-        'local_name': isLocal ? (row['name'] ?? '') : '',
-        'local_ip': isLocal ? (row['ip'] ?? '') : '',
-        'local_mac': isLocal ? (row['mac'] ?? '') : '',
-        'local_version': isLocal ? (row['version'] ?? '') : '',
-        'local_key': isLocal ? (row['local_key'] ?? '') : '',
-        'local_product_key': isLocal ? (row['product_key'] ?? '') : '',
-        'cloud_name': isLocal ? '' : (row['name'] ?? ''),
-        'cloud_ip': isLocal ? '' : (row['ip'] ?? ''),
-        'cloud_mac': isLocal ? '' : (row['mac'] ?? ''),
-        'cloud_version': isLocal ? '' : (row['version'] ?? ''),
-        'cloud_local_key': isLocal ? '' : (row['local_key'] ?? ''),
-        'cloud_product_key': isLocal ? '' : (row['product_key'] ?? ''),
+        'supports_local': hasLocalMode,
+        'supports_cloud': hasCloudMode,
+        'local_name': hasLocalMode ? (row['name'] ?? '') : '',
+        'local_ip': hasLocalMode ? (row['ip'] ?? '') : '',
+        'local_mac': hasLocalMode ? (row['mac'] ?? '') : '',
+        'local_version': hasLocalMode ? (row['version'] ?? '') : '',
+        'local_key': hasLocalMode ? (row['local_key'] ?? '') : '',
+        'local_product_key': hasLocalMode ? (row['product_key'] ?? '') : '',
+        'cloud_name': hasCloudMode ? (row['name'] ?? '') : '',
+        'cloud_ip': hasCloudMode ? (row['ip'] ?? '') : '',
+        'cloud_mac': hasCloudMode ? (row['mac'] ?? '') : '',
+        'cloud_version': hasCloudMode ? (row['version'] ?? '') : '',
+        'cloud_local_key': hasCloudMode ? (row['local_key'] ?? '') : '',
+        'cloud_product_key': hasCloudMode ? (row['product_key'] ?? '') : '',
         'source': row['source'] ?? '',
       };
     }).toList(growable: false);
@@ -2689,7 +2696,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
                                           if (_tuyaSupportsLocal(item))
                                             IconButton(
                                               tooltip: 'Add Local to Group',
-                                              icon: const Icon(Icons.folder_open),
+                                              icon: const Icon(Icons.device_hub),
                                               onPressed: () => _showScanGroupDialog(item, provider: 'tuya_local'),
                                             ),
                                           if (_tuyaSupportsCloud(item))
@@ -2701,7 +2708,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
                                           if (_tuyaSupportsCloud(item))
                                             IconButton(
                                               tooltip: 'Add Cloud to Group',
-                                              icon: const Icon(Icons.folder_special),
+                                              icon: const Icon(Icons.device_hub),
                                               onPressed: () => _showScanGroupDialog(item, provider: 'tuya_cloud'),
                                             ),
                                         ],
@@ -2715,7 +2722,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
                                           ),
                                           IconButton(
                                             tooltip: 'Add to Group',
-                                            icon: const Icon(Icons.folder_open),
+                                            icon: const Icon(Icons.device_hub),
                                             onPressed: () => _showScanGroupDialog(item, provider: _scanProviderOf(item)),
                                           ),
                                         ],

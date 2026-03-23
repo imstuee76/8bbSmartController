@@ -13,6 +13,44 @@ def _parse_version(value: Any, fallback: float = 3.3) -> float:
         return fallback
 
 
+def _version_candidates(metadata: dict[str, Any]) -> list[float]:
+    raw_version = str(metadata.get("tuya_version", metadata.get("version", ""))).strip()
+    candidates: list[float] = []
+    if raw_version:
+        candidates.append(_parse_version(raw_version, fallback=3.3))
+    else:
+        candidates.extend([3.3, 3.4])
+    if 3.4 not in candidates:
+        candidates.append(3.4)
+    return candidates
+
+
+def _tuya_raw_error(raw: Any) -> str:
+    if not isinstance(raw, dict):
+        return ""
+    err = str(raw.get("Err", "")).strip()
+    message = str(raw.get("Error", "")).strip()
+    if err or message:
+        return f"{err}: {message}".strip(": ").strip()
+    return ""
+
+
+def _is_light_device(metadata: dict[str, Any]) -> bool:
+    device_type = str(metadata.get("device_type", "")).strip().lower()
+    blob = " ".join(
+        str(metadata.get(key, "")).strip().lower()
+        for key in ("device_type", "name", "device_name", "source_name", "product_name", "category")
+    )
+    return (
+        device_type.startswith("light_")
+        or "rgb" in blob
+        or "light" in blob
+        or "bulb" in blob
+        or "lamp" in blob
+        or "dimmer" in blob
+    )
+
+
 def _extract_dps(status: Any) -> dict[str, Any]:
     if not isinstance(status, dict):
         return {}
@@ -50,6 +88,12 @@ def _onoff_dp_from_dps(dps: dict[str, Any]) -> str | int:
                 return int(key)
             except Exception:
                 return key
+    return 1
+
+
+def _default_onoff_dp(metadata: dict[str, Any]) -> str | int:
+    if _is_light_device(metadata):
+        return 20
     return 1
 
 
@@ -135,13 +179,14 @@ def _cloud_client() -> Any:
 def _local_device(
     metadata: dict[str, Any],
     *,
+    version_override: float | None = None,
     socket_timeout: float = 3.0,
     retry_limit: int = 1,
 ) -> Any:
     dev_id = str(metadata.get("tuya_device_id", "")).strip() or str(metadata.get("id", "")).strip()
     ip = str(metadata.get("tuya_ip", "")).strip() or str(metadata.get("ip", "")).strip() or str(metadata.get("host", "")).strip()
     local_key = str(metadata.get("tuya_local_key", "")).strip() or str(metadata.get("local_key", "")).strip()
-    version = _parse_version(metadata.get("tuya_version", metadata.get("version", "3.3")), fallback=3.3)
+    version = version_override if version_override is not None else _parse_version(metadata.get("tuya_version", metadata.get("version", "3.3")), fallback=3.3)
 
     if not dev_id or not ip or not local_key:
         raise ValueError("Tuya local control requires tuya_device_id + tuya_ip + tuya_local_key")
@@ -158,6 +203,42 @@ def _local_device(
         version=version,
         persist=False,
     )
+    dev.set_version(version)
+    dev.set_socketPersistent(False)
+    if hasattr(dev, "set_socketTimeout"):
+        try:
+            dev.set_socketTimeout(float(socket_timeout))
+        except Exception:
+            pass
+    if hasattr(dev, "set_socketRetryLimit"):
+        try:
+            dev.set_socketRetryLimit(int(retry_limit))
+        except Exception:
+            pass
+    return dev, dev_id, ip, version
+
+
+def _local_bulb_device(
+    metadata: dict[str, Any],
+    *,
+    version_override: float | None = None,
+    socket_timeout: float = 3.0,
+    retry_limit: int = 1,
+) -> Any:
+    dev_id = str(metadata.get("tuya_device_id", "")).strip() or str(metadata.get("id", "")).strip()
+    ip = str(metadata.get("tuya_ip", "")).strip() or str(metadata.get("ip", "")).strip() or str(metadata.get("host", "")).strip()
+    local_key = str(metadata.get("tuya_local_key", "")).strip() or str(metadata.get("local_key", "")).strip()
+    version = version_override if version_override is not None else _parse_version(metadata.get("tuya_version", metadata.get("version", "3.3")), fallback=3.3)
+
+    if not dev_id or not ip or not local_key:
+        raise ValueError("Tuya local control requires tuya_device_id + tuya_ip + tuya_local_key")
+
+    try:
+        import tinytuya  # type: ignore
+    except Exception as exc:
+        raise ValueError(f"tinytuya not installed: {exc}") from exc
+
+    dev = tinytuya.BulbDevice(dev_id, ip, local_key)  # type: ignore[attr-defined]
     dev.set_version(version)
     dev.set_socketPersistent(False)
     if hasattr(dev, "set_socketTimeout"):
@@ -203,8 +284,6 @@ def _has_complete_local_metadata(metadata: dict[str, Any]) -> bool:
 
 
 def _enrich_local_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    if _has_complete_local_metadata(metadata):
-        return dict(metadata)
     try:
         from .integrations import _get_file_value, _load_tuya_devices_file, _tuya_devices_file_indexes
     except Exception:
@@ -283,32 +362,39 @@ def get_tuya_device_status(metadata: dict[str, Any], quick: bool = False) -> dic
     local_error = ""
 
     if provider in ("tuya_local", "tuya"):
-        try:
-            dev, local_id, ip, version = _local_device(
-                metadata,
-                socket_timeout=1.0 if quick else 3.0,
-                retry_limit=0 if quick else 1,
-            )
-            raw = dev.status()
-            dps = _extract_dps(raw)
-            return {
-                "ok": True,
-                "provider": "tuya_local",
-                "mode": "local_lan",
-                "device_id": local_id,
-                "ip": ip,
-                "version": str(version),
-                "outputs": _outputs_from_dps(dps),
-                "dps": dps,
-                "raw": raw,
-            }
-        except Exception as exc:
-            local_error = str(exc)
-            if provider == "tuya_local":
-                # local-first devices can still fall back to cloud by ID if creds exist
-                pass
-            if quick:
-                raise ValueError(f"Tuya quick local status failed: {local_error}") from exc
+        raw_version = str(metadata.get("tuya_version", metadata.get("version", ""))).strip()
+        last_exc: Exception | None = None
+        for version_candidate in _version_candidates(metadata):
+            try:
+                dev, local_id, ip, version = _local_device(
+                    metadata,
+                    version_override=version_candidate,
+                    socket_timeout=1.0 if quick else 3.0,
+                    retry_limit=0 if quick else 1,
+                )
+                raw = dev.status()
+                dps = _extract_dps(raw)
+                raw_error = _tuya_raw_error(raw)
+                if raw_error and not dps and (not raw_version):
+                    local_error = raw_error
+                    continue
+                return {
+                    "ok": True,
+                    "provider": "tuya_local",
+                    "mode": "local_lan",
+                    "device_id": local_id,
+                    "ip": ip,
+                    "version": str(version),
+                    "outputs": _outputs_from_dps(dps),
+                    "dps": dps,
+                    "raw": raw,
+                    "metadata_patch": {"tuya_version": str(version), "version": str(version)} if not raw_version else {},
+                }
+            except Exception as exc:
+                last_exc = exc
+                local_error = str(exc)
+        if last_exc is not None and quick:
+            raise ValueError(f"Tuya quick local status failed: {local_error}") from last_exc
 
     if dev_id:
         try:
@@ -374,28 +460,66 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
     local_error = ""
     local_ready = _has_complete_local_metadata(metadata)
     if provider in ("tuya_local", "tuya") and local_ready:
-        try:
-            dev, local_id, ip, version = _local_device(
-                metadata,
-                socket_timeout=0.9,
-                retry_limit=0,
-            )
-            status: dict[str, Any] | None = None
-            dps: dict[str, Any] = {}
-            dp_hint = _channel_to_dp_hint(channel)
-            if state in ("on", "off") and dp_hint is not None:
-                onoff_dp = dp_hint
-            else:
-                status = dev.status()
-                dps = _extract_dps(status)
-                onoff_dp = _resolve_local_toggle_dp(channel, dps)
+        raw_version = str(metadata.get("tuya_version", metadata.get("version", ""))).strip()
+        last_exc: Exception | None = None
+        for version_candidate in _version_candidates(metadata):
+            try:
+                use_bulb = _is_light_device(metadata) and state in ("on", "off")
+                if use_bulb:
+                    dev, local_id, ip, version = _local_bulb_device(
+                        metadata,
+                        version_override=version_candidate,
+                        socket_timeout=0.9,
+                        retry_limit=0,
+                    )
+                    raw = dev.turn_on() if state == "on" else dev.turn_off()
+                else:
+                    dev, local_id, ip, version = _local_device(
+                        metadata,
+                        version_override=version_candidate,
+                        socket_timeout=0.9,
+                        retry_limit=0,
+                    )
+                    status: dict[str, Any] | None = None
+                    dps: dict[str, Any] = {}
+                    dp_hint = _channel_to_dp_hint(channel)
+                    if state in ("on", "off") and dp_hint is not None:
+                        onoff_dp = dp_hint
+                    elif state in ("on", "off") and _is_light_device(metadata):
+                        onoff_dp = _default_onoff_dp(metadata)
+                    else:
+                        status = dev.status()
+                        dps = _extract_dps(status)
+                        onoff_dp = _resolve_local_toggle_dp(channel, dps)
+                        if not dps and _is_light_device(metadata):
+                            onoff_dp = _default_onoff_dp(metadata)
 
-            if state in ("on", "off", "toggle"):
-                target = state == "on"
-                if state == "toggle":
-                    target = not bool(dps.get(str(onoff_dp)))
-                raw = dev.set_status(target, switch=onoff_dp)
-                return {
+                    if state in ("on", "off", "toggle"):
+                        target = state == "on"
+                        if state == "toggle":
+                            target = not bool(dps.get(str(onoff_dp)))
+                        raw = dev.set_status(target, switch=onoff_dp)
+                    elif state == "set" and isinstance(payload.get("dps"), dict):
+                        raw = dev.set_multiple_values(payload.get("dps", {}))
+                    else:
+                        brightness_dp = _brightness_dp_from_dps(dps)
+                        brightness_value = value if value is not None else payload.get("brightness")
+                        if state == "set" and brightness_dp is not None and brightness_value is not None:
+                            target = int(brightness_value)
+                            current = dps.get(str(brightness_dp))
+                            if isinstance(current, int) and current > 100 and 0 <= target <= 100:
+                                target = max(10, min(1000, target * 10))
+                            raw = dev.set_value(brightness_dp, target)
+                        else:
+                            raise ValueError(f"Unsupported Tuya local state '{state}'")
+
+                raw_error = _tuya_raw_error(raw)
+                if raw_error and not raw_version:
+                    local_error = raw_error
+                    continue
+                if raw_error:
+                    raise ValueError(raw_error)
+                response: dict[str, Any] = {
                     "ok": True,
                     "provider": "tuya_local",
                     "mode": "local_lan",
@@ -404,42 +528,15 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
                     "version": str(version),
                     "result": raw,
                 }
-
-            if state == "set" and isinstance(payload.get("dps"), dict):
-                raw = dev.set_multiple_values(payload.get("dps", {}))
-                return {
-                    "ok": True,
-                    "provider": "tuya_local",
-                    "mode": "local_lan",
-                    "device_id": local_id,
-                    "ip": ip,
-                    "version": str(version),
-                    "result": raw,
-                }
-
-            brightness_dp = _brightness_dp_from_dps(dps)
-            brightness_value = value if value is not None else payload.get("brightness")
-            if state == "set" and brightness_dp is not None and brightness_value is not None:
-                target = int(brightness_value)
-                current = dps.get(str(brightness_dp))
-                if isinstance(current, int) and current > 100 and 0 <= target <= 100:
-                    target = max(10, min(1000, target * 10))
-                raw = dev.set_value(brightness_dp, target)
-                return {
-                    "ok": True,
-                    "provider": "tuya_local",
-                    "mode": "local_lan",
-                    "device_id": local_id,
-                    "ip": ip,
-                    "version": str(version),
-                    "result": raw,
-                    "brightness_dp": brightness_dp,
-                }
-            raise ValueError(f"Unsupported Tuya local state '{state}'")
-        except Exception as exc:
-            local_error = str(exc)
-            if provider == "tuya_local":
-                raise ValueError(f"Tuya local command failed: {local_error}") from exc
+                if not raw_version:
+                    response["metadata_patch"] = {"tuya_version": str(version), "version": str(version)}
+                return response
+            except Exception as exc:
+                last_exc = exc
+                local_error = str(exc)
+        if provider == "tuya_local":
+            detail = local_error or "Local Tuya command failed"
+            raise ValueError(f"Tuya local command failed: {detail}") from last_exc
     elif provider == "tuya_local":
         local_error = "Tuya local control requires tuya_device_id + tuya_ip + tuya_local_key"
 

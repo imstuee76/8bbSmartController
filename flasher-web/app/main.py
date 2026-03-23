@@ -781,6 +781,7 @@ def _save_automation_rules_for_target(
 
 def _resolve_device_status(row: Any, *, quick: bool = False) -> dict[str, Any]:
     metadata = _parse_metadata(row)
+    metadata.setdefault("device_type", str(row["type"] or "").strip())
     host = str(row["host"] or "").strip()
     device_mac = _normalize_mac(row["mac"])
     device_name = str(row["name"] or "").strip()
@@ -1166,6 +1167,7 @@ def _execute_device_command_by_row(
     device_mac = _normalize_mac(row["mac"])
     passcode = decrypt_secret(row["passcode_enc"] or "")
     metadata = _parse_metadata(row)
+    metadata.setdefault("device_type", str(row["type"] or "").strip())
     if host:
         metadata.setdefault("host", host)
         metadata.setdefault("ip", host)
@@ -1207,6 +1209,30 @@ def _require_device(device_id: str) -> tuple[Any, Any]:
         conn.close()
         raise HTTPException(status_code=404, detail="Device not found")
     return conn, row
+
+
+def _persist_device_metadata_patch(device_id: str, row: Any, patch: dict[str, Any] | None) -> None:
+    if not isinstance(patch, dict) or not patch:
+        return
+    metadata = _parse_metadata(row)
+    changed = False
+    for key, value in patch.items():
+        text = str(value or "").strip()
+        if not text:
+            continue
+        if str(metadata.get(key, "")).strip() != text:
+            metadata[key] = text
+            changed = True
+    if not changed:
+        return
+    now = utc_now()
+    conn = get_connection()
+    conn.execute(
+        "UPDATE devices SET metadata_json=?, updated_at=? WHERE id=?",
+        (json.dumps(metadata), now, device_id),
+    )
+    conn.commit()
+    conn.close()
 
 
 def _slug_value(value: str, fallback: str = "item") -> str:
@@ -2204,6 +2230,7 @@ def get_device_status(device_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=f"Device status failed: {exc}") from exc
 
     now = utc_now()
+    _persist_device_metadata_patch(device_id, row, status.get("metadata_patch") if isinstance(status, dict) else None)
     conn.execute("UPDATE devices SET last_seen_at=?, updated_at=? WHERE id=?", (now, now, device_id))
     conn.commit()
     conn.close()
@@ -2226,6 +2253,7 @@ def post_device_command(device_id: str, payload: DeviceCommandRequest) -> dict[s
         provider = str(metadata.get("provider", "")).strip().lower()
         detail_prefix = "Tuya command failed" if provider.startswith("tuya") else "MOES local command failed" if provider == "moes_bhubw" else "Device command failed"
         raise HTTPException(status_code=502, detail=f"{detail_prefix}: {exc}") from exc
+    _persist_device_metadata_patch(device_id, row, result.get("metadata_patch") if isinstance(result, dict) else None)
     _apply_dashboard_command_cache(device_id, row, command)
     append_event("device_command", {"device_id": device_id, "channel": payload.channel, "state": payload.state, "provider": str(_parse_metadata(row).get('provider', '')).strip().lower()})
     return result
