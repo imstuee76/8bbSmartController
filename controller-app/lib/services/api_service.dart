@@ -292,6 +292,25 @@ class ApiService {
     return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
+  Future<Map<String, dynamic>> runAutomationTile({
+    required String tileId,
+    String? state,
+  }) async {
+    final body = <String, dynamic>{};
+    if (state != null && state.trim().isNotEmpty) {
+      body['state'] = state.trim();
+    }
+    final res = await _client.post(
+      _uri('/api/main/tiles/$tileId/run'),
+      headers: _jsonHeaders(),
+      body: jsonEncode(body),
+    );
+    if (res.statusCode != 200) {
+      throw Exception('Run tile failed: ${res.body}');
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
   Future<DisplayConfig> fetchDisplayConfig() async {
     final res = await _client.get(_uri('/api/config/display'));
     if (res.statusCode != 200) {

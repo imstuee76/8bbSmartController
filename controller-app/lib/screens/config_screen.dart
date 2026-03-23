@@ -387,6 +387,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
   Future<void> _editGroup({GroupConfig? existing}) async {
     final nameCtl = TextEditingController(text: existing?.name ?? '');
     var color = existing?.color ?? _groupColorChoices.first;
+    var kind = existing?.kind ?? 'mixed';
     final saved = await showDialog<bool>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -401,6 +402,23 @@ class _ConfigScreenState extends State<ConfigScreen> {
                 TextField(
                   controller: nameCtl,
                   decoration: const InputDecoration(labelText: 'Group name'),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: kind,
+                  decoration: const InputDecoration(labelText: 'Group type'),
+                  items: const [
+                    DropdownMenuItem(value: 'mixed', child: Text('Mixed')),
+                    DropdownMenuItem(value: 'switch', child: Text('Switch')),
+                    DropdownMenuItem(value: 'light', child: Text('Light')),
+                    DropdownMenuItem(value: 'fan', child: Text('Fan')),
+                  ],
+                  onChanged: (value) {
+                    if (value == null) return;
+                    setDialogState(() {
+                      kind = value;
+                    });
+                  },
                 ),
                 const SizedBox(height: 12),
                 Wrap(
@@ -445,6 +463,8 @@ class _ConfigScreenState extends State<ConfigScreen> {
         id: existing?.id ?? _slugId(name),
         name: name,
         color: color,
+        kind: kind,
+        members: existing?.members ?? const <GroupMemberConfig>[],
       ),
     ]..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     setState(() {
@@ -594,12 +614,130 @@ class _ConfigScreenState extends State<ConfigScreen> {
     }
   }
 
-  Future<void> _createAutomationTile() async {
+  Future<void> _createGroupTile(GroupConfig group) async {
     try {
-      final label = _automationLabelCtl.text.trim().isEmpty ? 'Automation' : _automationLabelCtl.text.trim();
-      await widget.api.addTile(tileType: 'automation', label: label, payload: {'action': 'placeholder'});
+      final label = group.name.trim().isEmpty ? 'Group' : group.name.trim();
+      await widget.api.addTile(
+        tileType: 'group',
+        label: label,
+        payload: {
+          'group_id': group.id,
+          'group_name': group.name,
+          'group_kind': group.kind,
+          'icon_key': group.kind == 'light'
+              ? 'light'
+              : group.kind == 'fan'
+                  ? 'fan'
+                  : 'switch',
+        },
+      );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Automation tile added to Main')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Group tile added to Main: ${group.name}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    }
+  }
+
+  Future<void> _createAutomationTile({GroupConfig? initialGroup}) async {
+    if (_groups.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Create a group first, then add an automation shortcut.')),
+      );
+      return;
+    }
+    final labelCtl = TextEditingController(
+      text: _automationLabelCtl.text.trim().isEmpty
+          ? (initialGroup == null ? 'Automation' : '${initialGroup.name} Automation')
+          : _automationLabelCtl.text.trim(),
+    );
+    var selectedGroupId = initialGroup?.id ?? _groups.first.id;
+    var actionState = 'toggle';
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: const Text('Add Automation Shortcut'),
+          content: SizedBox(
+            width: 440,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: labelCtl,
+                  decoration: const InputDecoration(labelText: 'Shortcut label'),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: selectedGroupId,
+                  decoration: const InputDecoration(labelText: 'Group'),
+                  items: _groups
+                      .map(
+                        (group) => DropdownMenuItem<String>(
+                          value: group.id,
+                          child: Text('${group.name} (${group.members.length})'),
+                        ),
+                      )
+                      .toList(growable: false),
+                  onChanged: (value) {
+                    if (value == null) return;
+                    setDialogState(() {
+                      selectedGroupId = value;
+                    });
+                  },
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: actionState,
+                  decoration: const InputDecoration(labelText: 'Run action'),
+                  items: const [
+                    DropdownMenuItem(value: 'toggle', child: Text('Toggle group')),
+                    DropdownMenuItem(value: 'on', child: Text('Turn group on')),
+                    DropdownMenuItem(value: 'off', child: Text('Turn group off')),
+                  ],
+                  onChanged: (value) {
+                    if (value == null) return;
+                    setDialogState(() {
+                      actionState = value;
+                    });
+                  },
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Add')),
+          ],
+        ),
+      ),
+    );
+    if (saved != true) return;
+    final label = labelCtl.text.trim().isEmpty ? 'Automation' : labelCtl.text.trim();
+    final group = _groups.firstWhere(
+      (item) => item.id == selectedGroupId,
+      orElse: () => _groups.first,
+    );
+    try {
+      await widget.api.addTile(
+        tileType: 'automation',
+        label: label,
+        payload: {
+          'action': 'group',
+          'group_id': group.id,
+          'group_name': group.name,
+          'group_kind': group.kind,
+          'state': actionState,
+          'icon_key': actionState == 'toggle' ? 'scene' : (group.kind == 'light' ? 'light' : 'switch'),
+        },
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Automation shortcut added to Main: $label')),
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
@@ -1661,10 +1799,20 @@ class _ConfigScreenState extends State<ConfigScreen> {
                           contentPadding: EdgeInsets.zero,
                           leading: CircleAvatar(backgroundColor: _colorFromHex(group.color), radius: 10),
                           title: Text(group.name),
-                          subtitle: Text(group.color),
+                          subtitle: Text('${group.kind}  |  ${group.members.length} member(s)  |  ${group.color}'),
                           trailing: Wrap(
                             spacing: 8,
                             children: [
+                              IconButton(
+                                tooltip: 'Add group tile to Main',
+                                onPressed: () => _createGroupTile(group),
+                                icon: const Icon(Icons.dashboard_customize_outlined),
+                              ),
+                              IconButton(
+                                tooltip: 'Add automation shortcut to Main',
+                                onPressed: () => _createAutomationTile(initialGroup: group),
+                                icon: const Icon(Icons.auto_awesome_outlined),
+                              ),
                               IconButton(
                                 tooltip: 'Edit',
                                 onPressed: () => _editGroup(existing: group),
@@ -1776,7 +1924,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
                     Wrap(
                       spacing: 8,
                       children: [
-                        OutlinedButton(onPressed: _createAutomationTile, child: const Text('Add Automation tile to Main')),
+                        OutlinedButton(onPressed: _createAutomationTile, child: const Text('Add Automation shortcut')),
                         FilledButton.tonal(onPressed: _refreshIconCatalog, child: const Text('Load Icons')),
                         FilledButton(onPressed: _saveNetworkOtaSection, child: const Text('Save section')),
                       ],

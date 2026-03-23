@@ -1371,6 +1371,14 @@ class _DevicesScreenState extends State<DevicesScreen> {
                 icon: const Icon(Icons.palette_outlined),
                 label: const Text('Colour / Scenes'),
               ),
+              OutlinedButton.icon(
+                onPressed: () => _showAssignMemberGroupsDialog(
+                  title: 'Assign Light to Groups',
+                  member: _buildPrimaryDeviceGroupMember(device),
+                ),
+                icon: const Icon(Icons.device_hub_outlined),
+                label: const Text('Groups'),
+              ),
               ..._lightScenes.map(
                 (scene) => OutlinedButton(
                   onPressed: () => _sendLightCommand(
@@ -1618,7 +1626,11 @@ class _DevicesScreenState extends State<DevicesScreen> {
     return cleaned.isEmpty ? 'group_${DateTime.now().millisecondsSinceEpoch}' : cleaned;
   }
 
-  Future<GroupConfig?> _openGroupEditor({GroupConfig? existing, String initialName = ''}) async {
+  Future<GroupConfig?> _openGroupEditor({
+    GroupConfig? existing,
+    String initialName = '',
+    String initialKind = 'mixed',
+  }) async {
     final nameCtl = TextEditingController(text: existing?.name ?? initialName);
     var selectedColor = (existing?.color.isNotEmpty ?? false) ? existing!.color : _groupColorChoices.first;
     final saved = await showDialog<bool>(
@@ -1680,11 +1692,13 @@ class _DevicesScreenState extends State<DevicesScreen> {
       id: existing?.id.isNotEmpty == true ? existing!.id : _slugId(name),
       name: name,
       color: selectedColor,
+      kind: existing?.kind.isNotEmpty == true ? existing!.kind : initialKind,
+      members: existing?.members ?? const <GroupMemberConfig>[],
     );
   }
 
-  Future<GroupConfig?> _ensureGroupFromPrompt({String initialName = ''}) async {
-    final created = await _openGroupEditor(initialName: initialName);
+  Future<GroupConfig?> _ensureGroupFromPrompt({String initialName = '', String initialKind = 'mixed'}) async {
+    final created = await _openGroupEditor(initialName: initialName, initialKind: initialKind);
     if (created == null) return null;
     final next = <GroupConfig>[
       ..._groups.where((group) => group.id != created.id),
@@ -1695,6 +1709,193 @@ class _DevicesScreenState extends State<DevicesScreen> {
     });
     await _saveGroupsConfig();
     return created;
+  }
+
+  String _groupKindForChannelKind(String rawKind) {
+    final kind = rawKind.trim().toLowerCase();
+    if (kind.contains('light') || kind.contains('rgb') || kind.contains('dimmer') || kind.contains('bulb')) return 'light';
+    if (kind.contains('fan')) return 'fan';
+    return 'switch';
+  }
+
+  GroupMemberConfig _buildGroupMemberForChannel(SmartDevice device, _QuickChannel channel) {
+    return GroupMemberConfig(
+      deviceId: device.id,
+      channel: channel.key,
+      label: '${device.name} - ${channel.name}',
+      deviceName: device.name,
+      channelName: channel.name,
+      kind: channel.kind,
+      commandPayload: const <String, dynamic>{},
+    );
+  }
+
+  GroupMemberConfig _buildPrimaryDeviceGroupMember(SmartDevice device) {
+    final type = device.type.trim().toLowerCase();
+    var channel = 'power';
+    var channelName = device.name;
+    var kind = type;
+    if (type.contains('rgbw')) {
+      channel = 'rgbw';
+      channelName = 'Light';
+      kind = 'light_rgbw';
+    } else if (type.contains('rgb')) {
+      channel = 'rgb';
+      channelName = 'Light';
+      kind = 'light_rgb';
+    } else if (type.contains('light') || type.contains('dimmer')) {
+      channel = 'light';
+      channelName = 'Light';
+      kind = type.contains('dimmer') ? 'light_dimmer' : 'light';
+    } else if (type.contains('fan')) {
+      channel = 'fan';
+      channelName = 'Fan';
+      kind = 'fan';
+    }
+    return GroupMemberConfig(
+      deviceId: device.id,
+      channel: channel,
+      label: device.name,
+      deviceName: device.name,
+      channelName: channelName,
+      kind: kind,
+      commandPayload: const <String, dynamic>{},
+    );
+  }
+
+  bool _groupContainsMember(GroupConfig group, GroupMemberConfig member) {
+    return group.members.any((item) => item.deviceId == member.deviceId && item.channel == member.channel);
+  }
+
+  GroupConfig _groupWithMembership(GroupConfig group, GroupMemberConfig member, bool include) {
+    final members = group.members
+        .where((item) => !(item.deviceId == member.deviceId && item.channel == member.channel))
+        .toList(growable: true);
+    if (include) {
+      members.add(member);
+    }
+    return GroupConfig(
+      id: group.id,
+      name: group.name,
+      color: group.color,
+      kind: group.kind,
+      members: members,
+    );
+  }
+
+  Future<void> _showAssignMemberGroupsDialog({
+    required String title,
+    required GroupMemberConfig member,
+  }) async {
+    var tempGroups = _groups
+        .map(
+          (group) => GroupConfig(
+            id: group.id,
+            name: group.name,
+            color: group.color,
+            kind: group.kind,
+            members: List<GroupMemberConfig>.from(group.members),
+          ),
+        )
+        .toList(growable: true);
+    final memberKind = _groupKindForChannelKind(member.kind);
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: Text(title),
+          content: SizedBox(
+            width: 460,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${member.deviceName}  |  ${member.channelName.isEmpty ? member.channel : member.channelName}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 10),
+                if (tempGroups.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 8),
+                    child: Text('No groups yet. Create one, then save.'),
+                  ),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 320),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: tempGroups.map((group) {
+                        final selected = _groupContainsMember(group, member);
+                        return CheckboxListTile(
+                          value: selected,
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          controlAffinity: ListTileControlAffinity.leading,
+                          secondary: CircleAvatar(
+                            radius: 9,
+                            backgroundColor: _colorFromHex(group.color),
+                          ),
+                          title: Text(group.name),
+                          subtitle: Text('${group.kind}  |  ${group.members.length} member(s)'),
+                          onChanged: (value) {
+                            setDialogState(() {
+                              tempGroups = tempGroups
+                                  .map((item) => item.id == group.id ? _groupWithMembership(item, member, value ?? false) : item)
+                                  .toList(growable: true);
+                            });
+                          },
+                        );
+                      }).toList(growable: false),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      final created = await _openGroupEditor(
+                        initialName: member.channelName.isEmpty ? member.deviceName : member.channelName,
+                        initialKind: memberKind,
+                      );
+                      if (created == null) return;
+                      setDialogState(() {
+                        tempGroups = [
+                          ...tempGroups.where((group) => group.id != created.id),
+                          GroupConfig(
+                            id: created.id,
+                            name: created.name,
+                            color: created.color,
+                            kind: created.kind,
+                            members: [member],
+                          ),
+                        ]..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+                      });
+                    },
+                    icon: const Icon(Icons.add),
+                    label: const Text('New group'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Save')),
+          ],
+        ),
+      ),
+    );
+    if (saved != true) return;
+    setState(() {
+      _groups = tempGroups;
+    });
+    await _saveGroupsConfig();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Group membership saved')),
+    );
   }
 
   Future<void> _assignDeviceToGroup(SmartDevice device, GroupConfig? group) async {
@@ -2193,6 +2394,13 @@ class _DevicesScreenState extends State<DevicesScreen> {
     return 'relay_switch';
   }
 
+  String _scanSuggestedGroupKind(Map<String, dynamic> item) {
+    final guessedType = _guessDeviceType(item).toLowerCase();
+    if (guessedType.contains('light') || guessedType.contains('rgb')) return 'light';
+    if (guessedType.contains('fan')) return 'fan';
+    return 'switch';
+  }
+
   Future<void> _addScannedDevice(
     Map<String, dynamic> item, {
     String? forceProvider,
@@ -2342,7 +2550,10 @@ class _DevicesScreenState extends State<DevicesScreen> {
 
     Future<GroupConfig?> resolveGroup(String id) async {
       if (id == '__new__') {
-        return _ensureGroupFromPrompt(initialName: _scanDisplayName(item));
+        return _ensureGroupFromPrompt(
+          initialName: _scanDisplayName(item),
+          initialKind: _scanSuggestedGroupKind(item),
+        );
       }
       for (final group in _groups) {
         if (group.id == id) return group;
@@ -2424,7 +2635,10 @@ class _DevicesScreenState extends State<DevicesScreen> {
     if (selectedId == null) return;
     GroupConfig? group;
     if (selectedId == '__new__') {
-      group = await _ensureGroupFromPrompt(initialName: _scanDisplayName(item));
+      group = await _ensureGroupFromPrompt(
+        initialName: _scanDisplayName(item),
+        initialKind: _scanSuggestedGroupKind(item),
+      );
     } else {
       for (final candidate in _groups) {
         if (candidate.id == selectedId) {
@@ -2523,6 +2737,14 @@ class _DevicesScreenState extends State<DevicesScreen> {
                   OutlinedButton(
                     onPressed: () => _renameQuickChannel(device, channel),
                     child: const Text('Rename'),
+                  ),
+                  const SizedBox(width: 6),
+                  OutlinedButton(
+                    onPressed: () => _showAssignMemberGroupsDialog(
+                      title: 'Assign ${channel.name} to Groups',
+                      member: _buildGroupMemberForChannel(device, channel),
+                    ),
+                    child: const Text('Groups'),
                   ),
                   const SizedBox(width: 6),
                   OutlinedButton(

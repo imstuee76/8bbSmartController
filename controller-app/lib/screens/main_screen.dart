@@ -177,6 +177,12 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         if (tileType == 'group')
           'group_kind': (payload['group_kind'] ?? 'switch').toString(),
         if (tileType == 'group') 'group_state': 'unknown',
+        if (tileType == 'automation')
+          'group_name': (payload['group_name'] ?? '').toString(),
+        if (tileType == 'automation')
+          'requested_state': (payload['state'] ?? 'toggle').toString(),
+        if (tileType == 'automation')
+          'member_count': ((payload['members'] as List<dynamic>?)?.length ?? 0),
       },
       'error': null,
     };
@@ -200,6 +206,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     }
     if (tileType == 'weather') return Icons.cloud;
     if (tileType == 'spotify') return Icons.graphic_eq;
+    if (tileType == 'automation') return Icons.auto_awesome;
     final type = (data['type'] ?? data['device_type'] ?? '').toString().toLowerCase();
     if (type.contains('fan')) return Icons.toys;
     if (type.contains('light')) return Icons.lightbulb_outline;
@@ -650,6 +657,33 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _runAutomationTile(Map<String, dynamic> tile) async {
+    final tileId = (tile['id'] ?? '').toString().trim();
+    if (tileId.isEmpty || _tileActionBusy.contains(tileId)) return;
+    final payload = (tile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    final requestedState = (payload['state'] ?? 'toggle').toString().trim();
+    setState(() {
+      _tileActionBusy.add(tileId);
+    });
+    try {
+      await widget.api.runAutomationTile(tileId: tileId, state: requestedState);
+      if (!mounted) return;
+      unawaited(_load());
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Automation "${tile['label']}" ran')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _tileActionBusy.remove(tileId);
+        });
+      }
+    }
+  }
+
   Future<void> _openCreateGroupDialog() async {
     List<SmartDevice> devices;
     try {
@@ -797,6 +831,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
   Future<void> _openAutomationDialog() async {
     final automationTiles = _tiles.where((tile) {
+      if ((tile['tile_type'] ?? '').toString() == 'automation') return true;
       final payload = (tile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
       return (payload['automation_enabled'] as bool?) == true || (payload['timers_enabled'] as bool?) == true;
     }).toList(growable: false);
@@ -814,14 +849,26 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               : ListView(
                   children: automationTiles.map((tile) {
                     final payload = (tile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+                    final tileType = (tile['tile_type'] ?? '').toString();
+                    final automationTarget = (payload['group_name'] ?? '').toString().trim();
+                    final requestedState = (payload['state'] ?? 'toggle').toString().trim();
                     final automation = (payload['automation_note'] ?? '').toString().trim();
                     final timer = (payload['timer_note'] ?? '').toString().trim();
                     return ListTile(
                       title: Text((tile['label'] ?? 'Tile').toString()),
                       subtitle: Text(
-                        'Automation: ${automation.isEmpty ? '(not set)' : automation}\n'
-                        'Timers: ${timer.isEmpty ? '(not set)' : timer}',
+                        tileType == 'automation'
+                            ? 'Group: ${automationTarget.isEmpty ? '(not set)' : automationTarget}\n'
+                                'Action: ${requestedState.isEmpty ? '(not set)' : requestedState}'
+                            : 'Automation: ${automation.isEmpty ? '(not set)' : automation}\n'
+                                'Timers: ${timer.isEmpty ? '(not set)' : timer}',
                       ),
+                      trailing: tileType == 'automation'
+                          ? FilledButton.tonal(
+                              onPressed: () => _runAutomationTile(tile),
+                              child: const Text('Run'),
+                            )
+                          : null,
                     );
                   }).toList(growable: false),
                 ),
@@ -1751,18 +1798,42 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         ],
       );
     } else if (tileType == 'automation') {
+      final data = (tile['data'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+      final mode = (data['mode'] ?? 'manual').toString();
+      final targetName = (data['group_name'] ?? payload['group_name'] ?? '').toString();
+      final requestedState = (data['requested_state'] ?? payload['state'] ?? 'toggle').toString().toUpperCase();
+      final memberCount = (data['member_count'] as num?)?.toInt() ?? 0;
+      final busy = _tileActionBusy.contains((tile['id'] ?? '').toString());
       content = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          const Text('Scene / automation trigger'),
+          Text(
+            mode,
+            style: const TextStyle(fontSize: 11, color: Color(0xFF546E7A)),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
           const SizedBox(height: 8),
-          FilledButton.tonal(
-            onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Automation "${tile['label']}" triggered')),
-              );
-            },
-            child: const Text('Run'),
+          Text(
+            targetName.isEmpty ? 'Automation' : targetName,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '$requestedState  |  $memberCount item${memberCount == 1 ? '' : 's'}',
+            style: const TextStyle(fontSize: 11, color: Color(0xFF607D8B)),
+          ),
+          const Spacer(),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.tonal(
+              onPressed: busy ? null : () => _runAutomationTile(tile),
+              child: Text(busy ? 'Running...' : 'Run'),
+            ),
           ),
         ],
       );

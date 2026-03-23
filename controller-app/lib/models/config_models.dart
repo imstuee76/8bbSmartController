@@ -1,12 +1,58 @@
+class GroupMemberConfig {
+  String deviceId;
+  String channel;
+  String label;
+  String deviceName;
+  String channelName;
+  String kind;
+  Map<String, dynamic> commandPayload;
+
+  GroupMemberConfig({
+    required this.deviceId,
+    required this.channel,
+    required this.label,
+    required this.deviceName,
+    required this.channelName,
+    required this.kind,
+    required this.commandPayload,
+  });
+
+  factory GroupMemberConfig.fromJson(Map<String, dynamic> json) {
+    return GroupMemberConfig(
+      deviceId: (json['device_id'] ?? '').toString(),
+      channel: (json['channel'] ?? '').toString(),
+      label: (json['label'] ?? '').toString(),
+      deviceName: (json['device_name'] ?? '').toString(),
+      channelName: (json['channel_name'] ?? '').toString(),
+      kind: (json['kind'] ?? '').toString(),
+      commandPayload: (json['command_payload'] as Map<String, dynamic>?) ?? <String, dynamic>{},
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'device_id': deviceId,
+        'channel': channel,
+        'label': label,
+        'device_name': deviceName,
+        'channel_name': channelName,
+        'kind': kind,
+        'command_payload': commandPayload,
+      };
+}
+
 class GroupConfig {
   String id;
   String name;
   String color;
+  String kind;
+  List<GroupMemberConfig> members;
 
   GroupConfig({
     required this.id,
     required this.name,
     required this.color,
+    this.kind = 'mixed',
+    this.members = const <GroupMemberConfig>[],
   });
 
   factory GroupConfig.fromJson(Map<String, dynamic> json) {
@@ -14,6 +60,11 @@ class GroupConfig {
       id: (json['id'] ?? '').toString(),
       name: (json['name'] ?? '').toString(),
       color: (json['color'] ?? '#4CAF50').toString(),
+      kind: (json['kind'] ?? 'mixed').toString(),
+      members: (json['members'] as List<dynamic>? ?? const <dynamic>[])
+          .whereType<Map<String, dynamic>>()
+          .map(GroupMemberConfig.fromJson)
+          .toList(growable: false),
     );
   }
 
@@ -21,6 +72,8 @@ class GroupConfig {
         'id': id,
         'name': name,
         'color': color,
+        'kind': kind,
+        'members': members.map((member) => member.toJson()).toList(growable: false),
       };
 }
 

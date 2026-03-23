@@ -962,10 +962,92 @@ def _group_member_channel_value(status: dict[str, Any], channel: str) -> Any:
     return None
 
 
+def _display_groups() -> list[dict[str, Any]]:
+    display = get_setting("display")
+    rows = display.get("groups", []) if isinstance(display, dict) else []
+    return [item for item in rows if isinstance(item, dict)]
+
+
+def _group_members_from_source(payload: dict[str, Any]) -> tuple[str, str, list[dict[str, Any]]]:
+    group_id = str(payload.get("group_id", "")).strip()
+    payload_members = payload.get("members", [])
+    payload_kind = str(payload.get("group_kind", "mixed")).strip().lower() or "mixed"
+    if group_id:
+        for group in _display_groups():
+            if str(group.get("id", "")).strip() != group_id:
+                continue
+            members = [item for item in (group.get("members", []) if isinstance(group.get("members", []), list) else []) if isinstance(item, dict)]
+            kind = str(group.get("kind", payload_kind)).strip().lower() or payload_kind
+            name = str(group.get("name", payload.get("group_name", ""))).strip()
+            return kind, name, members
+    members = [item for item in payload_members if isinstance(item, dict)] if isinstance(payload_members, list) else []
+    name = str(payload.get("group_name", "")).strip()
+    return payload_kind, name, members
+
+
+def _group_supports_light(members: list[dict[str, Any]], group_kind: str) -> bool:
+    if group_kind == "light":
+        return True
+    for member in members:
+        blob = " ".join(
+            str(member.get(key, "")).strip().lower()
+            for key in ("kind", "channel", "label", "channel_name")
+        )
+        if any(token in blob for token in ("light", "rgb", "dimmer", "bulb", "lamp")):
+            return True
+    return False
+
+
+def _group_supports_fan(members: list[dict[str, Any]], group_kind: str) -> bool:
+    if group_kind == "fan":
+        return True
+    for member in members:
+        blob = " ".join(
+            str(member.get(key, "")).strip().lower()
+            for key in ("kind", "channel", "label", "channel_name")
+        )
+        if "fan" in blob:
+            return True
+    return False
+
+
+def _execute_group_members_action(
+    *,
+    requested_state: str,
+    members: list[dict[str, Any]],
+    device_rows: dict[str, Any],
+) -> tuple[list[dict[str, Any]], int, int]:
+    results: list[dict[str, Any]] = []
+    ok_count = 0
+    error_count = 0
+    for member in members:
+        device_id = str(member.get("device_id", "")).strip()
+        channel = str(member.get("channel", "")).strip() or "power"
+        label = str(member.get("label", "")).strip() or str(member.get("device_name", "")).strip() or device_id
+        row = device_rows.get(device_id)
+        if not row:
+            error_count += 1
+            results.append({"device_id": device_id, "channel": channel, "label": label, "ok": False, "error": "Device not found"})
+            continue
+        try:
+            command_payload = {
+                "channel": channel,
+                "state": requested_state,
+                "payload": member.get("command_payload", {}) if isinstance(member.get("command_payload"), dict) else {},
+            }
+            result = _execute_device_command_by_row(device_id, row, command_payload)
+            _apply_dashboard_command_cache(device_id, row, command_payload)
+            ok_count += 1
+            results.append({"device_id": device_id, "channel": channel, "label": label, "ok": True, "result": result})
+        except Exception as exc:
+            error_count += 1
+            results.append({"device_id": device_id, "channel": channel, "label": label, "ok": False, "error": str(exc)})
+    return results, ok_count, error_count
+
+
 def _resolve_group_tile_data(payload: dict[str, Any], device_map: dict[str, Any]) -> dict[str, Any]:
-    members_raw = payload.get("members", [])
+    group_kind, group_name, members_raw = _group_members_from_source(payload)
     members: list[dict[str, Any]] = []
-    group_kind = str(payload.get("group_kind", "switch")).strip().lower() or "switch"
     on_count = 0
     off_count = 0
     unknown_count = 0
@@ -1052,12 +1134,14 @@ def _resolve_group_tile_data(payload: dict[str, Any], device_map: dict[str, Any]
     elif cloud_count > 0:
         mode = "hybrid"
 
-    supports_light = group_kind == "light"
+    supports_light = _group_supports_light(members_raw, group_kind)
+    supports_fan = _group_supports_fan(members_raw, group_kind)
     return {
         "provider": "group",
         "mode": mode,
         "device_type": f"group_{group_kind}",
         "group_kind": group_kind,
+        "group_name": group_name,
         "member_count": member_count,
         "on_count": on_count,
         "off_count": off_count,
@@ -1074,10 +1158,49 @@ def _resolve_group_tile_data(payload: dict[str, Any], device_map: dict[str, Any]
             "supports_group": True,
             "supports_light": supports_light,
             "supports_rgb": False,
+            "supports_fan": supports_fan,
             "supports_scenes": supports_light,
             "supports_timers": True,
         },
         "source_name": "8bb Groups",
+    }
+
+
+def _resolve_automation_tile_data(payload: dict[str, Any], device_map: dict[str, Any]) -> dict[str, Any]:
+    action = str(payload.get("action", "group")).strip().lower() or "group"
+    requested_state = str(payload.get("state", "toggle")).strip().lower() or "toggle"
+    group_kind, group_name, members = _group_members_from_source(payload)
+    supports_light = _group_supports_light(members, group_kind)
+    supports_fan = _group_supports_fan(members, group_kind)
+    if action != "group":
+        return {
+            "provider": "automation",
+            "mode": "manual",
+            "device_type": "automation",
+            "action": action,
+            "group_kind": group_kind,
+            "group_name": group_name,
+            "requested_state": requested_state,
+            "member_count": len(members),
+            "capabilities": {
+                "supports_automation": True,
+                "supports_group": False,
+                "supports_light": supports_light,
+                "supports_rgb": False,
+                "supports_fan": supports_fan,
+                "supports_scenes": supports_light,
+                "supports_timers": True,
+            },
+            "source_name": "8bb Automation",
+        }
+    group_data = _resolve_group_tile_data(payload, device_map)
+    return {
+        **group_data,
+        "provider": "automation",
+        "device_type": "automation",
+        "action": action,
+        "requested_state": requested_state,
+        "source_name": "8bb Automation",
     }
 
 
@@ -2351,6 +2474,9 @@ def get_tile_data() -> dict[str, Any]:
             if tile_type == "group":
                 payload = json.loads(row["payload_json"])
                 return _resolve_group_tile_data(payload if isinstance(payload, dict) else {}, device_map), None
+            if tile_type == "automation":
+                payload = json.loads(row["payload_json"])
+                return _resolve_automation_tile_data(payload if isinstance(payload, dict) else {}, device_map), None
             return {}, None
         except Exception as exc:
             return {}, str(exc)
@@ -2374,7 +2500,7 @@ def get_tile_data() -> dict[str, Any]:
             tiles.append(tile)
 
             tile_type = row["tile_type"]
-            if tile_type in ("weather", "spotify", "device", "group"):
+            if tile_type in ("weather", "spotify", "device", "group", "automation"):
                 future = executor.submit(resolve_live, row)
                 pending[future] = len(tiles) - 1
 
@@ -2417,6 +2543,17 @@ def get_tile_data() -> dict[str, Any]:
                     if not isinstance(payload, dict):
                         payload = {}
                     tile["data"] = _resolve_group_tile_data(payload, device_map)
+                    tile["data"]["stale"] = True
+                    tile["error"] = None
+                    continue
+                except Exception:
+                    pass
+            if tile["tile_type"] == "automation":
+                try:
+                    payload = tile.get("payload", {})
+                    if not isinstance(payload, dict):
+                        payload = {}
+                    tile["data"] = _resolve_automation_tile_data(payload, device_map)
                     tile["data"]["stale"] = True
                     tile["error"] = None
                     continue
@@ -2471,8 +2608,7 @@ def post_group_tile_action(tile_id: str, payload: dict[str, Any]) -> dict[str, A
         tile_payload = {}
     if not isinstance(tile_payload, dict):
         tile_payload = {}
-    members_raw = tile_payload.get("members", [])
-    members = [item for item in members_raw if isinstance(item, dict)]
+    group_kind, group_name, members = _group_members_from_source(tile_payload)
     if not members:
         conn.close()
         raise HTTPException(status_code=400, detail="Group has no members")
@@ -2485,41 +2621,19 @@ def post_group_tile_action(tile_id: str, payload: dict[str, Any]) -> dict[str, A
     }
     conn.close()
 
-    results: list[dict[str, Any]] = []
-    ok_count = 0
-    error_count = 0
-    for member in members:
-        device_id = str(member.get("device_id", "")).strip()
-        channel = str(member.get("channel", "")).strip() or "power"
-        label = str(member.get("label", "")).strip() or str(member.get("device_name", "")).strip() or device_id
-        row = device_rows.get(device_id)
-        if not row:
-            error_count += 1
-            results.append({"device_id": device_id, "channel": channel, "label": label, "ok": False, "error": "Device not found"})
-            continue
-        try:
-            command_payload = {
-                "channel": channel,
-                "state": requested_state,
-                "payload": member.get("command_payload", {}) if isinstance(member.get("command_payload"), dict) else {},
-            }
-            result = _execute_device_command_by_row(
-                device_id,
-                row,
-                command_payload,
-            )
-            _apply_dashboard_command_cache(device_id, row, command_payload)
-            ok_count += 1
-            results.append({"device_id": device_id, "channel": channel, "label": label, "ok": True, "result": result})
-        except Exception as exc:
-            error_count += 1
-            results.append({"device_id": device_id, "channel": channel, "label": label, "ok": False, "error": str(exc)})
+    results, ok_count, error_count = _execute_group_members_action(
+        requested_state=requested_state,
+        members=members,
+        device_rows=device_rows,
+    )
 
     append_event(
         "group_tile_action",
         {
             "tile_id": tile_id,
             "label": str(tile["label"] or ""),
+            "group_name": group_name or str(tile["label"] or ""),
+            "group_kind": group_kind,
             "state": requested_state,
             "member_count": len(members),
             "ok_count": ok_count,
@@ -2530,6 +2644,87 @@ def post_group_tile_action(tile_id: str, payload: dict[str, Any]) -> dict[str, A
         "ok": error_count == 0,
         "tile_id": tile_id,
         "state": requested_state,
+        "member_count": len(members),
+        "ok_count": ok_count,
+        "error_count": error_count,
+        "results": results,
+    }
+
+
+@app.post("/api/main/tiles/{tile_id}/run", dependencies=[Depends(require_auth_if_configured)])
+def post_run_tile(tile_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    if payload is not None and not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be an object")
+
+    conn = get_connection()
+    tile = conn.execute("SELECT * FROM main_tiles WHERE id=?", (tile_id,)).fetchone()
+    if not tile:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Tile not found")
+    try:
+        tile_payload = json.loads(tile["payload_json"] or "{}")
+    except Exception:
+        tile_payload = {}
+    if not isinstance(tile_payload, dict):
+        tile_payload = {}
+
+    tile_type = str(tile["tile_type"] or "").strip().lower()
+    if tile_type == "group":
+        conn.close()
+        return post_group_tile_action(tile_id, payload or {"state": "toggle"})
+    if tile_type != "automation":
+        conn.close()
+        raise HTTPException(status_code=400, detail="Tile is not runnable")
+
+    action = str(tile_payload.get("action", "group")).strip().lower() or "group"
+    if action != "group":
+        conn.close()
+        raise HTTPException(status_code=400, detail="Unsupported automation action")
+
+    requested_state = str((payload or {}).get("state", tile_payload.get("state", "toggle"))).strip().lower() or "toggle"
+    if requested_state not in {"on", "off", "toggle"}:
+        conn.close()
+        raise HTTPException(status_code=400, detail="state must be one of: on, off, toggle")
+
+    group_kind, group_name, members = _group_members_from_source(tile_payload)
+    if not members:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Automation target group has no members")
+
+    device_ids = [str(item.get("device_id", "")).strip() for item in members if str(item.get("device_id", "")).strip()]
+    placeholders = ",".join("?" for _ in device_ids) or "''"
+    device_rows = {
+        str(row["id"]): row
+        for row in conn.execute(f"SELECT * FROM devices WHERE id IN ({placeholders})", tuple(device_ids)).fetchall()
+    }
+    conn.close()
+
+    results, ok_count, error_count = _execute_group_members_action(
+        requested_state=requested_state,
+        members=members,
+        device_rows=device_rows,
+    )
+    append_event(
+        "automation_tile_run",
+        {
+            "tile_id": tile_id,
+            "label": str(tile["label"] or ""),
+            "group_name": group_name or str(tile["label"] or ""),
+            "group_kind": group_kind,
+            "state": requested_state,
+            "member_count": len(members),
+            "ok_count": ok_count,
+            "error_count": error_count,
+        },
+    )
+    return {
+        "ok": error_count == 0,
+        "tile_id": tile_id,
+        "tile_type": tile_type,
+        "action": action,
+        "state": requested_state,
+        "group_name": group_name,
+        "group_kind": group_kind,
         "member_count": len(members),
         "ok_count": ok_count,
         "error_count": error_count,
