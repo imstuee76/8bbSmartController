@@ -2002,12 +2002,13 @@ def patch_device(device_id: str, payload: DeviceUpdate) -> dict[str, Any]:
 def delete_device(device_id: str) -> dict[str, Any]:
     conn = get_connection()
     count = conn.execute("DELETE FROM devices WHERE id=?", (device_id,)).rowcount
+    removed_tiles = conn.execute("DELETE FROM main_tiles WHERE tile_type='device' AND ref_id=?", (device_id,)).rowcount
     conn.commit()
     conn.close()
     if count == 0:
         raise HTTPException(status_code=404, detail="Device not found")
-    append_event("device_removed", {"id": device_id})
-    return {"removed": True}
+    append_event("device_removed", {"id": device_id, "removed_tiles": removed_tiles})
+    return {"removed": True, "removed_tiles": removed_tiles}
 
 
 @app.post("/api/devices/{device_id}/channels", dependencies=[Depends(require_auth_if_configured)])
@@ -2328,6 +2329,7 @@ def get_tile_data() -> dict[str, Any]:
     conn.close()
 
     tiles: list[dict[str, Any]] = []
+    orphan_tile_ids: list[str] = []
     pending: dict[Any, int] = {}
     executor = ThreadPoolExecutor(max_workers=max(1, min(8, len(rows))))
     deadline = time.monotonic() + max(1.0, _DASHBOARD_TOTAL_TIMEOUT_SECONDS)
@@ -2355,6 +2357,9 @@ def get_tile_data() -> dict[str, Any]:
 
     try:
         for row in rows:
+            if row["tile_type"] == "device" and row["ref_id"] not in device_map:
+                orphan_tile_ids.append(str(row["id"]))
+                continue
             tile = {
                 "id": row["id"],
                 "tile_type": row["tile_type"],
@@ -2420,6 +2425,12 @@ def get_tile_data() -> dict[str, Any]:
             tile["error"] = "Timed out fetching live status"
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
+    if orphan_tile_ids:
+        cleanup = get_connection()
+        cleanup.executemany("DELETE FROM main_tiles WHERE id=?", [(tile_id,) for tile_id in orphan_tile_ids])
+        cleanup.commit()
+        cleanup.close()
+        append_event("main_orphan_tiles_removed", {"tile_ids": orphan_tile_ids, "count": len(orphan_tile_ids)})
     return {"tiles": tiles}
 
 

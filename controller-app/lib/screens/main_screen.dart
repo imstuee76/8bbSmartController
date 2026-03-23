@@ -1286,6 +1286,146 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     await _load();
   }
 
+  Map<String, dynamic> _tileCapabilities(Map<String, dynamic> tile) {
+    final data = (tile['data'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    return (data['capabilities'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+  }
+
+  bool _tileSupportsLight(Map<String, dynamic> tile) {
+    if (!_isLightTile(tile)) return false;
+    final capabilities = _tileCapabilities(tile);
+    return (capabilities['supports_light'] as bool?) == true || (capabilities['supports_rgb'] as bool?) == true;
+  }
+
+  bool _tileSupportsFan(Map<String, dynamic> tile) {
+    final capabilities = _tileCapabilities(tile);
+    if ((capabilities['supports_fan'] as bool?) == true) return true;
+    final data = (tile['data'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    final type = (data['type'] ?? data['device_type'] ?? '').toString().toLowerCase();
+    final payload = (tile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    final channel = (payload['channel'] ?? '').toString().toLowerCase();
+    return type.contains('fan') || channel.contains('fan');
+  }
+
+  Widget _tileConnectionBadge(bool cloudMode) {
+    return Container(
+      width: 24,
+      height: 24,
+      decoration: BoxDecoration(
+        color: cloudMode ? const Color(0xFFFFF3E0) : const Color(0xFFE7F6EC),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Icon(
+        cloudMode ? Icons.cloud : Icons.lan,
+        size: 14,
+        color: cloudMode ? const Color(0xFFE67E22) : const Color(0xFF2E7D32),
+      ),
+    );
+  }
+
+  Widget _tileStateVisual(Map<String, dynamic> tile, bool? stateBool, Color statusColor) {
+    if (_tileSupportsLight(tile)) {
+      final data = (tile['data'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+      final outputs = (data['outputs'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+      final r = outputs['rgb_r'];
+      final g = outputs['rgb_g'];
+      final b = outputs['rgb_b'];
+      Color fill;
+      if (r is num && g is num && b is num) {
+        fill = Color.fromARGB(255, r.clamp(0, 255).toInt(), g.clamp(0, 255).toInt(), b.clamp(0, 255).toInt());
+      } else {
+        fill = Colors.white;
+      }
+      return Container(
+        width: 28,
+        height: 28,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(9),
+          gradient: (r is num && g is num && b is num)
+              ? null
+              : const LinearGradient(
+                  colors: [Color(0xFFFF5F6D), Color(0xFFFFC371), Color(0xFF4FACFE), Color(0xFF43E97B)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+          color: (r is num && g is num && b is num) ? fill : null,
+          border: Border.all(color: Colors.black12),
+          boxShadow: stateBool == true ? [BoxShadow(color: statusColor.withOpacity(0.28), blurRadius: 12, spreadRadius: 1)] : null,
+        ),
+      );
+    }
+    return Container(
+      width: 28,
+      height: 28,
+      decoration: BoxDecoration(
+        color: statusColor.withOpacity(0.14),
+        borderRadius: BorderRadius.circular(9),
+      ),
+      child: Icon(
+        stateBool == true ? Icons.power_settings_new : stateBool == false ? Icons.power_off : Icons.help_outline,
+        size: 18,
+        color: statusColor,
+      ),
+    );
+  }
+
+  Future<void> _showFanDesigner({
+    required String refId,
+    required bool cloudMode,
+    required String label,
+  }) async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('Fan Control: $label'),
+        content: Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            FilledButton.tonal(
+              onPressed: () async {
+                await _sendLightPreset(refId, cloudMode: cloudMode, label: label, channel: 'fan_power', state: 'on');
+                if (mounted && context.mounted) Navigator.of(context).pop();
+              },
+              child: const Text('Fan On'),
+            ),
+            FilledButton.tonal(
+              onPressed: () async {
+                await _sendLightPreset(refId, cloudMode: cloudMode, label: label, channel: 'fan_power', state: 'off');
+                if (mounted && context.mounted) Navigator.of(context).pop();
+              },
+              child: const Text('Fan Off'),
+            ),
+            OutlinedButton(
+              onPressed: () async {
+                await _sendLightPreset(refId, cloudMode: cloudMode, label: label, channel: 'fan_speed', value: 1);
+                if (mounted && context.mounted) Navigator.of(context).pop();
+              },
+              child: const Text('Low'),
+            ),
+            OutlinedButton(
+              onPressed: () async {
+                await _sendLightPreset(refId, cloudMode: cloudMode, label: label, channel: 'fan_speed', value: 2);
+                if (mounted && context.mounted) Navigator.of(context).pop();
+              },
+              child: const Text('Med'),
+            ),
+            OutlinedButton(
+              onPressed: () async {
+                await _sendLightPreset(refId, cloudMode: cloudMode, label: label, channel: 'fan_speed', value: 3);
+                if (mounted && context.mounted) Navigator.of(context).pop();
+              },
+              child: const Text('High'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+        ],
+      ),
+    );
+  }
+
   Widget _buildTileCard(Map<String, dynamic> tile) {
     final tileType = (tile['tile_type'] ?? '').toString();
     final label = (tile['label'] ?? '').toString();
@@ -1345,149 +1485,186 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       final tileId = (tile['id'] ?? '').toString().trim();
       final statusText = stateBool == true ? 'On' : stateBool == false ? 'Off' : channelValue.toString();
       final busy = _tileActionBusy.contains('$tileId::$channelKey');
+      final supportsLight = _tileSupportsLight(tile);
+      final supportsFan = _tileSupportsFan(tile);
+      final showExtra = supportsLight || supportsFan;
       content = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
           Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              if (automated)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFDCEBED),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: const Text('Automated', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600)),
+              _tileStateVisual(tile, stateBool, statusColor),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        if (automated)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFDCEBED),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: const Text('Auto', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700)),
+                          ),
+                        if (automated) const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            statusText,
+                            style: TextStyle(color: statusColor, fontWeight: FontWeight.w800, fontSize: 15),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      showIp ? 'IP ${(data['ip'] ?? data['host'] ?? '--').toString()}' : mode,
+                      style: const TextStyle(fontSize: 11, color: Color(0xFF607D8B)),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ),
-              if (automated) const SizedBox(width: 6),
-              Expanded(child: Text(mode, style: const TextStyle(fontSize: 11, color: Color(0xFF546E7A)), maxLines: 1, overflow: TextOverflow.ellipsis)),
+              ),
             ],
           ),
-          if (showIp) ...[
-            const SizedBox(height: 3),
-            Text(
-              'IP ${(data['ip'] ?? data['host'] ?? '--').toString()}',
-              style: const TextStyle(fontSize: 11, color: Color(0xFF607D8B)),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-          if (cloudMode) ...[
-            const SizedBox(height: 3),
-            const Text(
-              'Warning: cloud dependent',
-              style: TextStyle(color: Colors.orange, fontSize: 11),
-            ),
-          ],
           const SizedBox(height: 8),
           Row(
             children: [
-              Container(
-                width: 10,
-                height: 10,
-                decoration: BoxDecoration(
-                  color: statusColor,
-                  shape: BoxShape.circle,
-                ),
-              ),
+              _tileConnectionBadge(cloudMode),
               const SizedBox(width: 8),
               Expanded(
-                child: Text(
-                  statusText,
-                  style: TextStyle(color: statusColor, fontWeight: FontWeight.w700, fontSize: 20),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                flex: 3,
+                child: SizedBox(
+                  height: 34,
+                  child: actionMode == 'toggle'
+                      ? FilledButton(
+                          onPressed: busy
+                              ? null
+                              : () => _sendDeviceState(
+                                    refId,
+                                    tileId: tileId,
+                                    currentState: stateBool,
+                                    cloudMode: cloudMode,
+                                    label: titleText,
+                                    channel: channelKey,
+                                    state: stateBool == true ? 'off' : stateBool == false ? 'on' : 'toggle',
+                                  ),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: stateBool == null ? Colors.blueGrey : (stateBool ? Colors.green : Colors.red),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          ),
+                          child: Icon(
+                            busy ? Icons.more_horiz : stateBool == true ? Icons.toggle_on : stateBool == false ? Icons.toggle_off : Icons.power_settings_new,
+                            size: 20,
+                          ),
+                        )
+                      : Row(
+                          children: [
+                            Expanded(
+                              child: FilledButton(
+                                onPressed: busy
+                                    ? null
+                                    : () => _sendDeviceState(
+                                          refId,
+                                          tileId: tileId,
+                                          currentState: stateBool,
+                                          cloudMode: cloudMode,
+                                          label: titleText,
+                                          channel: channelKey,
+                                          state: 'on',
+                                        ),
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: Colors.green,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                ),
+                                child: const Text('On'),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: FilledButton(
+                                onPressed: busy
+                                    ? null
+                                    : () => _sendDeviceState(
+                                          refId,
+                                          tileId: tileId,
+                                          currentState: stateBool,
+                                          cloudMode: cloudMode,
+                                          label: titleText,
+                                          channel: channelKey,
+                                          state: 'off',
+                                        ),
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: Colors.red,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                ),
+                                child: const Text('Off'),
+                              ),
+                            ),
+                          ],
+                        ),
                 ),
               ),
+              if (showExtra) ...[
+                const SizedBox(width: 8),
+                Expanded(
+                  flex: 2,
+                  child: SizedBox(
+                    height: 34,
+                    child: OutlinedButton(
+                      onPressed: refId.isEmpty
+                          ? null
+                          : () => supportsLight
+                              ? _showLightDesigner(
+                                    refId: refId,
+                                    cloudMode: cloudMode,
+                                    label: titleText,
+                                    isRgbw: ((data['type'] ?? data['device_type'] ?? '').toString().toLowerCase().contains('rgbw') ||
+                                        channelKey.toLowerCase() == 'rgbw'),
+                                  )
+                              : _showFanDesigner(
+                                    refId: refId,
+                                    cloudMode: cloudMode,
+                                    label: titleText,
+                                  ),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      ),
+                      child: const Text('Extra'),
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
-          if ((payload['show_status'] as bool?) ?? true) ...[
-            const SizedBox(height: 4),
+          if (cloudMode || ((payload['show_status'] as bool?) ?? true)) ...[
+            const SizedBox(height: 6),
             Text(
-              'Status ${channelValue.toString()}',
-              style: TextStyle(color: statusColor, fontWeight: FontWeight.w600, fontSize: 11),
+              cloudMode
+                  ? 'Cloud'
+                  : ((payload['show_status'] as bool?) ?? true)
+                      ? 'Status ${channelValue.toString()}'
+                      : mode,
+              style: TextStyle(
+                color: cloudMode ? Colors.orange.shade700 : const Color(0xFF607D8B),
+                fontWeight: cloudMode ? FontWeight.w600 : FontWeight.w500,
+                fontSize: 10.5,
+              ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
           ],
-          const Spacer(),
-          const SizedBox(height: 8),
-          if (refId.isNotEmpty && actionMode == 'toggle')
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                onPressed: busy
-                    ? null
-                    : () => _sendDeviceState(
-                  refId,
-                  tileId: tileId,
-                  currentState: stateBool,
-                  cloudMode: cloudMode,
-                  label: titleText,
-                  channel: channelKey,
-                  state: stateBool == true ? 'off' : stateBool == false ? 'on' : 'toggle',
-                ),
-                style: FilledButton.styleFrom(
-                  backgroundColor: stateBool == null ? Colors.blueGrey : (stateBool ? Colors.green : Colors.red),
-                  foregroundColor: Colors.white,
-                  minimumSize: const Size.fromHeight(38),
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                ),
-                child: Text(busy ? '...' : stateBool == true ? 'ON' : stateBool == false ? 'OFF' : 'TOGGLE'),
-              ),
-            ),
-          if (refId.isNotEmpty && actionMode == 'on_off')
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton(
-                    onPressed: busy
-                        ? null
-                        : () => _sendDeviceState(
-                      refId,
-                      tileId: tileId,
-                      currentState: stateBool,
-                      cloudMode: cloudMode,
-                      label: titleText,
-                      channel: channelKey,
-                      state: 'on',
-                    ),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: Colors.green,
-                      foregroundColor: Colors.white,
-                      minimumSize: const Size.fromHeight(38),
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                    ),
-                    child: const Text('ON'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: FilledButton(
-                    onPressed: busy
-                        ? null
-                        : () => _sendDeviceState(
-                      refId,
-                      tileId: tileId,
-                      currentState: stateBool,
-                      cloudMode: cloudMode,
-                      label: titleText,
-                      channel: channelKey,
-                      state: 'off',
-                    ),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      foregroundColor: Colors.white,
-                      minimumSize: const Size.fromHeight(38),
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                    ),
-                    child: const Text('OFF'),
-                  ),
-                ),
-              ],
-            ),
         ],
       );
     } else if (tileType == 'group') {
@@ -1597,33 +1774,33 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       elevation: 1,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+        padding: const EdgeInsets.fromLTRB(8, 7, 8, 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
                 Container(
-                  width: 30,
-                  height: 30,
+                  width: 26,
+                  height: 26,
                   decoration: BoxDecoration(
                     color: const Color(0xFFDCEBED),
-                    borderRadius: BorderRadius.circular(10),
+                    borderRadius: BorderRadius.circular(8),
                   ),
-                  child: Icon(tileIcon, color: const Color(0xFF0B7285), size: 18),
+                  child: Icon(tileIcon, color: const Color(0xFF0B7285), size: 16),
                 ),
-                const SizedBox(width: 7),
+                const SizedBox(width: 6),
                 Expanded(
                   child: Text(
                     titleText,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(fontSize: 16, fontWeight: FontWeight.w700),
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(fontSize: 14, fontWeight: FontWeight.w700),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             Expanded(child: content),
           ],
         ),
@@ -1672,12 +1849,12 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           child: LayoutBuilder(
             builder: (context, constraints) {
               final width = constraints.maxWidth;
-              const spacing = 8.0;
-              final targetTileWidth = width >= 1500 ? 250.0 : width >= 1100 ? 210.0 : width >= 800 ? 230.0 : 280.0;
+              const spacing = 6.0;
+              final targetTileWidth = width >= 1500 ? 210.0 : width >= 1100 ? 185.0 : width >= 800 ? 205.0 : 270.0;
               final crossAxisCount = math.min(5, math.max(1, ((width + spacing) / (targetTileWidth + spacing)).floor()));
-              final mainAxisExtent = width >= 1500 ? 188.0 : width >= 1100 ? 180.0 : width >= 800 ? 186.0 : 196.0;
+              final mainAxisExtent = width >= 1500 ? 138.0 : width >= 1100 ? 130.0 : width >= 800 ? 136.0 : 168.0;
               return GridView.builder(
-                padding: const EdgeInsets.all(8),
+                padding: const EdgeInsets.all(6),
                 itemCount: _tiles.length,
                 gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: crossAxisCount,
