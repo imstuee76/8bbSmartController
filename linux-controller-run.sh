@@ -4,6 +4,7 @@ set -Eeuo pipefail
 APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_DIR="${SMART_CONTROLLER_DATA_DIR:-$APP_ROOT/data}"
 LOG_BASE="$DATA_DIR/logs/controller"
+RUN_DIR="$DATA_DIR/run"
 DAY_LOCAL="$(date +%Y%m%d)"
 SESSION_STAMP="$(date +%Y%m%dT%H%M%S%z)"
 SESSION_ID="controller-${SESSION_STAMP}-$$"
@@ -13,7 +14,7 @@ FLUTTER_HOME_DEFAULT="$APP_ROOT/.tools/flutter"
 FLUTTER_BIN=""
 ENV_FILE_LOADED=""
 
-mkdir -p "$LOG_BASE"
+mkdir -p "$LOG_BASE" "$RUN_DIR"
 mkdir -p "$DATA_DIR/logs/updater"
 
 exec > >(tee -a "$ACTIVITY_LOG")
@@ -40,6 +41,52 @@ cleanup_processes() {
 }
 
 trap cleanup_processes EXIT INT TERM
+
+existing_controller_pid() {
+  pgrep -f "$APP_ROOT/controller-app/build/linux/.*/bundle/smart_controller" | head -n 1 || true
+}
+
+focus_existing_controller() {
+  local pid="$1"
+  if [[ -z "$pid" ]]; then
+    return 0
+  fi
+
+  if command -v wmctrl >/dev/null 2>&1; then
+    wmctrl -lp 2>/dev/null | awk -v pid="$pid" '$3 == pid {print $1; exit}' | while read -r window_id; do
+      if [[ -n "$window_id" ]]; then
+        wmctrl -ia "$window_id" >/dev/null 2>&1 || true
+      fi
+    done
+  fi
+}
+
+acquire_launch_lock() {
+  local lock_file="$RUN_DIR/controller-launch.lock"
+  exec 9>"$lock_file"
+  if command -v flock >/dev/null 2>&1; then
+    if ! flock -n 9; then
+      log "Another controller launch is already in progress. Reusing existing startup path."
+      exit 0
+    fi
+    return 0
+  fi
+
+  if ! mkdir "${lock_file}.d" 2>/dev/null; then
+    log "Another controller launch is already in progress. Reusing existing startup path."
+    exit 0
+  fi
+}
+
+ensure_single_controller_instance() {
+  local existing_pid
+  existing_pid="$(existing_controller_pid)"
+  if [[ -n "$existing_pid" ]]; then
+    log "Controller already running (pid=$existing_pid). Not starting another instance."
+    focus_existing_controller "$existing_pid"
+    exit 0
+  fi
+}
 
 resolve_flutter() {
   if command -v flutter >/dev/null 2>&1; then
@@ -372,6 +419,8 @@ main() {
   log "Data dir: $DATA_DIR"
   export SMART_CONTROLLER_DATA_DIR="$DATA_DIR"
   export SMART_CONTROLLER_APP_ROOT="$APP_ROOT"
+  acquire_launch_lock
+  ensure_single_controller_instance
   load_env_file
   if [[ -z "$ENV_FILE_LOADED" && -f "$APP_ROOT/.env" ]]; then
     export SMART_CONTROLLER_ENV_FILE="$APP_ROOT/.env"
