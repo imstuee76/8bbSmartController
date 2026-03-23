@@ -107,6 +107,7 @@ OTA_PUSH_LOG_DIR = DATA_DIR / "logs" / "ota_push_jobs"
 _DEVICE_IP_REFRESH_INTERVAL_SECONDS = max(60.0, float(os.environ.get("DEVICE_IP_REFRESH_INTERVAL_SECONDS", "1800")))
 _device_ip_refresh_lock = threading.Lock()
 _device_ip_refresh_thread: threading.Thread | None = None
+_device_ip_refresh_request_thread: threading.Thread | None = None
 _device_ip_refresh_stop = threading.Event()
 _device_ip_refresh_last_run = 0.0
 _BUILTIN_ICON_CATALOG: list[dict[str, str]] = [
@@ -468,6 +469,31 @@ def _refresh_device_ips_by_mac(*, reason: str, force: bool = False) -> dict[str,
         return error_payload
     finally:
         _device_ip_refresh_lock.release()
+
+
+def _request_device_ip_refresh(*, reason: str, force: bool = False) -> dict[str, Any]:
+    global _device_ip_refresh_request_thread
+    now_mono = time.monotonic()
+    if not force and (now_mono - _device_ip_refresh_last_run) < _DEVICE_IP_REFRESH_INTERVAL_SECONDS:
+        return {"ok": True, "scheduled": False, "reason": "interval_not_elapsed"}
+    thread = _device_ip_refresh_request_thread
+    if thread and thread.is_alive():
+        return {"ok": True, "scheduled": False, "reason": "refresh_request_in_progress"}
+
+    def runner() -> None:
+        try:
+            _refresh_device_ips_by_mac(reason=reason, force=force)
+        finally:
+            pass
+
+    worker = threading.Thread(
+        target=runner,
+        name=f"device-ip-refresh-request-{reason}",
+        daemon=True,
+    )
+    _device_ip_refresh_request_thread = worker
+    worker.start()
+    return {"ok": True, "scheduled": True, "reason": reason}
 
 
 def _device_ip_refresh_loop() -> None:
@@ -1994,7 +2020,7 @@ def get_tuya_devices_file() -> dict[str, Any]:
 
 @app.get("/api/devices")
 def list_devices() -> list[dict[str, Any]]:
-    _refresh_device_ips_by_mac(reason="devices_list", force=False)
+    _request_device_ip_refresh(reason="devices_list", force=False)
     conn = get_connection()
     rows = conn.execute("SELECT * FROM devices ORDER BY updated_at DESC").fetchall()
     items = [_device_to_dict(r, conn) for r in rows]
@@ -2486,7 +2512,7 @@ def list_tiles() -> list[dict[str, Any]]:
 @app.get("/api/main/tile-data")
 def get_tile_data() -> dict[str, Any]:
     # Main dashboard loads should also opportunistically reconcile DHCP IP changes.
-    _refresh_device_ips_by_mac(reason="main_tile_load", force=False)
+    _request_device_ip_refresh(reason="main_tile_load", force=False)
     conn = get_connection()
     rows = conn.execute("SELECT * FROM main_tiles ORDER BY updated_at DESC").fetchall()
     device_map = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM devices").fetchall()}
