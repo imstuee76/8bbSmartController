@@ -98,23 +98,27 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       _error = null;
     });
 
+    final tileDataFuture = widget.api.fetchTileData();
     if (showInitialLoader) {
-      try {
-        final shellTiles = await widget.api.fetchTiles();
-        if (!mounted) return;
-        setState(() {
-          _tiles = shellTiles.map(_shellTileToDisplayTile).toList(growable: false);
-          _loading = false;
-          _refreshing = true;
-          _lastLoadedAt = DateTime.now();
-        });
-      } catch (_) {
-        // Keep the loader visible and let the full tile-data request report the error.
-      }
+      unawaited(() async {
+        try {
+          final shellTiles = await widget.api.fetchTiles();
+          if (!mounted) return;
+          if (_tiles.isNotEmpty && !_loading) return;
+          setState(() {
+            _tiles = shellTiles.map(_shellTileToDisplayTile).toList(growable: false);
+            _loading = false;
+            _refreshing = true;
+            _lastLoadedAt = DateTime.now();
+          });
+        } catch (_) {
+          // Keep the loader visible and let the full tile-data request report the error.
+        }
+      }());
     }
 
     try {
-      final tiles = await widget.api.fetchTileData();
+      final tiles = await tileDataFuture;
       if (!mounted) return;
       setState(() {
         _tiles = tiles;

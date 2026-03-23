@@ -54,8 +54,12 @@ class _SmartControllerBootstrapState extends State<SmartControllerBootstrap> {
   }
 
   Future<void> _load() async {
-    final url = await _store.loadServerUrl();
-    final token = await _store.loadAuthToken();
+    final results = await Future.wait<dynamic>([
+      _store.loadServerUrl(),
+      _store.loadAuthToken(),
+    ]);
+    final url = (results[0] ?? '').toString();
+    final token = (results[1] ?? '').toString();
     setState(() {
       final api = ApiService(url);
       api.authToken = token;
