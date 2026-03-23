@@ -622,6 +622,42 @@ class _DevicesScreenState extends State<DevicesScreen> {
     return '';
   }
 
+  List<GroupConfig> _groupsForMember(String deviceId, String channel) {
+    final key = channel.trim();
+    return _groups
+        .where(
+          (group) => group.members.any(
+            (member) => member.deviceId == deviceId && member.channel.trim() == key,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  Widget _buildMemberGroupChips(String deviceId, String channel) {
+    final matches = _groupsForMember(deviceId, channel);
+    if (matches.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        children: matches
+            .map(
+              (group) => Chip(
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+                avatar: CircleAvatar(
+                  radius: 7,
+                  backgroundColor: _colorFromHex(group.color),
+                ),
+                label: Text(group.name),
+              ),
+            )
+            .toList(growable: false),
+      ),
+    );
+  }
+
   Color _colorFromHex(String raw, {Color fallback = const Color(0xFF4CAF50)}) {
     var value = raw.trim().replaceAll('#', '');
     if (value.isEmpty) return fallback;
@@ -1245,6 +1281,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
     final type = device.type.toLowerCase().trim();
     final isRgbw = type.contains('rgbw');
     final isRgb = type.contains('rgb');
+    final primaryMember = _buildPrimaryDeviceGroupMember(device);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1252,6 +1289,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
           padding: EdgeInsets.only(top: 8, bottom: 4),
           child: Text('Light Controls', style: TextStyle(fontWeight: FontWeight.w600)),
         ),
+        _buildMemberGroupChips(device.id, primaryMember.channel),
         Wrap(
           spacing: 8,
           runSpacing: 8,
@@ -2711,6 +2749,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
                       children: [
                         Text(channel.name, style: const TextStyle(fontWeight: FontWeight.w600)),
                         Text('Key: ${channel.key}'),
+                        _buildMemberGroupChips(device.id, channel.key),
                       ],
                     ),
                   ),

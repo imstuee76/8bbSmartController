@@ -254,23 +254,44 @@ def _is_ipv4_host(value: Any) -> bool:
         return False
 
 
-def _find_ip_for_mac(mac: str, subnet_hint: str = "") -> tuple[str, int]:
+def _subnet_search_hints(*values: Any) -> list[str]:
+    hints: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        raw = str(value or "").strip()
+        if not raw:
+            continue
+        candidates = [raw]
+        if _is_ipv4_host(raw):
+            parts = raw.split(".")
+            if len(parts) == 4:
+                candidates.append(".".join(parts[:3]))
+        for candidate in candidates:
+            normalized = candidate.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            hints.append(normalized)
+    return hints
+
+
+def _find_ip_for_mac(mac: str, subnet_hint: str = "", fallback_host: str = "") -> tuple[str, int]:
     target = _normalize_mac(mac)
     if not target:
         return "", 0
 
     scan_count = 0
-    hint = str(subnet_hint or "").strip()
-    rows = scan_network(subnet_hint=hint or None, resolve_hostnames=False, automation_only=False)
-    scan_count += len(rows)
-    for row in rows:
-        row_mac = _normalize_mac(row.get("mac"))
-        row_ip = str(row.get("ip", "")).strip()
-        if row_mac == target and _is_ipv4_host(row_ip):
-            return row_ip, scan_count
+    for hint in _subnet_search_hints(subnet_hint, fallback_host):
+        rows = scan_network(subnet_hint=hint, resolve_hostnames=False, automation_only=False)
+        scan_count += len(rows)
+        for row in rows:
+            row_mac = _normalize_mac(row.get("mac"))
+            row_ip = str(row.get("ip", "")).strip()
+            if row_mac == target and _is_ipv4_host(row_ip):
+                return row_ip, scan_count
 
     # Fallback to ARP/neighbor table without subnet filter.
-    if hint:
+    if _subnet_search_hints(subnet_hint, fallback_host):
         rows = scan_network(subnet_hint=None, resolve_hostnames=False, automation_only=False)
         scan_count += len(rows)
         for row in rows:
@@ -306,18 +327,20 @@ def _find_mac_for_host(host: str, subnet_hint: str = "") -> tuple[str, int]:
     return "", scan_count
 
 
-def _refresh_single_device_ip_by_mac(device_id: str, mac: str, old_host: str = "") -> dict[str, Any]:
+def _refresh_single_device_ip_by_mac(device_id: str, mac: str, old_host: str = "", subnet_hint: str = "") -> dict[str, Any]:
     device_mac = _normalize_mac(mac)
     if not device_mac:
         return {"ok": False, "updated": False, "error": "missing_mac"}
 
-    try:
-        scan_cfg = get_setting("scan")
-        subnet_hint = str(scan_cfg.get("subnet_hint", "")).strip() if isinstance(scan_cfg, dict) else ""
-    except Exception:
-        subnet_hint = ""
+    if not subnet_hint:
+        try:
+            scan_cfg = get_setting("scan")
+            subnet_hint = str(scan_cfg.get("subnet_hint", "")).strip() if isinstance(scan_cfg, dict) else ""
+        except Exception:
+            subnet_hint = ""
 
-    new_ip, scanned_neighbors = _find_ip_for_mac(device_mac, subnet_hint=subnet_hint)
+    search_hints = _subnet_search_hints(subnet_hint, old_host)
+    new_ip, scanned_neighbors = _find_ip_for_mac(device_mac, subnet_hint=subnet_hint, fallback_host=old_host)
     if not new_ip:
         return {
             "ok": False,
@@ -326,6 +349,7 @@ def _refresh_single_device_ip_by_mac(device_id: str, mac: str, old_host: str = "
             "mac": device_mac,
             "old_host": old_host,
             "subnet_hint": subnet_hint,
+            "search_hints": search_hints,
             "scanned_neighbors": scanned_neighbors,
         }
 
@@ -345,6 +369,7 @@ def _refresh_single_device_ip_by_mac(device_id: str, mac: str, old_host: str = "
         "old_host": old_host,
         "new_host": new_ip,
         "subnet_hint": subnet_hint,
+        "search_hints": search_hints,
         "scanned_neighbors": scanned_neighbors,
     }
 
@@ -2213,7 +2238,12 @@ def refresh_device_ip(device_id: str, payload: dict[str, Any] | None = None) -> 
         except Exception:
             subnet_hint = ""
     conn.close()
-    result = _refresh_single_device_ip_by_mac(device_id, device_mac, old_host=old_host)
+    result = _refresh_single_device_ip_by_mac(
+        device_id,
+        device_mac,
+        old_host=old_host,
+        subnet_hint=subnet_hint,
+    )
     if not result.get("ok"):
         append_event(
             "device_ip_refresh_manual",
@@ -2224,11 +2254,20 @@ def refresh_device_ip(device_id: str, payload: dict[str, Any] | None = None) -> 
                 "old_host": old_host,
                 "updated": False,
                 "subnet_hint": subnet_hint,
+                "search_hints": result.get("search_hints", []),
                 "scanned_neighbors": result.get("scanned_neighbors", 0),
                 "error": result.get("error", "mac_not_found_on_lan"),
             },
         )
-        raise HTTPException(status_code=404, detail=f"No LAN IP found for MAC {device_mac}")
+        searched = ", ".join(str(item) for item in result.get("search_hints", []) if str(item).strip()) or "(none)"
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No LAN IP found for MAC {device_mac}. "
+                f"Searched hints: {searched}. "
+                f"Neighbors seen: {int(result.get('scanned_neighbors', 0))}."
+            ),
+        )
 
     conn = get_connection()
     updated_row = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
@@ -2245,6 +2284,7 @@ def refresh_device_ip(device_id: str, payload: dict[str, Any] | None = None) -> 
             "new_host": result.get("new_host", old_host),
             "updated": bool(result.get("updated")),
             "subnet_hint": result.get("subnet_hint", subnet_hint),
+            "search_hints": result.get("search_hints", []),
             "scanned_neighbors": result.get("scanned_neighbors", 0),
         },
     )
@@ -2257,6 +2297,7 @@ def refresh_device_ip(device_id: str, payload: dict[str, Any] | None = None) -> 
         "new_host": result.get("new_host", old_host),
         "updated": bool(result.get("updated")),
         "subnet_hint": result.get("subnet_hint", subnet_hint),
+        "search_hints": result.get("search_hints", []),
         "scanned_neighbors": result.get("scanned_neighbors", 0),
         "device": device,
     }
