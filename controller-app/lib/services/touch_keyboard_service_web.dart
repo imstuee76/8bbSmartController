@@ -11,6 +11,8 @@ class TouchKeyboardService {
 
   void start() {}
 
+  Future<void> setEnabled(bool value) async {}
+
   Future<void> closeInput() async {
     FocusManager.instance.primaryFocus?.unfocus();
     hasEditableFocus.value = false;

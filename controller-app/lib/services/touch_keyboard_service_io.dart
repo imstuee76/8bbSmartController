@@ -24,7 +24,7 @@ class TouchKeyboardService {
     );
   }
 
-  final bool enabled;
+  bool enabled;
   final String command;
   final List<String> args;
   final ValueNotifier<bool> hasEditableFocus = ValueNotifier<bool>(false);
@@ -46,7 +46,7 @@ class TouchKeyboardService {
   }
 
   void start() {
-    if (_active || !enabled || !Platform.isLinux) return;
+    if (_active || !Platform.isLinux) return;
     _active = true;
     _focusPoll = Timer.periodic(const Duration(milliseconds: 220), (_) {
       unawaited(_sync());
@@ -55,7 +55,7 @@ class TouchKeyboardService {
 
   Future<void> _sync() async {
     if (!_active) return;
-    final needsKeyboard = _focusedWidgetNeedsKeyboard();
+    final needsKeyboard = enabled && _focusedWidgetNeedsKeyboard();
     if (hasEditableFocus.value != needsKeyboard) {
       hasEditableFocus.value = needsKeyboard;
     }
@@ -127,12 +127,25 @@ class TouchKeyboardService {
     await _hide();
   }
 
+  Future<void> setEnabled(bool value) async {
+    enabled = value;
+    if (!enabled) {
+      await closeInput();
+      return;
+    }
+    if (_active) {
+      await _sync();
+    }
+  }
+
   Future<void> _configureOnboardForTablet() async {
     // Best effort; ignored when schema/keys are unavailable.
     final commands = <List<String>>[
-      <String>['set', 'org.onboard.window', 'docking-enabled', 'false'],
-      <String>['set', 'org.onboard.window', 'force-to-top', 'false'],
-      <String>['set', 'org.onboard.window', 'window-decoration', 'true'],
+      <String>['set', 'org.onboard.window', 'docking-enabled', 'true'],
+      <String>['set', 'org.onboard.window', 'force-to-top', 'true'],
+      <String>['set', 'org.onboard.window', 'window-decoration', 'false'],
+      <String>['set', 'org.onboard.window', 'dock-expand', 'true'],
+      <String>['set', 'org.onboard.window', 'transparent-background', 'false'],
     ];
     for (final args in commands) {
       try {

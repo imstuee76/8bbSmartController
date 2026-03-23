@@ -4,6 +4,7 @@ class LocalStore {
   static const _serverUrlKey = 'server_url';
   static const _authTokenKey = 'auth_token';
   static const _devicesScanHintKey = 'devices_scan_hint';
+  static const _touchKeyboardEnabledKey = 'touch_keyboard_enabled';
 
   Future<SharedPreferences> _prefs() => SharedPreferences.getInstance();
 
@@ -90,5 +91,15 @@ class LocalStore {
   Future<void> saveDevicesScanHint(String value) async {
     final prefs = await _prefs();
     await prefs.setString(_devicesScanHintKey, value.trim());
+  }
+
+  Future<bool> loadTouchKeyboardEnabled() async {
+    final prefs = await _prefs();
+    return prefs.getBool(_touchKeyboardEnabledKey) ?? true;
+  }
+
+  Future<void> saveTouchKeyboardEnabled(bool value) async {
+    final prefs = await _prefs();
+    await prefs.setBool(_touchKeyboardEnabledKey, value);
   }
 }

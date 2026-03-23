@@ -112,6 +112,31 @@ class _HomeShellState extends State<HomeShell> {
     super.initState();
     _touchKeyboard = TouchKeyboardService.fromEnvironment();
     _touchKeyboard.start();
+    unawaited(_initTouchKeyboard());
+  }
+
+  Future<void> _initTouchKeyboard() async {
+    final enabled = await widget.store.loadTouchKeyboardEnabled();
+    await _touchKeyboard.setEnabled(enabled);
+  }
+
+  bool _editableFocusShouldCloseOnEnter() {
+    final node = FocusManager.instance.primaryFocus;
+    final context = node?.context;
+    if (context == null) return false;
+    final editable = context.widget is EditableText
+        ? context.widget as EditableText
+        : context.findAncestorWidgetOfExactType<EditableText>();
+    if (editable == null || editable.readOnly) return false;
+    return (editable.maxLines ?? 1) <= 1;
+  }
+
+  Future<void> _handleTouchKeyboardChanged(bool enabled) async {
+    await widget.store.saveTouchKeyboardEnabled(enabled);
+    await _touchKeyboard.setEnabled(enabled);
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   @override
@@ -134,74 +159,108 @@ class _HomeShellState extends State<HomeShell> {
             widget.api.baseUrl = url;
           });
         },
+        onTouchKeyboardChanged: (enabled) {
+          unawaited(_handleTouchKeyboardChanged(enabled));
+        },
       ),
     ];
 
-    return Scaffold(
-      appBar: AppBar(
-        toolbarHeight: 68,
-        titleSpacing: 12,
-        title: Row(
-          children: [
-            const Expanded(
-              child: Text(
-                '8bb Smart Controller',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            const SizedBox(width: 8),
-            _TabButton(title: 'Main', selected: _index == 0, onTap: () => setState(() => _index = 0)),
-            _TabButton(title: 'Devices', selected: _index == 1, onTap: () => setState(() => _index = 1)),
-            _TabButton(title: 'Config', selected: _index == 2, onTap: () => setState(() => _index = 2)),
-            if (_index == 0) ...[
-              const SizedBox(width: 8),
-              _HeaderActionButton(
-                title: 'Groups',
-                icon: Icons.layers,
-                onTap: () {
-                  _mainScreenKey.currentState?.openCreateGroupDialog();
-                },
-              ),
-              const SizedBox(width: 8),
-              _HeaderActionButton(
-                title: 'Automation',
-                icon: Icons.schedule,
-                onTap: () {
-                  _mainScreenKey.currentState?.openAutomationDialog();
-                },
-              ),
-            ],
-            const SizedBox(width: 10),
-            const Text('v$controllerDisplayVersion', style: TextStyle(fontSize: 13)),
-          ],
-        ),
-      ),
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Color(0xFFF4F7F8), Color(0xFFE8F2F4)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
+    return Shortcuts(
+      shortcuts: const <ShortcutActivator, Intent>{
+        SingleActivator(LogicalKeyboardKey.enter): _CloseKeyboardIntent(),
+        SingleActivator(LogicalKeyboardKey.numpadEnter): _CloseKeyboardIntent(),
+      },
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          _CloseKeyboardIntent: CallbackAction<_CloseKeyboardIntent>(
+            onInvoke: (intent) {
+              if (_editableFocusShouldCloseOnEnter()) {
+                unawaited(_touchKeyboard.closeInput());
+                return null;
+              }
+              return null;
+            },
           ),
         ),
-        child: tabs[_index],
+        child: Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerDown: (_) {
+            if (_touchKeyboard.hasEditableFocus.value) {
+              unawaited(_touchKeyboard.closeInput());
+            }
+          },
+          child: Scaffold(
+            appBar: AppBar(
+              toolbarHeight: 68,
+              titleSpacing: 12,
+              title: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      '8bb Smart Controller',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  _TabButton(title: 'Main', selected: _index == 0, onTap: () => setState(() => _index = 0)),
+                  _TabButton(title: 'Devices', selected: _index == 1, onTap: () => setState(() => _index = 1)),
+                  _TabButton(title: 'Config', selected: _index == 2, onTap: () => setState(() => _index = 2)),
+                  if (_index == 0) ...[
+                    const SizedBox(width: 8),
+                    _HeaderActionButton(
+                      title: 'Groups',
+                      icon: Icons.layers,
+                      onTap: () {
+                        _mainScreenKey.currentState?.openCreateGroupDialog();
+                      },
+                    ),
+                    const SizedBox(width: 8),
+                    _HeaderActionButton(
+                      title: 'Automation',
+                      icon: Icons.schedule,
+                      onTap: () {
+                        _mainScreenKey.currentState?.openAutomationDialog();
+                      },
+                    ),
+                  ],
+                  const SizedBox(width: 10),
+                  const Text('v$controllerDisplayVersion', style: TextStyle(fontSize: 13)),
+                ],
+              ),
+            ),
+            body: Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Color(0xFFF4F7F8), Color(0xFFE8F2F4)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+              ),
+              child: tabs[_index],
+            ),
+            floatingActionButton: ValueListenableBuilder<bool>(
+              valueListenable: _touchKeyboard.hasEditableFocus,
+              builder: (context, editing, _) {
+                if (!editing) return const SizedBox.shrink();
+                return FloatingActionButton.extended(
+                  heroTag: 'go-input-close',
+                  onPressed: () => unawaited(_touchKeyboard.closeInput()),
+                  label: const Text('GO', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+                  icon: const Icon(Icons.keyboard_hide, size: 24),
+                );
+              },
+            ),
+            floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
+          ),
+        ),
       ),
-      floatingActionButton: ValueListenableBuilder<bool>(
-        valueListenable: _touchKeyboard.hasEditableFocus,
-        builder: (context, editing, _) {
-          if (!editing) return const SizedBox.shrink();
-          return FloatingActionButton.extended(
-            heroTag: 'go-input-close',
-            onPressed: () => unawaited(_touchKeyboard.closeInput()),
-            label: const Text('GO', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
-            icon: const Icon(Icons.keyboard_hide, size: 24),
-          );
-        },
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
     );
   }
+}
+
+class _CloseKeyboardIntent extends Intent {
+  const _CloseKeyboardIntent();
 }
 
 class _TabButton extends StatelessWidget {

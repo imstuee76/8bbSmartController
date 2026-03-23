@@ -9,6 +9,7 @@ class LocalStore {
   static const _serverUrlKey = 'server_url';
   static const _authTokenKey = 'auth_token';
   static const _devicesScanHintKey = 'devices_scan_hint';
+  static const _touchKeyboardEnabledKey = 'touch_keyboard_enabled';
   static const _settingsFileName = 'controller_settings.json';
 
   Future<File> _settingsFile() async {
@@ -207,6 +208,34 @@ class LocalStore {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_devicesScanHintKey, trimmed);
+    } catch (_) {}
+  }
+
+  Future<bool> loadTouchKeyboardEnabled() async {
+    final settings = await _readSettings();
+    final current = settings[_touchKeyboardEnabledKey];
+    if (current is bool) {
+      return current;
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.containsKey(_touchKeyboardEnabledKey)) {
+        final legacy = prefs.getBool(_touchKeyboardEnabledKey) ?? true;
+        settings[_touchKeyboardEnabledKey] = legacy;
+        await _writeSettings(settings);
+        return legacy;
+      }
+    } catch (_) {}
+    return true;
+  }
+
+  Future<void> saveTouchKeyboardEnabled(bool value) async {
+    final settings = await _readSettings();
+    settings[_touchKeyboardEnabledKey] = value;
+    await _writeSettings(settings);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_touchKeyboardEnabledKey, value);
     } catch (_) {}
   }
 }

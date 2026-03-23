@@ -14,11 +14,13 @@ class ConfigScreen extends StatefulWidget {
     required this.api,
     required this.store,
     required this.onServerUrlChanged,
+    required this.onTouchKeyboardChanged,
   });
 
   final ApiService api;
   final LocalStore store;
   final ValueChanged<String> onServerUrlChanged;
+  final ValueChanged<bool> onTouchKeyboardChanged;
 
   @override
   State<ConfigScreen> createState() => _ConfigScreenState();
@@ -72,10 +74,10 @@ class _ConfigScreenState extends State<ConfigScreen> {
   bool _saving = false;
   bool _testingBackend = false;
   bool _authConfigured = false;
+  bool _touchKeyboardEnabled = true;
   bool _logWindowOpen = false;
   String? _initError;
   String _openPanel = 'auth';
-  int _panelUiEpoch = 0;
   Offset _logWindowOffset = const Offset(20, 20);
   String _integrationTestOutput = '';
   String _liveActionStatus = '';
@@ -119,6 +121,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
     final token = await widget.store.loadAuthToken();
     widget.api.authToken = token;
     try {
+      _touchKeyboardEnabled = await widget.store.loadTouchKeyboardEnabled();
       _authConfigured = await widget.api.isAuthConfigured();
       final display = await widget.api.fetchDisplayConfig();
       final integrations = await widget.api.fetchIntegrationsConfig();
@@ -256,6 +259,8 @@ class _ConfigScreenState extends State<ConfigScreen> {
           groups: _groups,
         ),
       );
+      await widget.store.saveTouchKeyboardEnabled(_touchKeyboardEnabled);
+      widget.onTouchKeyboardChanged(_touchKeyboardEnabled);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Controller/API settings saved')));
     } catch (e) {
@@ -346,6 +351,8 @@ class _ConfigScreenState extends State<ConfigScreen> {
         ),
       );
       await widget.api.saveIntegrationsConfig(_buildIntegrationsPayload());
+      await widget.store.saveTouchKeyboardEnabled(_touchKeyboardEnabled);
+      widget.onTouchKeyboardChanged(_touchKeyboardEnabled);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Config saved')));
     } catch (e) {
@@ -1538,21 +1545,62 @@ class _ConfigScreenState extends State<ConfigScreen> {
     );
   }
 
+  String _panelLabel(String panel) {
+    switch (panel) {
+      case 'auth':
+        return 'Login';
+      case 'moes':
+        return 'MOES';
+      case 'controller':
+        return 'Controller';
+      case 'spotify':
+        return 'Spotify';
+      case 'groups':
+        return 'Groups';
+      case 'weather':
+        return 'Weather';
+      case 'tuya':
+        return 'Tuya';
+      case 'network':
+        return 'Network';
+      default:
+        return panel;
+    }
+  }
+
+  Map<String, String> _panelMeta(String panel) {
+    switch (panel) {
+      case 'auth':
+        return {
+          'title': _authConfigured ? 'Local Login (Configured)' : 'Local Login (First-time setup)',
+          'subtitle': 'Setup/login for the flasher backend admin',
+        };
+      case 'moes':
+        return {'title': 'MOES BHUB-W Local', 'subtitle': 'Hub discovery + local light import'};
+      case 'controller':
+        return {'title': 'Controller / API', 'subtitle': 'Backend URL + display scale/resolution + keyboard'};
+      case 'spotify':
+        return {'title': 'Spotify', 'subtitle': 'Credentials + test + add tile'};
+      case 'groups':
+        return {'title': 'Groups', 'subtitle': 'Device grouping + colour tags'};
+      case 'weather':
+        return {'title': 'Weather', 'subtitle': 'Provider/API config + tile'};
+      case 'tuya':
+        return {'title': 'Tuya', 'subtitle': 'Setup once: ID/Secret/Device ID, then scan local + cloud'};
+      case 'network':
+        return {'title': 'Network + OTA', 'subtitle': 'Subnet hint, OTA key, automation tile, icons'};
+      default:
+        return {'title': panel, 'subtitle': ''};
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
       return const Center(child: CircularProgressIndicator());
     }
 
-    final panelValues = <String>[
-      'auth',
-      'moes',
-      'controller',
-      'spotify',
-      'weather',
-      'tuya',
-      'network',
-    ];
+    final panelValues = <String>['auth', 'controller', 'tuya', 'moes', 'spotify', 'weather', 'groups', 'network'];
 
     return Stack(
       children: [
@@ -1590,16 +1638,34 @@ class _ConfigScreenState extends State<ConfigScreen> {
             ),
           ),
           const SizedBox(height: 8),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: panelValues
+                  .map(
+                    (panel) => Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: FilledButton.tonal(
+                        onPressed: () => _setPanel(panel),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: _openPanel == panel ? const Color(0xFF0B7285) : const Color(0xFFDCEBED),
+                          foregroundColor: _openPanel == panel ? Colors.white : const Color(0xFF0F3A40),
+                        ),
+                        child: Text(_panelLabel(panel)),
+                      ),
+                    ),
+                  )
+                  .toList(growable: false),
+            ),
+          ),
+          const SizedBox(height: 8),
           ExpansionPanelList.radio(
-            key: ValueKey('config-panels-$_panelUiEpoch'),
+            key: ValueKey('config-panels-$_openPanel'),
             initialOpenPanelValue: _openPanel,
             expandedHeaderPadding: EdgeInsets.zero,
-            expansionCallback: (index, isExpanded) {
-              if (index >= 0 && index < panelValues.length) {
-                _setPanel(panelValues[index]);
-              }
-            },
+            expansionCallback: (_, __) {},
             children: [
+              if (_openPanel == 'auth')
               ExpansionPanelRadio(
                 value: 'auth',
                 headerBuilder: (_, __) => _panelHeader(
@@ -1626,6 +1692,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
                   ],
                 ),
               ),
+              if (_openPanel == 'moes')
               ExpansionPanelRadio(
                 value: 'moes',
                 headerBuilder: (_, __) => _panelHeader('MOES BHUB-W Local', 'Hub discovery + local light import'),
@@ -1702,6 +1769,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
                   ],
                 ),
               ),
+              if (_openPanel == 'controller')
               ExpansionPanelRadio(
                 value: 'controller',
                 headerBuilder: (_, __) => _panelHeader('Controller / API', 'Backend URL + display scale/resolution'),
@@ -1739,6 +1807,18 @@ class _ConfigScreenState extends State<ConfigScreen> {
                       ],
                     ),
                     const SizedBox(height: 8),
+                    SwitchListTile.adaptive(
+                      contentPadding: EdgeInsets.zero,
+                      value: _touchKeyboardEnabled,
+                      title: const Text('Touch keyboard enabled'),
+                      subtitle: const Text('Show the tablet keyboard at the bottom for text entry'),
+                      onChanged: (value) {
+                        setState(() {
+                          _touchKeyboardEnabled = value;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 8),
                     Align(
                       alignment: Alignment.centerRight,
                       child: Wrap(
@@ -1755,6 +1835,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
                   ],
                 ),
               ),
+              if (_openPanel == 'spotify')
               ExpansionPanelRadio(
                 value: 'spotify',
                 headerBuilder: (_, __) => _panelHeader('Spotify', 'Credentials + test + add tile'),
@@ -1777,6 +1858,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
                   ],
                 ),
               ),
+              if (_openPanel == 'groups')
               ExpansionPanelRadio(
                 value: 'groups',
                 headerBuilder: (_, __) => _panelHeader('Groups', 'Device grouping + colour tags'),
@@ -1830,6 +1912,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
                   ],
                 ),
               ),
+              if (_openPanel == 'weather')
               ExpansionPanelRadio(
                 value: 'weather',
                 headerBuilder: (_, __) => _panelHeader('Weather', 'Provider/API config + tile'),
@@ -1850,6 +1933,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
                   ],
                 ),
               ),
+              if (_openPanel == 'tuya')
               ExpansionPanelRadio(
                 value: 'tuya',
                 headerBuilder: (_, __) => _panelHeader('Tuya', 'Setup once: ID/Secret/Device ID, then scan local + cloud'),
@@ -1904,6 +1988,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
                   ],
                 ),
               ),
+              if (_openPanel == 'network')
               ExpansionPanelRadio(
                 value: 'network',
                 headerBuilder: (_, __) => _panelHeader('Network + OTA', 'Subnet hint, OTA key, automation tile, icons'),
