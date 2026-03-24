@@ -1040,6 +1040,42 @@ def _group_members_from_source(payload: dict[str, Any]) -> tuple[str, str, list[
     return payload_kind, name, members
 
 
+def _automation_target_member_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    device_id = str(payload.get("device_id", "")).strip()
+    if not device_id:
+        return None
+    channel = str(payload.get("channel", "")).strip() or "power"
+    channel_name = str(payload.get("channel_name", "")).strip()
+    device_name = str(payload.get("device_name", "")).strip()
+    target_name = str(payload.get("target_name", "")).strip()
+    target_kind = str(payload.get("target_kind", payload.get("kind", ""))).strip().lower()
+    command_payload = payload.get("payload", {})
+    if not isinstance(command_payload, dict):
+        command_payload = {}
+    return {
+        "device_id": device_id,
+        "device_name": device_name,
+        "channel": channel,
+        "channel_name": channel_name,
+        "label": target_name or channel_name or device_name or device_id,
+        "kind": target_kind,
+        "command_payload": command_payload,
+    }
+
+
+def _automation_channel_for_member(member: dict[str, Any], channel_override: str | None) -> str:
+    channel = str(channel_override or "").strip()
+    if not channel:
+        return str(member.get("channel", "")).strip() or "power"
+    if channel in {"rgb", "rgbw"}:
+        blob = " ".join(
+            str(member.get(key, "")).strip().lower()
+            for key in ("kind", "channel", "label", "channel_name")
+        )
+        return "rgbw" if "rgbw" in blob else "rgb"
+    return channel
+
+
 def _group_supports_light(members: list[dict[str, Any]], group_kind: str) -> bool:
     if group_kind == "light":
         return True
@@ -1068,16 +1104,20 @@ def _group_supports_fan(members: list[dict[str, Any]], group_kind: str) -> bool:
 
 def _execute_group_members_action(
     *,
-    requested_state: str,
+    requested_state: str | None,
+    requested_value: Any = None,
+    requested_payload: dict[str, Any] | None = None,
+    channel_override: str | None = None,
     members: list[dict[str, Any]],
     device_rows: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], int, int]:
     results: list[dict[str, Any]] = []
     ok_count = 0
     error_count = 0
+    requested_payload = dict(requested_payload or {})
     for member in members:
         device_id = str(member.get("device_id", "")).strip()
-        channel = str(member.get("channel", "")).strip() or "power"
+        channel = _automation_channel_for_member(member, channel_override)
         label = str(member.get("label", "")).strip() or str(member.get("device_name", "")).strip() or device_id
         row = device_rows.get(device_id)
         if not row:
@@ -1085,10 +1125,12 @@ def _execute_group_members_action(
             results.append({"device_id": device_id, "channel": channel, "label": label, "ok": False, "error": "Device not found"})
             continue
         try:
+            member_payload = member.get("command_payload", {}) if isinstance(member.get("command_payload"), dict) else {}
             command_payload = {
                 "channel": channel,
                 "state": requested_state,
-                "payload": member.get("command_payload", {}) if isinstance(member.get("command_payload"), dict) else {},
+                "value": requested_value,
+                "payload": {**member_payload, **requested_payload},
             }
             result = _execute_device_command_by_row(device_id, row, command_payload)
             _apply_dashboard_command_cache(device_id, row, command_payload)
@@ -1223,19 +1265,77 @@ def _resolve_group_tile_data(payload: dict[str, Any], device_map: dict[str, Any]
 
 def _resolve_automation_tile_data(payload: dict[str, Any], device_map: dict[str, Any]) -> dict[str, Any]:
     action = str(payload.get("action", "group")).strip().lower() or "group"
-    requested_state = str(payload.get("state", "toggle")).strip().lower() or "toggle"
+    requested_state = str(payload.get("state", "")).strip().lower() or None
+    requested_value = payload.get("value")
+    requested_payload = payload.get("payload", {})
+    if not isinstance(requested_payload, dict):
+        requested_payload = {}
+    target_kind = str(payload.get("target_kind", payload.get("group_kind", "switch"))).strip().lower() or "switch"
     group_kind, group_name, members = _group_members_from_source(payload)
     supports_light = _group_supports_light(members, group_kind)
     supports_fan = _group_supports_fan(members, group_kind)
+    if action == "device":
+        member = _automation_target_member_from_payload(payload)
+        target_name = str(payload.get("target_name", "")).strip()
+        device_id = str(payload.get("device_id", "")).strip()
+        channel = str(payload.get("channel", "")).strip() or "power"
+        mode = "manual"
+        provider = "automation"
+        current_value: Any = None
+        if member is not None and not target_name:
+            target_name = str(member.get("label", "")).strip()
+        device_row = device_map.get(device_id)
+        if device_row:
+            try:
+                status = _dashboard_cached_device_status(device_row, quick=True)
+                provider = str(status.get("provider", "automation")).strip().lower() or "automation"
+                mode = str(status.get("mode", "manual")).strip() or "manual"
+                current_value = _group_member_channel_value(status, channel)
+            except Exception:
+                provider = str(_parse_metadata(device_row).get("provider", "automation")).strip().lower() or "automation"
+                mode = "manual"
+        return {
+            "provider": "automation",
+            "mode": mode,
+            "device_type": "automation",
+            "action": action,
+            "target_scope": "device",
+            "target_kind": target_kind,
+            "target_name": target_name or str(payload.get("device_name", "")).strip() or "Device",
+            "device_id": device_id,
+            "device_name": str(payload.get("device_name", "")).strip(),
+            "channel": channel,
+            "channel_name": str(payload.get("channel_name", "")).strip(),
+            "requested_state": requested_state,
+            "requested_value": requested_value,
+            "requested_payload": requested_payload,
+            "current_value": current_value,
+            "member_count": 1,
+            "capabilities": {
+                "supports_automation": True,
+                "supports_group": False,
+                "supports_light": "light" in target_kind or "rgb" in target_kind or "dimmer" in target_kind,
+                "supports_rgb": "rgb" in target_kind,
+                "supports_fan": "fan" in target_kind,
+                "supports_scenes": "light" in target_kind or "rgb" in target_kind,
+                "supports_timers": True,
+            },
+            "source_name": "8bb Automation",
+        }
     if action != "group":
         return {
             "provider": "automation",
             "mode": "manual",
             "device_type": "automation",
             "action": action,
+            "target_scope": "manual",
+            "target_kind": target_kind,
+            "target_name": group_name or "Automation",
             "group_kind": group_kind,
             "group_name": group_name,
             "requested_state": requested_state,
+            "requested_value": requested_value,
+            "requested_payload": requested_payload,
             "member_count": len(members),
             "capabilities": {
                 "supports_automation": True,
@@ -1254,7 +1354,12 @@ def _resolve_automation_tile_data(payload: dict[str, Any], device_map: dict[str,
         "provider": "automation",
         "device_type": "automation",
         "action": action,
+        "target_scope": "group",
+        "target_kind": target_kind or group_kind,
+        "target_name": group_name,
         "requested_state": requested_state,
+        "requested_value": requested_value,
+        "requested_payload": requested_payload,
         "source_name": "8bb Automation",
     }
 
@@ -2748,14 +2853,79 @@ def post_run_tile(tile_id: str, payload: dict[str, Any] | None = None) -> dict[s
         raise HTTPException(status_code=400, detail="Tile is not runnable")
 
     action = str(tile_payload.get("action", "group")).strip().lower() or "group"
+    requested_state_raw = (payload or {}).get("state", tile_payload.get("state"))
+    requested_state = str(requested_state_raw).strip().lower() or None
+    if requested_state not in {None, "on", "off", "toggle"}:
+        conn.close()
+        raise HTTPException(status_code=400, detail="state must be one of: on, off, toggle")
+    requested_value = (payload or {}).get("value", tile_payload.get("value"))
+    requested_payload = (payload or {}).get("payload", tile_payload.get("payload", {}))
+    if not isinstance(requested_payload, dict):
+        conn.close()
+        raise HTTPException(status_code=400, detail="payload must be an object")
+    requested_channel = str((payload or {}).get("channel", tile_payload.get("channel", ""))).strip() or None
+
+    if action == "device":
+        device_id = str(tile_payload.get("device_id", "")).strip()
+        if not device_id:
+            conn.close()
+            raise HTTPException(status_code=400, detail="Automation target device is not set")
+        row = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,)).fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="Automation target device not found")
+        command_payload = {
+            "channel": requested_channel or "power",
+            "state": requested_state,
+            "value": requested_value,
+            "payload": requested_payload,
+        }
+        try:
+            result = _execute_device_command_by_row(device_id, row, command_payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"Automation run failed: {exc}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Automation run failed: {exc}") from exc
+        _persist_device_metadata_patch(device_id, row, result.get("metadata_patch") if isinstance(result, dict) else None)
+        _apply_dashboard_command_cache(device_id, row, command_payload)
+        target_name = (
+            str(tile_payload.get("target_name", "")).strip()
+            or str(tile_payload.get("channel_name", "")).strip()
+            or str(tile_payload.get("device_name", "")).strip()
+            or str(tile["label"] or "").strip()
+        )
+        append_event(
+            "automation_tile_run",
+            {
+                "tile_id": tile_id,
+                "label": str(tile["label"] or ""),
+                "action": action,
+                "target_scope": "device",
+                "target_name": target_name,
+                "device_id": device_id,
+                "channel": command_payload["channel"],
+                "state": requested_state,
+                "value": requested_value,
+            },
+        )
+        return {
+            "ok": True,
+            "tile_id": tile_id,
+            "tile_type": tile_type,
+            "action": action,
+            "target_scope": "device",
+            "target_name": target_name,
+            "device_id": device_id,
+            "channel": command_payload["channel"],
+            "state": requested_state,
+            "value": requested_value,
+            "result": result,
+        }
     if action != "group":
         conn.close()
         raise HTTPException(status_code=400, detail="Unsupported automation action")
-
-    requested_state = str((payload or {}).get("state", tile_payload.get("state", "toggle"))).strip().lower() or "toggle"
-    if requested_state not in {"on", "off", "toggle"}:
-        conn.close()
-        raise HTTPException(status_code=400, detail="state must be one of: on, off, toggle")
 
     group_kind, group_name, members = _group_members_from_source(tile_payload)
     if not members:
@@ -2772,6 +2942,9 @@ def post_run_tile(tile_id: str, payload: dict[str, Any] | None = None) -> dict[s
 
     results, ok_count, error_count = _execute_group_members_action(
         requested_state=requested_state,
+        requested_value=requested_value,
+        requested_payload=requested_payload,
+        channel_override=requested_channel,
         members=members,
         device_rows=device_rows,
     )
@@ -2783,6 +2956,8 @@ def post_run_tile(tile_id: str, payload: dict[str, Any] | None = None) -> dict[s
             "group_name": group_name or str(tile["label"] or ""),
             "group_kind": group_kind,
             "state": requested_state,
+            "value": requested_value,
+            "channel": requested_channel,
             "member_count": len(members),
             "ok_count": ok_count,
             "error_count": error_count,
@@ -2794,6 +2969,8 @@ def post_run_tile(tile_id: str, payload: dict[str, Any] | None = None) -> dict[s
         "tile_type": tile_type,
         "action": action,
         "state": requested_state,
+        "value": requested_value,
+        "channel": requested_channel,
         "group_name": group_name,
         "group_kind": group_kind,
         "member_count": len(members),

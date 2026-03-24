@@ -3,9 +3,40 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../models/config_models.dart';
 import '../models/device_models.dart';
 import '../services/api_service.dart';
 import '../services/session_logger.dart';
+
+class _AutomationTargetOption {
+  final String id;
+  final String scope;
+  final String kind;
+  final String label;
+  final String subtitle;
+  final String? groupId;
+  final String? groupName;
+  final String? deviceId;
+  final String? deviceName;
+  final String? channel;
+  final String? channelName;
+  final int memberCount;
+
+  const _AutomationTargetOption({
+    required this.id,
+    required this.scope,
+    required this.kind,
+    required this.label,
+    required this.subtitle,
+    this.groupId,
+    this.groupName,
+    this.deviceId,
+    this.deviceName,
+    this.channel,
+    this.channelName,
+    this.memberCount = 1,
+  });
+}
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key, required this.api});
@@ -61,6 +92,112 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           'Check: backend is running on Windows/Linux server, URL/port are correct, and firewall allows TCP 1111.';
     }
     return text;
+  }
+
+  bool _isLightKind(String kind) {
+    final value = kind.toLowerCase().trim();
+    return value.contains('light') ||
+        value.contains('rgb') ||
+        value.contains('dimmer') ||
+        value.contains('bulb') ||
+        value.contains('lamp');
+  }
+
+  bool _isSwitchKind(String kind) {
+    final value = kind.toLowerCase().trim();
+    return value.contains('relay') ||
+        value.contains('switch') ||
+        value.contains('power') ||
+        value.contains('channel') ||
+        value.contains('gang') ||
+        value.contains('out');
+  }
+
+  String _automationActionSummary(Map<String, dynamic> payload, Map<String, dynamic> data) {
+    final state = (data['requested_state'] ?? payload['state'] ?? '').toString().trim().toUpperCase();
+    final value = data['requested_value'] ?? payload['value'];
+    final actionPayload = (data['requested_payload'] as Map<String, dynamic>?) ??
+        (payload['payload'] as Map<String, dynamic>?) ??
+        const <String, dynamic>{};
+    final channel = (data['channel'] ?? payload['channel'] ?? '').toString().trim().toLowerCase();
+    if (channel == 'scene') {
+      final scene = (actionPayload['scene'] ?? '').toString().trim();
+      return scene.isEmpty ? 'SCENE' : 'SCENE $scene';
+    }
+    if (channel == 'rgb' || channel == 'rgbw') {
+      return 'COLOUR';
+    }
+    if (value is num) {
+      return '${channel.isEmpty ? 'LEVEL' : channel.toUpperCase()} ${value.toInt()}';
+    }
+    if (state.isNotEmpty) {
+      return state;
+    }
+    return channel.isEmpty ? 'RUN' : channel.toUpperCase();
+  }
+
+  List<_AutomationTargetOption> _automationTargetOptions({
+    required List<GroupConfig> groups,
+    required List<SmartDevice> devices,
+    required String targetType,
+    required String targetScope,
+    String search = '',
+  }) {
+    final query = search.trim().toLowerCase();
+    final wantsLight = targetType == 'light';
+    final options = <_AutomationTargetOption>[];
+    if (targetScope == 'group') {
+      for (final group in groups) {
+        final kind = group.kind.trim().toLowerCase();
+        final allowed = wantsLight ? (kind == 'light' || kind == 'mixed') : (kind == 'switch' || kind == 'mixed');
+        if (!allowed) continue;
+        final label = group.name;
+        final subtitle = '${group.kind}  |  ${group.members.length} member(s)';
+        final haystack = '$label $subtitle'.toLowerCase();
+        if (query.isNotEmpty && !haystack.contains(query)) continue;
+        options.add(
+          _AutomationTargetOption(
+            id: 'group:${group.id}',
+            scope: 'group',
+            kind: group.kind,
+            label: group.name,
+            subtitle: subtitle,
+            groupId: group.id,
+            groupName: group.name,
+            memberCount: group.members.length,
+          ),
+        );
+      }
+      return options;
+    }
+
+    for (final device in devices) {
+      for (final candidate in _groupCandidatesForDevice(device)) {
+        final kind = (candidate['kind'] ?? device.type).toString();
+        final allowed = wantsLight ? _isLightKind(kind) : _isSwitchKind(kind);
+        if (!allowed) continue;
+        final label = (candidate['label'] ?? device.name).toString();
+        final channel = (candidate['channel'] ?? '').toString();
+        final channelName = (candidate['channel_name'] ?? channel).toString();
+        final subtitle = '${device.name}  |  ${device.host ?? 'no ip'}  |  ${kind.isEmpty ? device.type : kind}';
+        final haystack = '$label $subtitle $channel $channelName ${device.name}'.toLowerCase();
+        if (query.isNotEmpty && !haystack.contains(query)) continue;
+        options.add(
+          _AutomationTargetOption(
+            id: 'device:${device.id}:$channel',
+            scope: 'device',
+            kind: kind,
+            label: label,
+            subtitle: subtitle,
+            deviceId: device.id,
+            deviceName: device.name,
+            channel: channel,
+            channelName: channelName,
+          ),
+        );
+      }
+    }
+    return options;
   }
 
   @override
@@ -833,37 +970,411 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
   Future<void> openAutomationDialog() => _openAutomationDialog();
 
+  Future<void> _openAutomationBuilder() async {
+    List<SmartDevice> devices;
+    DisplayConfig display;
+    try {
+      final results = await Future.wait<dynamic>([
+        widget.api.fetchDevices(),
+        widget.api.fetchDisplayConfig(),
+      ]);
+      devices = results[0] as List<SmartDevice>;
+      display = results[1] as DisplayConfig;
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+      return;
+    }
+    if (!mounted) return;
+
+    final labelCtl = TextEditingController();
+    final searchCtl = TextEditingController();
+    var targetType = 'switch';
+    var targetScope = display.groups.isNotEmpty ? 'group' : 'device';
+    var actionKind = 'toggle';
+    var selectedTargetId = '';
+    var brightnessValue = 75.0;
+    var selectedSceneId = _lightScenes.first['id'] ?? '1';
+    var selectedSceneLabel = _lightScenes.first['label'] ?? 'Relax';
+    var selectedColor = const Color(0xFFFF9800);
+
+    String buildDefaultLabel(_AutomationTargetOption? option) {
+      final targetLabel = option?.label.trim() ?? '';
+      if (targetLabel.isEmpty) return targetType == 'light' ? 'Light Automation' : 'Switch Automation';
+      switch (actionKind) {
+        case 'on':
+          return '$targetLabel On';
+        case 'off':
+          return '$targetLabel Off';
+        case 'scene':
+          return '$targetLabel $selectedSceneLabel';
+        case 'colour':
+          return '$targetLabel Colour';
+        case 'brightness':
+          return '$targetLabel Brightness';
+        default:
+          return '$targetLabel Toggle';
+      }
+    }
+
+    final created = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setLocal) {
+            if (targetScope == 'group' && display.groups.isEmpty) {
+              targetScope = 'device';
+            }
+            final options = _automationTargetOptions(
+              groups: display.groups,
+              devices: devices,
+              targetType: targetType,
+              targetScope: targetScope,
+              search: searchCtl.text,
+            );
+            if (options.every((item) => item.id != selectedTargetId)) {
+              selectedTargetId = options.isNotEmpty ? options.first.id : '';
+            }
+            _AutomationTargetOption? selectedOption;
+            for (final option in options) {
+              if (option.id == selectedTargetId) {
+                selectedOption = option;
+                break;
+              }
+            }
+            if (labelCtl.text.trim().isEmpty) {
+              labelCtl.text = buildDefaultLabel(selectedOption);
+            }
+            return AlertDialog(
+              title: const Text('Add Automation'),
+              content: SizedBox(
+                width: 760,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          ChoiceChip(
+                            label: const Text('Switch'),
+                            selected: targetType == 'switch',
+                            onSelected: (_) {
+                              setLocal(() {
+                                targetType = 'switch';
+                                actionKind = 'toggle';
+                                labelCtl.clear();
+                              });
+                            },
+                          ),
+                          ChoiceChip(
+                            label: const Text('Light'),
+                            selected: targetType == 'light',
+                            onSelected: (_) {
+                              setLocal(() {
+                                targetType = 'light';
+                                actionKind = 'toggle';
+                                labelCtl.clear();
+                              });
+                            },
+                          ),
+                          const SizedBox(width: 18),
+                          ChoiceChip(
+                            label: const Text('Group'),
+                            selected: targetScope == 'group',
+                            onSelected: display.groups.isEmpty
+                                ? null
+                                : (_) {
+                                    setLocal(() {
+                                      targetScope = 'group';
+                                      labelCtl.clear();
+                                    });
+                                  },
+                          ),
+                          ChoiceChip(
+                            label: const Text('Device'),
+                            selected: targetScope == 'device',
+                            onSelected: (_) {
+                              setLocal(() {
+                                targetScope = 'device';
+                                labelCtl.clear();
+                              });
+                            },
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      TextField(
+                        controller: labelCtl,
+                        decoration: const InputDecoration(labelText: 'Automation name'),
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        value: actionKind,
+                        decoration: const InputDecoration(labelText: 'Action'),
+                        items: [
+                          const DropdownMenuItem(value: 'toggle', child: Text('Toggle')),
+                          const DropdownMenuItem(value: 'on', child: Text('Turn on')),
+                          const DropdownMenuItem(value: 'off', child: Text('Turn off')),
+                          if (targetType == 'light') ...const [
+                            DropdownMenuItem(value: 'brightness', child: Text('Brightness')),
+                            DropdownMenuItem(value: 'colour', child: Text('Colour')),
+                            DropdownMenuItem(value: 'scene', child: Text('Scene')),
+                          ],
+                        ],
+                        onChanged: (value) {
+                          if (value == null) return;
+                          setLocal(() {
+                            actionKind = value;
+                            labelCtl.clear();
+                          });
+                        },
+                      ),
+                      if (actionKind == 'brightness') ...[
+                        const SizedBox(height: 12),
+                        Text('Brightness: ${brightnessValue.round()}'),
+                        Slider(
+                          value: brightnessValue,
+                          min: 1,
+                          max: 100,
+                          divisions: 99,
+                          label: '${brightnessValue.round()}',
+                          onChanged: (value) => setLocal(() => brightnessValue = value),
+                        ),
+                      ],
+                      if (actionKind == 'scene') ...[
+                        const SizedBox(height: 12),
+                        DropdownButtonFormField<String>(
+                          value: selectedSceneId,
+                          decoration: const InputDecoration(labelText: 'Scene'),
+                          items: _lightScenes
+                              .map((scene) => DropdownMenuItem<String>(value: scene['id'], child: Text(scene['label'] ?? scene['id'] ?? 'Scene')))
+                              .toList(growable: false),
+                          onChanged: (value) {
+                            if (value == null) return;
+                            setLocal(() {
+                              selectedSceneId = value;
+                              selectedSceneLabel = _lightScenes.firstWhere(
+                                (scene) => scene['id'] == value,
+                                orElse: () => const {'label': 'Scene'},
+                              )['label']!;
+                              labelCtl.clear();
+                            });
+                          },
+                        ),
+                      ],
+                      if (actionKind == 'colour') ...[
+                        const SizedBox(height: 12),
+                        const Text('Colour'),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            const Color(0xFFFF9800),
+                            const Color(0xFFF44336),
+                            const Color(0xFF2196F3),
+                            const Color(0xFF4CAF50),
+                            const Color(0xFFE91E63),
+                            const Color(0xFFFFFFFF),
+                          ].map((color) {
+                            final selected = color.value == selectedColor.value;
+                            return InkWell(
+                              onTap: () => setLocal(() {
+                                selectedColor = color;
+                                labelCtl.clear();
+                              }),
+                              child: Container(
+                                width: 34,
+                                height: 34,
+                                decoration: BoxDecoration(
+                                  color: color,
+                                  borderRadius: BorderRadius.circular(17),
+                                  border: Border.all(
+                                    color: selected ? const Color(0xFF102A43) : Colors.black12,
+                                    width: selected ? 3 : 1,
+                                  ),
+                                ),
+                              ),
+                            );
+                          }).toList(growable: false),
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: searchCtl,
+                        decoration: const InputDecoration(
+                          labelText: 'Search targets',
+                          prefixIcon: Icon(Icons.search),
+                        ),
+                        onChanged: (_) => setLocal(() {}),
+                      ),
+                      const SizedBox(height: 10),
+                      SizedBox(
+                        height: 280,
+                        child: options.isEmpty
+                            ? Center(
+                                child: Text(
+                                  targetScope == 'group'
+                                      ? 'No matching groups for this automation type.'
+                                      : 'No matching saved device controls found.',
+                                ),
+                              )
+                            : ListView(
+                                children: options.map((option) {
+                                  return RadioListTile<String>(
+                                    value: option.id,
+                                    groupValue: selectedTargetId,
+                                    title: Text(option.label),
+                                    subtitle: Text(option.subtitle),
+                                    dense: true,
+                                    onChanged: (value) {
+                                      if (value == null) return;
+                                      setLocal(() {
+                                        selectedTargetId = value;
+                                        labelCtl.clear();
+                                      });
+                                    },
+                                  );
+                                }).toList(growable: false),
+                              ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+                FilledButton(
+                  onPressed: selectedTargetId.isEmpty ? null : () => Navigator.pop(dialogContext, true),
+                  child: const Text('Add to Main'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (created != true) return;
+
+    final options = _automationTargetOptions(
+      groups: display.groups,
+      devices: devices,
+      targetType: targetType,
+      targetScope: targetScope,
+      search: searchCtl.text,
+    );
+    _AutomationTargetOption? selectedOption;
+    for (final option in options) {
+      if (option.id == selectedTargetId) {
+        selectedOption = option;
+        break;
+      }
+    }
+    if (selectedOption == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Choose a target first')));
+      return;
+    }
+
+    final label = labelCtl.text.trim().isEmpty ? buildDefaultLabel(selectedOption) : labelCtl.text.trim();
+    final payload = <String, dynamic>{
+      'action': selectedOption.scope == 'group' ? 'group' : 'device',
+      'target_scope': selectedOption.scope,
+      'target_kind': targetType,
+      'icon_key': targetType == 'light' ? 'light' : 'switch',
+    };
+    if (selectedOption.scope == 'group') {
+      payload['group_id'] = selectedOption.groupId;
+      payload['group_name'] = selectedOption.groupName;
+      payload['group_kind'] = targetType;
+      payload['target_name'] = selectedOption.groupName;
+    } else {
+      payload['device_id'] = selectedOption.deviceId;
+      payload['device_name'] = selectedOption.deviceName;
+      payload['target_name'] = selectedOption.label;
+      payload['channel_name'] = selectedOption.channelName;
+      payload['channel'] = selectedOption.channel;
+    }
+
+    switch (actionKind) {
+      case 'on':
+      case 'off':
+      case 'toggle':
+        payload['state'] = actionKind;
+        break;
+      case 'brightness':
+        payload['value'] = brightnessValue.round();
+        payload['channel'] = 'dimmer';
+        break;
+      case 'scene':
+        payload['channel'] = 'scene';
+        payload['payload'] = {'scene': selectedSceneId};
+        break;
+      case 'colour':
+        payload['channel'] = (selectedOption.kind.toLowerCase().contains('rgbw')) ? 'rgbw' : 'rgb';
+        payload['payload'] = {
+          'r': selectedColor.red,
+          'g': selectedColor.green,
+          'b': selectedColor.blue,
+          'w': (selectedOption.kind.toLowerCase().contains('rgbw')) ? 0 : null,
+        }..removeWhere((key, value) => value == null);
+        break;
+    }
+
+    try {
+      await widget.api.addTile(tileType: 'automation', label: label, payload: payload);
+      await _load();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Automation added to Main: $label')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    }
+  }
+
   Future<void> _openAutomationDialog() async {
-    final automationTiles = _tiles.where((tile) {
-      if ((tile['tile_type'] ?? '').toString() == 'automation') return true;
-      final payload = (tile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
-      return (payload['automation_enabled'] as bool?) == true || (payload['timers_enabled'] as bool?) == true;
-    }).toList(growable: false);
+    final automationTiles = _tiles.where((tile) => (tile['tile_type'] ?? '').toString() == 'automation').toList(growable: false);
     await showDialog<void>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Automation'),
+        title: Row(
+          children: [
+            const Expanded(child: Text('Automation')),
+            IconButton(
+              tooltip: 'Add automation',
+              onPressed: () {
+                Navigator.pop(context);
+                unawaited(_openAutomationBuilder());
+              },
+              icon: const Icon(Icons.add),
+            ),
+          ],
+        ),
         content: SizedBox(
-          width: 520,
-          height: 320,
+          width: 620,
+          height: 360,
           child: automationTiles.isEmpty
               ? const Center(
-                  child: Text('No automation/timer tiles saved yet.\nLong-press a Main card to configure Automation or Timers.'),
+                  child: Text('No automation tiles saved yet.\nPress + to add a switch or light automation.'),
                 )
               : ListView(
                   children: automationTiles.map((tile) {
                     final payload = (tile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
                     final tileType = (tile['tile_type'] ?? '').toString();
-                    final automationTarget = (payload['group_name'] ?? '').toString().trim();
-                    final requestedState = (payload['state'] ?? 'toggle').toString().trim();
+                    final tileData = (tile['data'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+                    final automationTarget = (tileData['target_name'] ?? payload['target_name'] ?? payload['group_name'] ?? '').toString().trim();
+                    final actionLabel = _automationActionSummary(payload, tileData);
                     final automation = (payload['automation_note'] ?? '').toString().trim();
                     final timer = (payload['timer_note'] ?? '').toString().trim();
                     return ListTile(
                       title: Text((tile['label'] ?? 'Tile').toString()),
                       subtitle: Text(
                         tileType == 'automation'
-                            ? 'Group: ${automationTarget.isEmpty ? '(not set)' : automationTarget}\n'
-                                'Action: ${requestedState.isEmpty ? '(not set)' : requestedState}'
+                            ? 'Target: ${automationTarget.isEmpty ? '(not set)' : automationTarget}\n'
+                                'Action: $actionLabel'
                             : 'Automation: ${automation.isEmpty ? '(not set)' : automation}\n'
                                 'Timers: ${timer.isEmpty ? '(not set)' : timer}',
                       ),
@@ -1471,6 +1982,14 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           ],
         ),
         actions: [
+          FilledButton.icon(
+            onPressed: () {
+              Navigator.pop(context);
+              unawaited(_openAutomationBuilder());
+            },
+            icon: const Icon(Icons.add),
+            label: const Text('Add'),
+          ),
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
         ],
       ),
@@ -1804,8 +2323,8 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     } else if (tileType == 'automation') {
       final data = (tile['data'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
       final mode = (data['mode'] ?? 'manual').toString();
-      final targetName = (data['group_name'] ?? payload['group_name'] ?? '').toString();
-      final requestedState = (data['requested_state'] ?? payload['state'] ?? 'toggle').toString().toUpperCase();
+      final targetName = (data['target_name'] ?? data['group_name'] ?? payload['target_name'] ?? payload['group_name'] ?? '').toString();
+      final requestedState = _automationActionSummary(payload, data);
       final memberCount = (data['member_count'] as num?)?.toInt() ?? 0;
       final busy = _tileActionBusy.contains((tile['id'] ?? '').toString());
       content = Column(
