@@ -1,5 +1,5 @@
 name: smart_controller
-version: 0.1.40+41
+version: 0.1.41+42
 
 environment:
   sdk: ">=3.3.0 <4.0.0"

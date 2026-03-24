@@ -229,6 +229,33 @@ ensure_python_pip() {
   fi
 }
 
+backend_python_modules_ok() {
+  python3 - <<'PY' >/dev/null 2>&1
+import importlib
+for name in (
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "cryptography",
+    "serial",
+    "httpx",
+    "tinytuya",
+    "multipart",
+):
+    importlib.import_module(name)
+PY
+}
+
+install_backend_python_deps() {
+  local req_file="$1"
+  if python3 -m pip install --user --upgrade -r "$req_file"; then
+    return 0
+  fi
+
+  log "Standard pip install failed. Retrying with --break-system-packages."
+  python3 -m pip install --user --break-system-packages --upgrade -r "$req_file"
+}
+
 load_env_file() {
   local env_file=""
   if [[ -f "$DATA_DIR/.env" ]]; then
@@ -334,8 +361,18 @@ ensure_local_backend_deps() {
     log "Run ./linux-controller-updater.sh to sync controller runtime files."
     return 1
   fi
+  if backend_python_modules_ok; then
+    log "Local backend Python deps already available; skipping pip install."
+    return 0
+  fi
+
   ensure_python_pip
-  run python3 -m pip install --user --upgrade -r "$req_file"
+  run install_backend_python_deps "$req_file"
+
+  if ! backend_python_modules_ok; then
+    log "ERROR: Local backend Python deps are still missing after install."
+    return 1
+  fi
 }
 
 wait_for_local_backend() {
