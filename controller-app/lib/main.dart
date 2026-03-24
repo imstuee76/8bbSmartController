@@ -170,9 +170,9 @@ class _HomeShellState extends State<HomeShell> {
     ];
 
     return Shortcuts(
-      shortcuts: const <ShortcutActivator, Intent>{
-        SingleActivator(LogicalKeyboardKey.enter): _CloseKeyboardIntent(),
-        SingleActivator(LogicalKeyboardKey.numpadEnter): _CloseKeyboardIntent(),
+      shortcuts: <ShortcutActivator, Intent>{
+        const SingleActivator(LogicalKeyboardKey.enter): const _CloseKeyboardIntent(),
+        const SingleActivator(LogicalKeyboardKey.numpadEnter): const _CloseKeyboardIntent(),
       },
       child: Actions(
         actions: <Type, Action<Intent>>{
@@ -180,12 +180,11 @@ class _HomeShellState extends State<HomeShell> {
             onInvoke: (intent) {
               if (_editableFocusShouldCloseOnEnter()) {
                 unawaited(_touchKeyboard.closeInput());
-                return null;
               }
               return null;
             },
           ),
-        ),
+        },
         child: Listener(
           behavior: HitTestBehavior.translucent,
           onPointerDown: (_) {
