@@ -48,6 +48,9 @@ class TouchKeyboardService {
   void start() {
     if (_active || !Platform.isLinux) return;
     _active = true;
+    if (command == 'onboard') {
+      unawaited(_killDetachedOnboard());
+    }
     _focusPoll = Timer.periodic(const Duration(milliseconds: 220), (_) {
       unawaited(_sync());
     });
@@ -118,6 +121,9 @@ class TouchKeyboardService {
         proc.kill(ProcessSignal.sigkill);
       } catch (_) {}
     }
+    if (command == 'onboard') {
+      await _killDetachedOnboard();
+    }
   }
 
   Future<void> closeInput() async {
@@ -154,11 +160,26 @@ class TouchKeyboardService {
     }
   }
 
+  Future<void> _killDetachedOnboard() async {
+    final commands = <List<String>>[
+      <String>['pkill', '-f', '(^|/)onboard(\\s|$)'],
+      <String>['pkill', '-f', '/usr/bin/onboard'],
+    ];
+    for (final args in commands) {
+      try {
+        await Process.run(args.first, args.sublist(1), runInShell: true);
+      } catch (_) {}
+    }
+  }
+
   Future<void> dispose() async {
     _active = false;
     _focusPoll?.cancel();
     _focusPoll = null;
     await closeInput();
+    if (command == 'onboard') {
+      await _killDetachedOnboard();
+    }
     hasEditableFocus.dispose();
   }
 }
