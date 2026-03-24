@@ -669,12 +669,16 @@ def _device_capabilities(row: Any, status: dict[str, Any] | None = None) -> dict
     metadata = _parse_metadata(row)
     provider = str(metadata.get("provider", "")).strip().lower()
 
-    has_relays = device_type == "relay_switch" or any(str(k).startswith("relay") for k in outputs.keys())
+    def is_explicit_relay_key(value: Any) -> bool:
+        text = str(value or "").strip().lower()
+        return bool(re.match(r"^(relay|switch|channel|out|gang)[_-]?\d+$", text) or re.match(r"^dp_\d+$", text))
+
+    has_relays = device_type == "relay_switch" or any(is_explicit_relay_key(k) for k in outputs.keys())
     relay_channels = sorted(
-        [str(k) for k in outputs.keys() if str(k).startswith("relay")],
+        [str(k) for k in outputs.keys() if is_explicit_relay_key(k)],
         key=lambda item: (int(re.sub(r"\D+", "", item) or "999"), item),
     )
-    supports_light = device_type.startswith("light") or any(k in outputs for k in ("light", "dimmer", "rgb_r", "rgb", "rgbw"))
+    supports_light = device_type.startswith("light") or any(k in outputs for k in ("dimmer", "rgb_r", "rgb", "rgbw"))
     supports_rgb = device_type in ("light_rgb", "light_rgbw") or any(k in outputs for k in ("rgb_r", "rgb_g", "rgb_b", "rgb_w"))
     supports_dimmer = device_type in ("light_dimmer", "light_rgb", "light_rgbw") or "dimmer" in outputs
     supports_fan = device_type == "fan" or any(k in outputs for k in ("fan", "fan_power", "fan_speed"))

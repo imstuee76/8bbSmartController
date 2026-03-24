@@ -755,10 +755,17 @@ class _DevicesScreenState extends State<DevicesScreen> {
     return int.tryParse(m.group(1) ?? '') ?? -1;
   }
 
+  bool _isExplicitSwitchChannelKey(String key) {
+    final k = key.toLowerCase().trim();
+    if (k.isEmpty) return false;
+    return RegExp(r'^(relay|switch|channel|out|gang)[_-]?\d+$').hasMatch(k) ||
+        RegExp(r'^dp_\d+$').hasMatch(k);
+  }
+
   bool _isLikelyRelayKey(String key) {
     final k = key.toLowerCase().trim();
     if (k.isEmpty) return false;
-    if (RegExp(r'^(relay|switch|channel|out|gang|dp)[_-]?\d+$').hasMatch(k)) return true;
+    if (RegExp(r'^(relay|switch|channel|out|gang)[_-]?\d+$').hasMatch(k)) return true;
     if (k == 'power') return true;
     return false;
   }
@@ -818,6 +825,16 @@ class _DevicesScreenState extends State<DevicesScreen> {
     return List<String>.generate(count, (i) => 'relay${i + 1}');
   }
 
+  bool _supportsRelayQuickControls(SmartDevice device, Map<String, dynamic>? status) {
+    final type = device.type.toLowerCase().trim();
+    if (type.contains('relay') || type.contains('switch') || type.contains('plug') || type.contains('socket')) {
+      return true;
+    }
+    final capabilities = (status?['capabilities'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    if (capabilities['supports_relays'] == true) return true;
+    return false;
+  }
+
   bool? _combinedStateFromMemberChannels(Map<String, dynamic> outputs, List<dynamic> members) {
     var onCount = 0;
     var offCount = 0;
@@ -849,6 +866,11 @@ class _DevicesScreenState extends State<DevicesScreen> {
   List<_QuickChannel> _inferQuickChannels(SmartDevice device) {
     final status = _deviceStatusCache[device.id];
     final outputs = (status?['outputs'] as Map<String, dynamic>?) ?? <String, dynamic>{};
+    final supportsRelayQuickControls = _supportsRelayQuickControls(device, status);
+
+    if (!supportsRelayQuickControls && _isLightDevice(device)) {
+      return const <_QuickChannel>[];
+    }
 
     final channelNameByKey = <String, String>{};
     final channelKindByKey = <String, String>{};
@@ -868,10 +890,22 @@ class _DevicesScreenState extends State<DevicesScreen> {
     for (final key in outputs.keys) {
       if (_isLikelyRelayKey(key)) {
         discoveredKeys.add(key);
+        continue;
+      }
+      if (supportsRelayQuickControls && RegExp(r'^dp_\d+$').hasMatch(key.toLowerCase().trim())) {
+        discoveredKeys.add(key);
       }
     }
 
-    if (discoveredKeys.isEmpty) {
+    final hasExplicitSwitchChannels = discoveredKeys.any(_isExplicitSwitchChannelKey);
+    if (hasExplicitSwitchChannels) {
+      discoveredKeys.removeWhere((key) {
+        final lower = key.toLowerCase().trim();
+        return lower == 'power' || lower == 'light' || lower == 'relay_status';
+      });
+    }
+
+    if (discoveredKeys.isEmpty && supportsRelayQuickControls) {
       for (final key in _defaultRelayKeys(device, status)) {
         discoveredKeys.add(key);
       }
