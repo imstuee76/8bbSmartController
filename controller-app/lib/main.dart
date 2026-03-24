@@ -171,8 +171,8 @@ class _HomeShellState extends State<HomeShell> {
 
     return Shortcuts(
       shortcuts: <ShortcutActivator, Intent>{
-        const SingleActivator(LogicalKeyboardKey.enter): const _CloseKeyboardIntent(),
-        const SingleActivator(LogicalKeyboardKey.numpadEnter): const _CloseKeyboardIntent(),
+        SingleActivator(LogicalKeyboardKey.enter): const _CloseKeyboardIntent(),
+        SingleActivator(LogicalKeyboardKey.numpadEnter): const _CloseKeyboardIntent(),
       },
       child: Actions(
         actions: <Type, Action<Intent>>{
