@@ -484,6 +484,21 @@ ensure_linux_desktop_project() {
   popd >/dev/null
 }
 
+build_controller_release_bundle() {
+  local app_dir="$APP_ROOT/controller-app"
+  local bundle_bin="$app_dir/build/linux/x64/release/bundle/smart_controller"
+  pushd "$app_dir" >/dev/null
+  log "Prebuilding Linux release bundle so app launch stays fast..."
+  run "$FLUTTER_BIN" build linux --release --target lib/main.dart
+  popd >/dev/null
+
+  if [[ ! -x "$bundle_bin" ]]; then
+    log_error "Controller release bundle missing after updater build: $bundle_bin"
+    return 1
+  fi
+  log "Release bundle ready: $bundle_bin"
+}
+
 ensure_backend_runtime() {
   local req_file="$APP_ROOT/flasher-web/requirements.txt"
   if [[ ! -f "$req_file" ]]; then
@@ -599,6 +614,7 @@ install_deps() {
   pushd "$APP_ROOT/controller-app" >/dev/null
   run "$FLUTTER_BIN" pub get
   popd >/dev/null
+  build_controller_release_bundle
 }
 
 ensure_flutter() {

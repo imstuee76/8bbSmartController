@@ -173,9 +173,15 @@ needs_release_rebuild() {
 ensure_release_bundle() {
   local app_dir="$APP_ROOT/controller-app"
   local bundle_bin="$app_dir/build/linux/x64/release/bundle/smart_controller"
+  local rebuild_on_launch_raw="${CONTROLLER_REBUILD_ON_LAUNCH:-0}"
 
   if is_true "${CONTROLLER_FORCE_REBUILD:-0}"; then
     log "Forced rebuild requested (CONTROLLER_FORCE_REBUILD=1)."
+  elif [[ ! -x "$bundle_bin" ]]; then
+    log "Release bundle missing. Building controller app..."
+  elif ! is_true "$rebuild_on_launch_raw"; then
+    log "Using cached release bundle without rebuild: $bundle_bin"
+    return 0
   elif ! needs_release_rebuild; then
     log "Using cached release bundle: $bundle_bin"
     return 0
