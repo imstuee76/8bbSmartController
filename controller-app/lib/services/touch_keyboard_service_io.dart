@@ -162,7 +162,7 @@ class TouchKeyboardService {
 
   Future<void> _killDetachedOnboard() async {
     final commands = <List<String>>[
-      <String>['pkill', '-f', '(^|/)onboard(\\s|$)'],
+      <String>['pkill', '-f', r'(^|/)onboard(\s|$)'],
       <String>['pkill', '-f', '/usr/bin/onboard'],
     ];
     for (final args in commands) {
