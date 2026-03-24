@@ -267,6 +267,28 @@ resolve_repo_slug() {
   echo "$repo/$repo_name"
 }
 
+warn_if_git_remote_mismatch() {
+  local repo_slug="$1"
+  if [[ ! -d "$APP_ROOT/.git" ]]; then
+    return 0
+  fi
+
+  local origin_url=""
+  origin_url="$(git -C "$APP_ROOT" remote get-url origin 2>/dev/null || true)"
+  if [[ -z "$origin_url" ]]; then
+    log "WARNING: No git origin remote configured in $APP_ROOT"
+    return 0
+  fi
+
+  if [[ "$origin_url" == *"${repo_slug}"* ]]; then
+    return 0
+  fi
+
+  log "WARNING: git origin does not match updater source."
+  log "WARNING: origin=$origin_url"
+  log "WARNING: expected repo containing '${repo_slug}'"
+}
+
 download_archive() {
   local repo_slug="$1"
   local branch="$2"
@@ -307,6 +329,7 @@ sync_controller_files() {
   mkdir -p "$extract"
 
   log "Controller runtime update source: $repo_slug ($branch)"
+  warn_if_git_remote_mismatch "$repo_slug"
   download_archive "$repo_slug" "$branch" "$archive"
   run tar -xzf "$archive" -C "$extract"
 
