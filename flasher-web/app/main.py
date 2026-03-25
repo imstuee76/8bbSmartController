@@ -133,6 +133,8 @@ _BUILTIN_ICON_CATALOG: list[dict[str, str]] = [
     {"key": "security", "label": "Security", "kind": "builtin"},
 ]
 
+_LEGACY_DEVICE_GROUP_METADATA_KEYS = ("group_id", "group_name", "group_color")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -221,6 +223,7 @@ async def request_session_logger(request: Request, call_next: Any) -> Response:
 def on_startup() -> None:
     ensure_data_layout()
     init_db()
+    _cleanup_legacy_device_group_metadata()
     _start_device_ip_refresh_worker()
 
 
@@ -243,6 +246,42 @@ def _normalize_mac(value: Any) -> str:
     if normalized == "00:00:00:00:00:00":
         return ""
     return normalized
+
+
+def _cleanup_legacy_device_group_metadata() -> None:
+    conn = get_connection()
+    rows = conn.execute("SELECT id, name, metadata_json FROM devices").fetchall()
+    updated = 0
+    now = utc_now()
+    for row in rows:
+        try:
+            metadata = json.loads(row["metadata_json"] or "{}")
+        except Exception:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        changed = False
+        for key in _LEGACY_DEVICE_GROUP_METADATA_KEYS:
+            if key in metadata:
+                metadata.pop(key, None)
+                changed = True
+        if not changed:
+            continue
+        conn.execute(
+            "UPDATE devices SET metadata_json=?, updated_at=? WHERE id=?",
+            (json.dumps(metadata), now, str(row["id"])),
+        )
+        updated += 1
+    conn.commit()
+    conn.close()
+    if updated:
+        append_event(
+            "legacy_device_group_metadata_cleanup",
+            {
+                "updated_devices": updated,
+                "keys_removed": list(_LEGACY_DEVICE_GROUP_METADATA_KEYS),
+            },
+        )
 
 
 def _is_ipv4_host(value: Any) -> bool:
