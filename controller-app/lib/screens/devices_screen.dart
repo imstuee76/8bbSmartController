@@ -330,6 +330,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
         'cloud_local_key': hasCloudMode ? (row['local_key'] ?? '') : '',
         'cloud_product_key': hasCloudMode ? (row['product_key'] ?? '') : '',
         'source': row['source'] ?? '',
+        'channel_names': row['channel_names'] ?? row['switch_names'] ?? row['gang_names'] ?? row['dp_names'] ?? row['dps_names'] ?? const <String, dynamic>{},
       };
     }).toList(growable: false);
   }
@@ -408,6 +409,33 @@ class _DevicesScreenState extends State<DevicesScreen> {
     final cloudName = (item['cloud_name'] ?? '').toString().trim();
     if (cloudName.isNotEmpty) return cloudName;
     return (item['ip'] ?? '').toString().trim();
+  }
+
+  String _scanChannelName(Map<String, dynamic> item, String channelKey) {
+    final raw = item['channel_names'];
+    final key = channelKey.trim();
+    final suffix = _suffixNumber(key);
+    if (raw is Map) {
+      final candidates = <String>[
+        key,
+        key.toLowerCase(),
+        'dp_$suffix',
+        'switch_$suffix',
+        'relay$suffix',
+        suffix > 0 ? suffix.toString() : '',
+      ].where((value) => value.isNotEmpty).toList(growable: false);
+      for (final candidate in candidates) {
+        final value = raw[candidate];
+        final text = value?.toString().trim() ?? '';
+        if (text.isNotEmpty) return text;
+      }
+    }
+    if (raw is List && suffix > 0 && suffix <= raw.length) {
+      final value = raw[suffix - 1];
+      final text = value?.toString().trim() ?? '';
+      if (text.isNotEmpty) return text;
+    }
+    return _fallbackChannelName(channelKey);
   }
 
   String _tuyaRowIdentity(Map<String, dynamic> row) {
@@ -2509,6 +2537,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
         passcode: null,
         metadata: metadata,
       );
+      await _seedScannedDeviceChannels(createdDevice, item);
       if (group != null) {
         final member = _buildPrimaryDeviceGroupMember(createdDevice);
         final nextGroups = _groups
@@ -2525,6 +2554,115 @@ class _DevicesScreenState extends State<DevicesScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    }
+  }
+
+  Future<void> _seedScannedDeviceChannels(SmartDevice device, Map<String, dynamic> item) async {
+    try {
+      final status = await widget.api.getDeviceStatus(device.id);
+      final outputs = (status['outputs'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+      if (outputs.isEmpty) return;
+
+      final channelSpecs = <Map<String, String>>[];
+      final seen = <String>{};
+      for (final entry in outputs.entries) {
+        final key = entry.key.toString().trim();
+        if (key.isEmpty) continue;
+        if (!_isExplicitSwitchChannelKey(key, entry.value)) continue;
+        if (!seen.add(key)) continue;
+        channelSpecs.add({
+          'channel_key': key,
+          'channel_name': _scanChannelName(item, key),
+          'channel_kind': 'relay',
+        });
+      }
+
+      for (final spec in channelSpecs) {
+        await widget.api.upsertChannel(
+          deviceId: device.id,
+          channelKey: spec['channel_key']!,
+          channelName: spec['channel_name']!,
+          channelKind: spec['channel_kind']!,
+          payload: const <String, dynamic>{},
+        );
+      }
+    } catch (_) {
+      // Best effort only. Device add should still succeed when status probing is unavailable.
+    }
+  }
+
+  Future<void> _showScanProviderMenu(
+    BuildContext context,
+    Offset anchor,
+    Map<String, dynamic> item, {
+    required String provider,
+  }) async {
+    final isLocal = provider == 'tuya_local' || provider == 'local_lan';
+    final providerLabel = isLocal ? 'Lan' : 'Cloud';
+    final groupPrefix = isLocal ? 'local_group:' : 'cloud_group:';
+    final directValue = isLocal ? 'local_direct' : 'cloud_direct';
+    final newGroupValue = isLocal ? 'local_new_group' : 'cloud_new_group';
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final items = <PopupMenuEntry<String>>[
+      PopupMenuItem<String>(
+        value: directValue,
+        child: Text('Add $providerLabel device'),
+      ),
+      const PopupMenuDivider(),
+      const PopupMenuItem<String>(
+        enabled: false,
+        value: '__groups_header__',
+        child: Text('Add in group'),
+      ),
+      ..._groups.map(
+        (group) => PopupMenuItem<String>(
+          value: '$groupPrefix${group.id}',
+          child: Text(group.name),
+        ),
+      ),
+      PopupMenuItem<String>(
+        value: newGroupValue,
+        child: const Text('New group'),
+      ),
+    ];
+
+    final selected = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(anchor.dx, anchor.dy, 1, 1),
+        Offset.zero & overlay.size,
+      ),
+      items: items,
+    );
+    if (selected == null) return;
+
+    Future<GroupConfig?> resolveGroup(String id) async {
+      if (id == '__new__') {
+        return _ensureGroupFromPrompt(
+          initialName: _scanDisplayName(item),
+          initialKind: _scanSuggestedGroupKind(item),
+        );
+      }
+      for (final group in _groups) {
+        if (group.id == id) return group;
+      }
+      return null;
+    }
+
+    if (selected == directValue) {
+      await _addScannedDevice(item, forceProvider: provider);
+      return;
+    }
+    if (selected == newGroupValue) {
+      final group = await resolveGroup('__new__');
+      if (group == null) return;
+      await _addScannedDevice(item, forceProvider: provider, group: group);
+      return;
+    }
+    if (selected.startsWith(groupPrefix)) {
+      final group = await resolveGroup(selected.substring(groupPrefix.length));
+      if (group == null) return;
+      await _addScannedDevice(item, forceProvider: provider, group: group);
     }
   }
 
@@ -3115,28 +3253,40 @@ class _DevicesScreenState extends State<DevicesScreen> {
                                         spacing: 4,
                                         children: [
                                           if (_tuyaSupportsLocal(item))
-                                            IconButton(
-                                              tooltip: 'Add Local',
-                                              icon: const Icon(Icons.lan),
-                                              onPressed: () => _addScannedDevice(item, forceProvider: 'tuya_local'),
-                                            ),
-                                          if (_tuyaSupportsLocal(item))
-                                            IconButton(
-                                              tooltip: 'Add Local to Group',
-                                              icon: const Icon(Icons.device_hub),
-                                              onPressed: () => _showScanGroupDialog(item, provider: 'tuya_local'),
+                                            Builder(
+                                              builder: (iconContext) => IconButton(
+                                                tooltip: 'Lan options',
+                                                icon: const Icon(Icons.lan),
+                                                onPressed: () async {
+                                                  final box = iconContext.findRenderObject() as RenderBox?;
+                                                  if (box == null) return;
+                                                  final anchor = box.localToGlobal(box.size.bottomRight(Offset.zero));
+                                                  await _showScanProviderMenu(
+                                                    iconContext,
+                                                    anchor,
+                                                    item,
+                                                    provider: 'tuya_local',
+                                                  );
+                                                },
+                                              ),
                                             ),
                                           if (_tuyaSupportsCloud(item))
-                                            IconButton(
-                                              tooltip: 'Add Cloud',
-                                              icon: const Icon(Icons.cloud),
-                                              onPressed: () => _addScannedDevice(item, forceProvider: 'tuya_cloud'),
-                                            ),
-                                          if (_tuyaSupportsCloud(item))
-                                            IconButton(
-                                              tooltip: 'Add Cloud to Group',
-                                              icon: const Icon(Icons.device_hub),
-                                              onPressed: () => _showScanGroupDialog(item, provider: 'tuya_cloud'),
+                                            Builder(
+                                              builder: (iconContext) => IconButton(
+                                                tooltip: 'Cloud options',
+                                                icon: const Icon(Icons.cloud),
+                                                onPressed: () async {
+                                                  final box = iconContext.findRenderObject() as RenderBox?;
+                                                  if (box == null) return;
+                                                  final anchor = box.localToGlobal(box.size.bottomRight(Offset.zero));
+                                                  await _showScanProviderMenu(
+                                                    iconContext,
+                                                    anchor,
+                                                    item,
+                                                    provider: 'tuya_cloud',
+                                                  );
+                                                },
+                                              ),
                                             ),
                                         ],
                                       )

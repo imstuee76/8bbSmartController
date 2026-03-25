@@ -335,7 +335,10 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
   String _deviceDisplayName(Map<String, dynamic> tile) {
     final payload = (tile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    final data = (tile['data'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
     final label = (tile['label'] ?? '').toString().trim();
+    final liveChannelName = (data['channel_name'] ?? data['display_name'] ?? '').toString().trim();
+    if (liveChannelName.isNotEmpty) return liveChannelName;
     final channelName = (payload['channel_name'] ?? '').toString().trim();
     if (channelName.isNotEmpty) return channelName;
     return label;

@@ -600,6 +600,21 @@ def _device_to_dict(row: Any, conn: Any) -> dict[str, Any]:
     }
 
 
+def _find_channel_row(device: dict[str, Any], channel_key: str) -> dict[str, Any] | None:
+    key = str(channel_key or "").strip()
+    if not key:
+        return None
+    channels = device.get("channels", []) if isinstance(device, dict) else []
+    if not isinstance(channels, list):
+        return None
+    for channel in channels:
+        if not isinstance(channel, dict):
+            continue
+        if str(channel.get("channel_key", "")).strip() == key:
+            return channel
+    return None
+
+
 def _decrypt_fields(obj: dict[str, Any], fields: list[str]) -> dict[str, Any]:
     out = dict(obj)
     for field in fields:
@@ -2668,7 +2683,8 @@ def get_tile_data() -> dict[str, Any]:
     _request_device_ip_refresh(reason="main_tile_load", force=False)
     conn = get_connection()
     rows = conn.execute("SELECT * FROM main_tiles ORDER BY updated_at DESC").fetchall()
-    device_map = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM devices").fetchall()}
+    device_rows = conn.execute("SELECT * FROM devices").fetchall()
+    device_map = {r["id"]: _device_to_dict(r, conn) for r in device_rows}
     conn.close()
 
     tiles: list[dict[str, Any]] = []
@@ -2688,8 +2704,21 @@ def get_tile_data() -> dict[str, Any]:
                 if row["ref_id"] not in device_map:
                     return {}, "Device not found"
                 dev = device_map[row["ref_id"]]
+                try:
+                    tile_payload = json.loads(row["payload_json"] or "{}")
+                except Exception:
+                    tile_payload = {}
                 data = _dashboard_cached_device_status(dev, quick=True)
                 data["device_type"] = dev.get("type")
+                if isinstance(tile_payload, dict):
+                    channel_key = str(tile_payload.get("channel", "")).strip()
+                    if channel_key:
+                        channel_row = _find_channel_row(dev, channel_key)
+                        if channel_row:
+                            current_name = str(channel_row.get("channel_name", "")).strip()
+                            if current_name:
+                                data["channel_name"] = current_name
+                                data["display_name"] = current_name
                 return data, None
             if tile_type == "group":
                 payload = json.loads(row["payload_json"])
