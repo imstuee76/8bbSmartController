@@ -600,28 +600,6 @@ class _DevicesScreenState extends State<DevicesScreen> {
     return _sectionFromScanProvider(provider) == _activeSection;
   }
 
-  String _groupIdOf(SmartDevice device) => (device.metadata['group_id'] ?? '').toString().trim();
-
-  String _groupNameOf(SmartDevice device) {
-    final metadataName = (device.metadata['group_name'] ?? '').toString().trim();
-    if (metadataName.isNotEmpty) return metadataName;
-    final id = _groupIdOf(device);
-    for (final group in _groups) {
-      if (group.id == id) return group.name;
-    }
-    return '';
-  }
-
-  String _groupColorOf(SmartDevice device) {
-    final metadataColor = (device.metadata['group_color'] ?? '').toString().trim();
-    if (metadataColor.isNotEmpty) return metadataColor;
-    final id = _groupIdOf(device);
-    for (final group in _groups) {
-      if (group.id == id) return group.color;
-    }
-    return '';
-  }
-
   List<GroupConfig> _groupsForMember(String deviceId, String channel) {
     final key = channel.trim();
     return _groups
@@ -631,6 +609,39 @@ class _DevicesScreenState extends State<DevicesScreen> {
           ),
         )
         .toList(growable: false);
+  }
+
+  List<GroupConfig> _groupsForDevice(SmartDevice device) {
+    return _groups.where((group) => group.members.any((member) => member.deviceId == device.id)).toList(growable: false)
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+  }
+
+  String _primaryGroupNameForDevice(SmartDevice device) {
+    final groups = _groupsForDevice(device);
+    if (groups.isEmpty) return '';
+    return groups.first.name;
+  }
+
+  Widget _buildDeviceGroupChips(SmartDevice device) {
+    final matches = _groupsForDevice(device);
+    if (matches.isEmpty) return const SizedBox.shrink();
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: matches
+          .map(
+            (group) => Chip(
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              visualDensity: VisualDensity.compact,
+              avatar: CircleAvatar(
+                radius: 7,
+                backgroundColor: _colorFromHex(group.color),
+              ),
+              label: Text(group.name),
+            ),
+          )
+          .toList(growable: false),
+    );
   }
 
   Widget _buildMemberGroupChips(String deviceId, String channel) {
@@ -731,7 +742,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
     items.sort((a, b) {
       switch (_deviceSort) {
         case _DeviceSort.group:
-          final groupCmp = _groupNameOf(a).toLowerCase().compareTo(_groupNameOf(b).toLowerCase());
+          final groupCmp = _primaryGroupNameForDevice(a).toLowerCase().compareTo(_primaryGroupNameForDevice(b).toLowerCase());
           if (groupCmp != 0) return groupCmp;
           return a.name.toLowerCase().compareTo(b.name.toLowerCase());
         case _DeviceSort.alphaAsc:
@@ -1970,72 +1981,11 @@ class _DevicesScreenState extends State<DevicesScreen> {
     );
   }
 
-  Future<void> _assignDeviceToGroup(SmartDevice device, GroupConfig? group) async {
-    final metadata = Map<String, dynamic>.from(device.metadata);
-    if (group == null) {
-      metadata.remove('group_id');
-      metadata.remove('group_name');
-      metadata.remove('group_color');
-    } else {
-      metadata['group_id'] = group.id;
-      metadata['group_name'] = group.name;
-      metadata['group_color'] = group.color;
-    }
-    await widget.api.updateDevice(device.id, {'metadata': metadata});
-    await _refresh();
-  }
-
   Future<void> _showAssignGroupDialog(SmartDevice device) async {
-    final currentId = _groupIdOf(device);
-    final selectedId = await showDialog<String>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text('Assign Group: ${device.name}'),
-        content: SizedBox(
-          width: 420,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                dense: true,
-                title: const Text('No group'),
-                trailing: currentId.isEmpty ? const Icon(Icons.check) : null,
-                onTap: () => Navigator.pop(context, ''),
-              ),
-              ..._groups.map((group) => ListTile(
-                    dense: true,
-                    leading: CircleAvatar(backgroundColor: _colorFromHex(group.color), radius: 9),
-                    title: Text(group.name),
-                    trailing: currentId == group.id ? const Icon(Icons.check) : null,
-                    onTap: () => Navigator.pop(context, group.id),
-                  )),
-              const Divider(),
-              ListTile(
-                dense: true,
-                leading: const Icon(Icons.add),
-                title: const Text('New group'),
-                onTap: () => Navigator.pop(context, '__new__'),
-              ),
-            ],
-          ),
-        ),
-      ),
+    await _showAssignMemberGroupsDialog(
+      title: 'Assign Primary Control Groups: ${device.name}',
+      member: _buildPrimaryDeviceGroupMember(device),
     );
-    if (selectedId == null) return;
-    if (selectedId == '__new__') {
-      final created = await _ensureGroupFromPrompt();
-      if (created == null) return;
-      await _assignDeviceToGroup(device, created);
-      return;
-    }
-    GroupConfig? group;
-    for (final item in _groups) {
-      if (item.id == selectedId) {
-        group = item;
-        break;
-      }
-    }
-    await _assignDeviceToGroup(device, group);
   }
 
   Future<void> _setPasscode(SmartDevice device) async {
@@ -2523,11 +2473,6 @@ class _DevicesScreenState extends State<DevicesScreen> {
               : (provider == 'tuya_local' ? 'Tuya Local' : '8bb Firmware')),
       'connection_mode': connectionMode,
     };
-    if (group != null) {
-      metadata['group_id'] = group.id;
-      metadata['group_name'] = group.name;
-      metadata['group_color'] = group.color;
-    }
 
     if (provider.startsWith('tuya')) {
       metadata['tuya_device_id'] = (item['tuya_device_id'] ?? '').toString().trim();
@@ -2555,7 +2500,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
     }
 
     try {
-      await widget.api.createDevice(
+      final createdDevice = await widget.api.createDevice(
         name: displayName,
         type: _guessDeviceType(item),
         host: host.isEmpty ? null : host,
@@ -2563,6 +2508,16 @@ class _DevicesScreenState extends State<DevicesScreen> {
         passcode: null,
         metadata: metadata,
       );
+      if (group != null) {
+        final member = _buildPrimaryDeviceGroupMember(createdDevice);
+        final nextGroups = _groups
+            .map((item) => item.id == group.id ? _groupWithMembership(item, member, true) : item)
+            .toList(growable: false);
+        setState(() {
+          _groups = nextGroups;
+        });
+        await _saveGroupsConfig();
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added device: $displayName')));
       await _refresh();
@@ -2952,8 +2907,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
                                       final source = _sourceOf(d);
                                       final mode = _modeOf(d);
                                       final isEspFirmware = provider == 'esp_firmware';
-                                      final groupName = _groupNameOf(d);
-                                      final groupColor = _groupColorOf(d);
+                                      final deviceGroups = _groupsForDevice(d);
                                       return ExpansionTile(
                                         onExpansionChanged: (expanded) {
                                           if (expanded) {
@@ -2962,13 +2916,13 @@ class _DevicesScreenState extends State<DevicesScreen> {
                                         },
                                         title: Row(
                                           children: [
-                                            if (groupName.isNotEmpty)
+                                            if (deviceGroups.isNotEmpty)
                                               Container(
                                                 width: 10,
                                                 height: 10,
                                                 margin: const EdgeInsets.only(right: 8),
                                                 decoration: BoxDecoration(
-                                                  color: _colorFromHex(groupColor),
+                                                  color: _colorFromHex(deviceGroups.first.color),
                                                   shape: BoxShape.circle,
                                                 ),
                                               ),
@@ -2997,24 +2951,20 @@ class _DevicesScreenState extends State<DevicesScreen> {
                                                   children: [
                                                     Chip(label: Text(source)),
                                                     Chip(label: Text(mode)),
-                                                    if (groupName.isNotEmpty)
-                                                      Chip(
-                                                        avatar: CircleAvatar(
-                                                          radius: 7,
-                                                          backgroundColor: _colorFromHex(groupColor),
-                                                        ),
-                                                        label: Text(groupName),
-                                                      ),
                                                     Chip(label: Text(d.host ?? d.mac ?? 'No host yet')),
                                                   ],
                                                 ),
+                                                if (deviceGroups.isNotEmpty) ...[
+                                                  const SizedBox(height: 8),
+                                                  _buildDeviceGroupChips(d),
+                                                ],
                                                 const SizedBox(height: 8),
                                                 Wrap(
                                                   spacing: 8,
                                                   runSpacing: 8,
                                                   children: [
                                                     OutlinedButton(onPressed: () => _renameDevice(d), child: const Text('Rename')),
-                                                    OutlinedButton(onPressed: () => _showAssignGroupDialog(d), child: const Text('Assign Group')),
+                                                    OutlinedButton(onPressed: () => _showAssignGroupDialog(d), child: const Text('Primary Groups')),
                                                     OutlinedButton(onPressed: () => _setPasscode(d), child: const Text('Set Passcode')),
                                                     OutlinedButton(
                                                       onPressed: () async {

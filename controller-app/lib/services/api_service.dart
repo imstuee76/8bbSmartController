@@ -32,7 +32,7 @@ class ApiService {
     return list.whereType<Map<String, dynamic>>().map(SmartDevice.fromJson).toList();
   }
 
-  Future<void> createDevice({
+  Future<SmartDevice> createDevice({
     required String name,
     required String type,
     String? host,
@@ -65,6 +65,7 @@ class ApiService {
     if (res.statusCode != 200) {
       throw Exception('Create device failed: ${res.body}');
     }
+    return SmartDevice.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
 
   Future<void> renameDevice(String deviceId, String name) async {
