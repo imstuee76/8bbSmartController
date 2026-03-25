@@ -970,7 +970,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
   Future<void> openAutomationDialog() => _openAutomationDialog();
 
-  Future<void> _openAutomationBuilder() async {
+  Future<void> _openAutomationBuilder({Map<String, dynamic>? existingTile}) async {
     List<SmartDevice> devices;
     DisplayConfig display;
     try {
@@ -987,16 +987,64 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     }
     if (!mounted) return;
 
-    final labelCtl = TextEditingController();
+    final existingPayload = existingTile == null
+        ? const <String, dynamic>{}
+        : ((existingTile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{});
+    final existingLabel = (existingTile?['label'] ?? '').toString().trim();
+    final initialTargetKind = (existingPayload['target_kind'] ?? existingPayload['group_kind'] ?? 'switch').toString().trim().toLowerCase();
+    final initialChannel = (existingPayload['channel'] ?? '').toString().trim().toLowerCase();
+    final initialState = (existingPayload['state'] ?? '').toString().trim().toLowerCase();
+    final initialPayloadData = (existingPayload['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+    final initialValue = (existingPayload['value'] as num?)?.toDouble();
+
+    final labelCtl = TextEditingController(text: existingLabel);
     final searchCtl = TextEditingController();
-    var targetType = 'switch';
-    var targetScope = display.groups.isNotEmpty ? 'group' : 'device';
+    var targetType = initialTargetKind == 'light' ? 'light' : 'switch';
+    var targetScope = existingPayload['group_id'] != null && (existingPayload['group_id'] ?? '').toString().trim().isNotEmpty
+        ? 'group'
+        : display.groups.isNotEmpty
+            ? (existingPayload['action'] == 'device' || (existingPayload['members'] as List<dynamic>? ?? const <dynamic>[]).isNotEmpty ? 'device' : 'group')
+            : 'device';
     var actionKind = 'toggle';
-    var selectedTargetId = '';
-    var brightnessValue = 75.0;
-    var selectedSceneId = _lightScenes.first['id'] ?? '1';
-    var selectedSceneLabel = _lightScenes.first['label'] ?? 'Relax';
-    var selectedColor = const Color(0xFFFF9800);
+    if (initialChannel == 'scene') {
+      actionKind = 'scene';
+    } else if (initialChannel == 'rgb' || initialChannel == 'rgbw') {
+      actionKind = 'colour';
+    } else if (initialValue != null) {
+      actionKind = 'brightness';
+    } else if (initialState == 'on' || initialState == 'off' || initialState == 'toggle') {
+      actionKind = initialState;
+    }
+    var selectedGroupId = (existingPayload['group_id'] ?? '').toString().trim();
+    final selectedTargetIds = <String>{};
+    if (existingPayload['action'] == 'device') {
+      final deviceId = (existingPayload['device_id'] ?? '').toString().trim();
+      final channel = (existingPayload['channel'] ?? '').toString().trim();
+      if (deviceId.isNotEmpty) {
+        selectedTargetIds.add('device:$deviceId:$channel');
+      }
+    } else {
+      final members = (existingPayload['members'] as List<dynamic>? ?? const <dynamic>[]).whereType<Map<String, dynamic>>();
+      for (final member in members) {
+        final deviceId = (member['device_id'] ?? '').toString().trim();
+        final channel = (member['channel'] ?? '').toString().trim();
+        if (deviceId.isNotEmpty) {
+          selectedTargetIds.add('device:$deviceId:$channel');
+        }
+      }
+    }
+    var brightnessValue = initialValue ?? 75.0;
+    var selectedSceneId = (initialPayloadData['scene'] ?? _lightScenes.first['id'] ?? '1').toString();
+    var selectedSceneLabel = _lightScenes.firstWhere(
+      (scene) => scene['id'] == selectedSceneId,
+      orElse: () => const {'id': '1', 'label': 'Relax'},
+    )['label']!;
+    var selectedColor = Color.fromARGB(
+      255,
+      (initialPayloadData['r'] as num?)?.toInt() ?? 255,
+      (initialPayloadData['g'] as num?)?.toInt() ?? 152,
+      (initialPayloadData['b'] as num?)?.toInt() ?? 0,
+    );
 
     String buildDefaultLabel(_AutomationTargetOption? option) {
       final targetLabel = option?.label.trim() ?? '';
@@ -1032,14 +1080,24 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               targetScope: targetScope,
               search: searchCtl.text,
             );
-            if (options.every((item) => item.id != selectedTargetId)) {
-              selectedTargetId = options.isNotEmpty ? options.first.id : '';
+            if (targetScope == 'group' && options.every((item) => item.id != 'group:$selectedGroupId')) {
+              selectedGroupId = options.isNotEmpty ? (options.first.groupId ?? '') : '';
             }
-            _AutomationTargetOption? selectedOption;
-            for (final option in options) {
-              if (option.id == selectedTargetId) {
-                selectedOption = option;
-                break;
+            selectedTargetIds.removeWhere((item) => options.every((option) => option.id != item));
+            _AutomationTargetOption? selectedOption = options.isNotEmpty ? options.first : null;
+            if (targetScope == 'group') {
+              for (final option in options) {
+                if (option.groupId == selectedGroupId) {
+                  selectedOption = option;
+                  break;
+                }
+              }
+            } else if (selectedTargetIds.isNotEmpty) {
+              for (final option in options) {
+                if (selectedTargetIds.contains(option.id)) {
+                  selectedOption = option;
+                  break;
+                }
               }
             }
             if (labelCtl.text.trim().isEmpty) {
@@ -1065,7 +1123,6 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                               setLocal(() {
                                 targetType = 'switch';
                                 actionKind = 'toggle';
-                                labelCtl.clear();
                               });
                             },
                           ),
@@ -1076,7 +1133,6 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                               setLocal(() {
                                 targetType = 'light';
                                 actionKind = 'toggle';
-                                labelCtl.clear();
                               });
                             },
                           ),
@@ -1089,7 +1145,6 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                 : (_) {
                                     setLocal(() {
                                       targetScope = 'group';
-                                      labelCtl.clear();
                                     });
                                   },
                           ),
@@ -1099,7 +1154,6 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                             onSelected: (_) {
                               setLocal(() {
                                 targetScope = 'device';
-                                labelCtl.clear();
                               });
                             },
                           ),
@@ -1128,7 +1182,6 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                           if (value == null) return;
                           setLocal(() {
                             actionKind = value;
-                            labelCtl.clear();
                           });
                         },
                       ),
@@ -1160,7 +1213,6 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                 (scene) => scene['id'] == value,
                                 orElse: () => const {'label': 'Scene'},
                               )['label']!;
-                              labelCtl.clear();
                             });
                           },
                         ),
@@ -1184,7 +1236,6 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                             return InkWell(
                               onTap: () => setLocal(() {
                                 selectedColor = color;
-                                labelCtl.clear();
                               }),
                               child: Container(
                                 width: 34,
@@ -1224,17 +1275,33 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                               )
                             : ListView(
                                 children: options.map((option) {
-                                  return RadioListTile<String>(
-                                    value: option.id,
-                                    groupValue: selectedTargetId,
+                                  if (targetScope == 'group') {
+                                    return RadioListTile<String>(
+                                      value: option.groupId ?? option.id,
+                                      groupValue: selectedGroupId,
+                                      title: Text(option.label),
+                                      subtitle: Text(option.subtitle),
+                                      onChanged: (value) {
+                                        if (value == null) return;
+                                        setLocal(() {
+                                          selectedGroupId = value;
+                                        });
+                                      },
+                                    );
+                                  }
+                                  final checked = selectedTargetIds.contains(option.id);
+                                  return CheckboxListTile(
+                                    value: checked,
                                     title: Text(option.label),
                                     subtitle: Text(option.subtitle),
-                                    dense: true,
+                                    controlAffinity: ListTileControlAffinity.leading,
                                     onChanged: (value) {
-                                      if (value == null) return;
                                       setLocal(() {
-                                        selectedTargetId = value;
-                                        labelCtl.clear();
+                                        if (value == true) {
+                                          selectedTargetIds.add(option.id);
+                                        } else {
+                                          selectedTargetIds.remove(option.id);
+                                        }
                                       });
                                     },
                                   );
@@ -1248,8 +1315,10 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               actions: [
                 TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
                 FilledButton(
-                  onPressed: selectedTargetId.isEmpty ? null : () => Navigator.pop(dialogContext, true),
-                  child: const Text('Add to Main'),
+                  onPressed: (targetScope == 'group' ? selectedGroupId.isEmpty : selectedTargetIds.isEmpty)
+                      ? null
+                      : () => Navigator.pop(dialogContext, true),
+                  child: Text(existingTile == null ? 'Add to Main' : 'Save'),
                 ),
               ],
             );
@@ -1266,22 +1335,19 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       targetScope: targetScope,
       search: searchCtl.text,
     );
-    _AutomationTargetOption? selectedOption;
-    for (final option in options) {
-      if (option.id == selectedTargetId) {
-        selectedOption = option;
-        break;
-      }
-    }
-    if (selectedOption == null) {
+    final selectedOptions = targetScope == 'group'
+        ? options.where((option) => option.groupId == selectedGroupId).toList(growable: false)
+        : options.where((option) => selectedTargetIds.contains(option.id)).toList(growable: false);
+    if (selectedOptions.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Choose a target first')));
       return;
     }
+    final selectedOption = selectedOptions.first;
 
     final label = labelCtl.text.trim().isEmpty ? buildDefaultLabel(selectedOption) : labelCtl.text.trim();
     final payload = <String, dynamic>{
-      'action': selectedOption.scope == 'group' ? 'group' : 'device',
+      'action': selectedOption.scope == 'group' ? 'group' : (selectedOptions.length == 1 ? 'device' : 'group'),
       'target_scope': selectedOption.scope,
       'target_kind': targetType,
       'icon_key': targetType == 'light' ? 'light' : 'switch',
@@ -1292,11 +1358,29 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       payload['group_kind'] = targetType;
       payload['target_name'] = selectedOption.groupName;
     } else {
-      payload['device_id'] = selectedOption.deviceId;
-      payload['device_name'] = selectedOption.deviceName;
-      payload['target_name'] = selectedOption.label;
-      payload['channel_name'] = selectedOption.channelName;
-      payload['channel'] = selectedOption.channel;
+      if (selectedOptions.length == 1) {
+        payload['device_id'] = selectedOption.deviceId;
+        payload['device_name'] = selectedOption.deviceName;
+        payload['target_name'] = selectedOption.label;
+        payload['channel_name'] = selectedOption.channelName;
+        payload['channel'] = selectedOption.channel;
+      } else {
+        payload['group_kind'] = targetType;
+        payload['group_name'] = label;
+        payload['target_name'] = label;
+        payload['members'] = selectedOptions
+            .map(
+              (option) => <String, dynamic>{
+                'device_id': option.deviceId,
+                'device_name': option.deviceName,
+                'channel': option.channel,
+                'channel_name': option.channelName,
+                'label': option.label,
+                'kind': option.kind,
+              },
+            )
+            .toList(growable: false);
+      }
     }
 
     switch (actionKind) {
@@ -1325,10 +1409,17 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     }
 
     try {
-      await widget.api.addTile(tileType: 'automation', label: label, payload: payload);
+      if (existingTile == null) {
+        await widget.api.addTile(tileType: 'automation', label: label, payload: payload);
+      } else {
+        final tileId = (existingTile['id'] ?? '').toString().trim();
+        await widget.api.updateTile(tileId: tileId, label: label, payload: payload);
+      }
       await _load();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Automation added to Main: $label')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(existingTile == null ? 'Automation added to Main: $label' : 'Automation updated: $label')),
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
@@ -1371,6 +1462,10 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                     final timer = (payload['timer_note'] ?? '').toString().trim();
                     return ListTile(
                       title: Text((tile['label'] ?? 'Tile').toString()),
+                      onTap: () {
+                        Navigator.pop(context);
+                        unawaited(_openAutomationBuilder(existingTile: tile));
+                      },
                       subtitle: Text(
                         tileType == 'automation'
                             ? 'Target: ${automationTarget.isEmpty ? '(not set)' : automationTarget}\n'
@@ -1379,9 +1474,21 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                 'Timers: ${timer.isEmpty ? '(not set)' : timer}',
                       ),
                       trailing: tileType == 'automation'
-                          ? FilledButton.tonal(
-                              onPressed: () => _runAutomationTile(tile),
-                              child: const Text('Run'),
+                          ? Wrap(
+                              spacing: 8,
+                              children: [
+                                FilledButton.tonal(
+                                  onPressed: () => _runAutomationTile(tile),
+                                  child: const Text('Run'),
+                                ),
+                                OutlinedButton(
+                                  onPressed: () {
+                                    Navigator.pop(context);
+                                    unawaited(_openAutomationBuilder(existingTile: tile));
+                                  },
+                                  child: const Text('Edit'),
+                                ),
+                              ],
                             )
                           : null,
                     );
@@ -1883,6 +1990,10 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         color: cloudMode ? const Color(0xFFE67E22) : const Color(0xFF2E7D32),
       ),
     );
+  }
+
+  Future<void> _configureAutomationTile(Map<String, dynamic> tile) async {
+    await _openAutomationBuilder(existingTile: tile);
   }
 
   Widget _tileStateVisual(Map<String, dynamic> tile, bool? stateBool, Color statusColor) {
@@ -2401,13 +2512,29 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       ),
     );
 
-    if (tileType == 'device' || tileType == 'group') {
+    if (tileType == 'device' || tileType == 'group' || tileType == 'automation') {
       return MouseRegion(
         cursor: SystemMouseCursors.click,
         child: GestureDetector(
-          behavior: HitTestBehavior.translucent,
-          onLongPress: () => tileType == 'group' ? _configureGroupTile(tile) : _configureDeviceTile(tile),
-          onSecondaryTap: () => tileType == 'group' ? _configureGroupTile(tile) : _configureDeviceTile(tile),
+          behavior: HitTestBehavior.opaque,
+          onLongPress: () {
+            if (tileType == 'group') {
+              _configureGroupTile(tile);
+            } else if (tileType == 'automation') {
+              _configureAutomationTile(tile);
+            } else {
+              _configureDeviceTile(tile);
+            }
+          },
+          onSecondaryTap: () {
+            if (tileType == 'group') {
+              _configureGroupTile(tile);
+            } else if (tileType == 'automation') {
+              _configureAutomationTile(tile);
+            } else {
+              _configureDeviceTile(tile);
+            }
+          },
           child: baseCard,
         ),
       );

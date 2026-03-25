@@ -90,6 +90,8 @@ class _SmartControllerBootstrapState extends State<SmartControllerBootstrap> {
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF0B7285), brightness: Brightness.light),
         scaffoldBackgroundColor: const Color(0xFFF4F7F8),
+        materialTapTargetSize: MaterialTapTargetSize.padded,
+        visualDensity: VisualDensity.standard,
         useMaterial3: true,
       ),
       home: HomeShell(api: _api!, store: _store),
@@ -188,7 +190,7 @@ class _HomeShellState extends State<HomeShell> {
         },
         child: Listener(
           behavior: HitTestBehavior.translucent,
-          onPointerDown: (_) {
+          onPointerUp: (_) {
             if (_touchKeyboard.hasEditableFocus.value) {
               unawaited(_touchKeyboard.closeInput());
             }
@@ -283,8 +285,8 @@ class _TabButton extends StatelessWidget {
         style: FilledButton.styleFrom(
           backgroundColor: selected ? const Color(0xFF0B7285) : const Color(0xFFDCEBED),
           foregroundColor: selected ? Colors.white : const Color(0xFF0F3A40),
-          minimumSize: const Size(98, 38),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          minimumSize: const Size(104, 46),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         ),
         child: Text(title),
       ),
@@ -306,8 +308,8 @@ class _HeaderActionButton extends StatelessWidget {
       style: FilledButton.styleFrom(
         backgroundColor: const Color(0xFFDCEBED),
         foregroundColor: const Color(0xFF0F3A40),
-        minimumSize: const Size(110, 38),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        minimumSize: const Size(118, 46),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       ),
       icon: Icon(icon, size: 18),
       label: Text(title),
