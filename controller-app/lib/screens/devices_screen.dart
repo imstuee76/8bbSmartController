@@ -766,11 +766,12 @@ class _DevicesScreenState extends State<DevicesScreen> {
     return int.tryParse(m.group(1) ?? '') ?? -1;
   }
 
-  bool _isExplicitSwitchChannelKey(String key) {
+  bool _isExplicitSwitchChannelKey(String key, [dynamic outputValue]) {
     final k = key.toLowerCase().trim();
     if (k.isEmpty) return false;
-    return RegExp(r'^(relay|switch|channel|out|gang)[_-]?\d+$').hasMatch(k) ||
-        RegExp(r'^dp_\d+$').hasMatch(k);
+    if (RegExp(r'^(relay|switch|channel|out|gang)[_-]?\d+$').hasMatch(k)) return true;
+    if (RegExp(r'^dp_\d+$').hasMatch(k)) return outputValue is bool;
+    return false;
   }
 
   bool _isLikelyRelayKey(String key) {
@@ -903,12 +904,12 @@ class _DevicesScreenState extends State<DevicesScreen> {
         discoveredKeys.add(key);
         continue;
       }
-      if (supportsRelayQuickControls && RegExp(r'^dp_\d+$').hasMatch(key.toLowerCase().trim())) {
+      if (supportsRelayQuickControls && _isExplicitSwitchChannelKey(key, outputs[key])) {
         discoveredKeys.add(key);
       }
     }
 
-    final hasExplicitSwitchChannels = discoveredKeys.any(_isExplicitSwitchChannelKey);
+    final hasExplicitSwitchChannels = discoveredKeys.any((key) => _isExplicitSwitchChannelKey(key, outputs[key]));
     if (hasExplicitSwitchChannels) {
       discoveredKeys.removeWhere((key) {
         final lower = key.toLowerCase().trim();

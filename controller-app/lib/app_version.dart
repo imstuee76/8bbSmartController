@@ -1,3 +1,3 @@
-const String controllerVersion = "0.1.57";
-const int controllerBuild = 58;
-const String controllerDisplayVersion = "0.1.57+58";
+const String controllerVersion = "0.1.58";
+const int controllerBuild = 59;
+const String controllerDisplayVersion = "0.1.58+59";

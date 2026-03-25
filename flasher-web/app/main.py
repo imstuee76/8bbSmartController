@@ -710,7 +710,12 @@ def _device_capabilities(row: Any, status: dict[str, Any] | None = None) -> dict
 
     def is_explicit_relay_key(value: Any) -> bool:
         text = str(value or "").strip().lower()
-        return bool(re.match(r"^(relay|switch|channel|out|gang)[_-]?\d+$", text) or re.match(r"^dp_\d+$", text))
+        if re.match(r"^(relay|switch|channel|out|gang)[_-]?\d+$", text):
+            return True
+        if re.match(r"^dp_\d+$", text):
+            output_value = outputs.get(text)
+            return isinstance(output_value, bool)
+        return False
 
     has_relays = device_type == "relay_switch" or any(is_explicit_relay_key(k) for k in outputs.keys())
     relay_channels = sorted(
