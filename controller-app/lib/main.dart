@@ -208,6 +208,10 @@ class _HomeShellState extends State<HomeShell> {
         child: Listener(
           behavior: HitTestBehavior.translucent,
           onPointerUp: (_) {
+            final navigator = Navigator.of(context, rootNavigator: true);
+            if (navigator.canPop()) {
+              return;
+            }
             if (_touchKeyboard.hasEditableFocus.value) {
               unawaited(_touchKeyboard.closeInput());
             }
