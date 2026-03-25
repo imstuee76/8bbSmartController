@@ -33,6 +33,9 @@ class TouchKeyboardService {
   Process? _keyboardProcess;
   bool _lastNeedsKeyboard = false;
   bool _active = false;
+  DateTime? _lastEditableFocusAt;
+
+  static const Duration _focusLossGrace = Duration(milliseconds: 900);
 
   static bool _isEnabled(String value) {
     final v = value.trim().toLowerCase();
@@ -58,7 +61,13 @@ class TouchKeyboardService {
 
   Future<void> _sync() async {
     if (!_active) return;
-    final needsKeyboard = enabled && _focusedWidgetNeedsKeyboard();
+    final now = DateTime.now();
+    final focusedEditable = enabled && _focusedWidgetNeedsKeyboard();
+    if (focusedEditable) {
+      _lastEditableFocusAt = now;
+    }
+    final recentlyFocused = _lastEditableFocusAt != null && now.difference(_lastEditableFocusAt!) <= _focusLossGrace;
+    final needsKeyboard = enabled && (focusedEditable || recentlyFocused);
     if (hasEditableFocus.value != needsKeyboard) {
       hasEditableFocus.value = needsKeyboard;
     }
@@ -127,6 +136,7 @@ class TouchKeyboardService {
   }
 
   Future<void> closeInput() async {
+    _lastEditableFocusAt = null;
     FocusManager.instance.primaryFocus?.unfocus();
     hasEditableFocus.value = false;
     _lastNeedsKeyboard = false;
@@ -148,9 +158,9 @@ class TouchKeyboardService {
     // Best effort; ignored when schema/keys are unavailable.
     final commands = <List<String>>[
       <String>['set', 'org.onboard.window', 'docking-enabled', 'true'],
-      <String>['set', 'org.onboard.window', 'force-to-top', 'true'],
+      <String>['set', 'org.onboard.window', 'force-to-top', 'false'],
       <String>['set', 'org.onboard.window', 'window-decoration', 'false'],
-      <String>['set', 'org.onboard.window', 'dock-expand', 'true'],
+      <String>['set', 'org.onboard.window', 'dock-expand', 'false'],
       <String>['set', 'org.onboard.window', 'transparent-background', 'false'],
     ];
     for (final args in commands) {
