@@ -114,6 +114,23 @@ class _HomeShellState extends State<HomeShell> {
   late final TouchKeyboardService _touchKeyboard;
   final GlobalKey<MainScreenState> _mainScreenKey = GlobalKey<MainScreenState>();
 
+  void _setIndex(int index) {
+    if (_index == index) {
+      if (index == 0) {
+        unawaited(_mainScreenKey.currentState?.refreshTiles() ?? Future<void>.value());
+      }
+      return;
+    }
+    setState(() {
+      _index = index;
+    });
+    if (index == 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_mainScreenKey.currentState?.refreshTiles() ?? Future<void>.value());
+      });
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -209,9 +226,9 @@ class _HomeShellState extends State<HomeShell> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  _TabButton(title: 'Main', selected: _index == 0, onTap: () => setState(() => _index = 0)),
-                  _TabButton(title: 'Devices', selected: _index == 1, onTap: () => setState(() => _index = 1)),
-                  _TabButton(title: 'Config', selected: _index == 2, onTap: () => setState(() => _index = 2)),
+                  _TabButton(title: 'Main', selected: _index == 0, onTap: () => _setIndex(0)),
+                  _TabButton(title: 'Devices', selected: _index == 1, onTap: () => _setIndex(1)),
+                  _TabButton(title: 'Config', selected: _index == 2, onTap: () => _setIndex(2)),
                   if (_index == 0) ...[
                     const SizedBox(width: 8),
                     _HeaderActionButton(

@@ -321,9 +321,13 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         if (tileType == 'automation')
           'group_name': (payload['group_name'] ?? '').toString(),
         if (tileType == 'automation')
+          'target_name': (payload['target_name'] ?? payload['group_name'] ?? '').toString(),
+        if (tileType == 'automation')
           'requested_state': (payload['state'] ?? 'toggle').toString(),
         if (tileType == 'automation')
-          'member_count': ((payload['members'] as List<dynamic>?)?.length ?? 0),
+          'member_count': (payload['group_id'] ?? '').toString().trim().isNotEmpty
+              ? null
+              : ((payload['members'] as List<dynamic>?)?.length ?? 0),
       },
       'error': null,
     };
@@ -969,8 +973,10 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   Future<void> openCreateGroupDialog() => _openCreateGroupDialog();
 
   Future<void> openAutomationDialog() => _openAutomationDialog();
+  Future<void> refreshTiles() => _load();
 
   Future<void> _openAutomationBuilder({Map<String, dynamic>? existingTile}) async {
+    FocusManager.instance.primaryFocus?.unfocus();
     List<SmartDevice> devices;
     DisplayConfig display;
     try {
@@ -1104,212 +1110,210 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               labelCtl.text = buildDefaultLabel(selectedOption);
             }
             return AlertDialog(
-              title: const Text('Add Automation'),
+              title: Text(existingTile == null ? 'Add Automation' : 'Edit Automation'),
               content: SizedBox(
                 width: 760,
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          ChoiceChip(
-                            label: const Text('Switch'),
-                            selected: targetType == 'switch',
-                            onSelected: (_) {
-                              setLocal(() {
-                                targetType = 'switch';
-                                actionKind = 'toggle';
-                              });
-                            },
-                          ),
-                          ChoiceChip(
-                            label: const Text('Light'),
-                            selected: targetType == 'light',
-                            onSelected: (_) {
-                              setLocal(() {
-                                targetType = 'light';
-                                actionKind = 'toggle';
-                              });
-                            },
-                          ),
-                          const SizedBox(width: 18),
-                          ChoiceChip(
-                            label: const Text('Group'),
-                            selected: targetScope == 'group',
-                            onSelected: display.groups.isEmpty
-                                ? null
-                                : (_) {
-                                    setLocal(() {
-                                      targetScope = 'group';
-                                    });
-                                  },
-                          ),
-                          ChoiceChip(
-                            label: const Text('Device'),
-                            selected: targetScope == 'device',
-                            onSelected: (_) {
-                              setLocal(() {
-                                targetScope = 'device';
-                              });
-                            },
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 14),
-                      TextField(
-                        controller: labelCtl,
-                        decoration: const InputDecoration(labelText: 'Automation name'),
-                      ),
-                      const SizedBox(height: 12),
-                      DropdownButtonFormField<String>(
-                        value: actionKind,
-                        decoration: const InputDecoration(labelText: 'Action'),
-                        items: [
-                          const DropdownMenuItem(value: 'toggle', child: Text('Toggle')),
-                          const DropdownMenuItem(value: 'on', child: Text('Turn on')),
-                          const DropdownMenuItem(value: 'off', child: Text('Turn off')),
-                          if (targetType == 'light') ...const [
-                            DropdownMenuItem(value: 'brightness', child: Text('Brightness')),
-                            DropdownMenuItem(value: 'colour', child: Text('Colour')),
-                            DropdownMenuItem(value: 'scene', child: Text('Scene')),
-                          ],
-                        ],
-                        onChanged: (value) {
-                          if (value == null) return;
-                          setLocal(() {
-                            actionKind = value;
-                          });
-                        },
-                      ),
-                      if (actionKind == 'brightness') ...[
-                        const SizedBox(height: 12),
-                        Text('Brightness: ${brightnessValue.round()}'),
-                        Slider(
-                          value: brightnessValue,
-                          min: 1,
-                          max: 100,
-                          divisions: 99,
-                          label: '${brightnessValue.round()}',
-                          onChanged: (value) => setLocal(() => brightnessValue = value),
-                        ),
-                      ],
-                      if (actionKind == 'scene') ...[
-                        const SizedBox(height: 12),
-                        DropdownButtonFormField<String>(
-                          value: selectedSceneId,
-                          decoration: const InputDecoration(labelText: 'Scene'),
-                          items: _lightScenes
-                              .map((scene) => DropdownMenuItem<String>(value: scene['id'], child: Text(scene['label'] ?? scene['id'] ?? 'Scene')))
-                              .toList(growable: false),
-                          onChanged: (value) {
-                            if (value == null) return;
+                height: 640,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        ChoiceChip(
+                          label: const Text('Switch'),
+                          selected: targetType == 'switch',
+                          onSelected: (_) {
                             setLocal(() {
-                              selectedSceneId = value;
-                              selectedSceneLabel = _lightScenes.firstWhere(
-                                (scene) => scene['id'] == value,
-                                orElse: () => const {'label': 'Scene'},
-                              )['label']!;
+                              targetType = 'switch';
+                              actionKind = 'toggle';
+                            });
+                          },
+                        ),
+                        ChoiceChip(
+                          label: const Text('Light'),
+                          selected: targetType == 'light',
+                          onSelected: (_) {
+                            setLocal(() {
+                              targetType = 'light';
+                              actionKind = 'toggle';
+                            });
+                          },
+                        ),
+                        const SizedBox(width: 18),
+                        ChoiceChip(
+                          label: const Text('Group'),
+                          selected: targetScope == 'group',
+                          onSelected: display.groups.isEmpty
+                              ? null
+                              : (_) {
+                                  setLocal(() {
+                                    targetScope = 'group';
+                                  });
+                                },
+                        ),
+                        ChoiceChip(
+                          label: const Text('Device'),
+                          selected: targetScope == 'device',
+                          onSelected: (_) {
+                            setLocal(() {
+                              targetScope = 'device';
                             });
                           },
                         ),
                       ],
-                      if (actionKind == 'colour') ...[
-                        const SizedBox(height: 12),
-                        const Text('Colour'),
-                        const SizedBox(height: 8),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            const Color(0xFFFF9800),
-                            const Color(0xFFF44336),
-                            const Color(0xFF2196F3),
-                            const Color(0xFF4CAF50),
-                            const Color(0xFFE91E63),
-                            const Color(0xFFFFFFFF),
-                          ].map((color) {
-                            final selected = color.value == selectedColor.value;
-                            return InkWell(
-                              onTap: () => setLocal(() {
-                                selectedColor = color;
-                              }),
-                              child: Container(
-                                width: 34,
-                                height: 34,
-                                decoration: BoxDecoration(
-                                  color: color,
-                                  borderRadius: BorderRadius.circular(17),
-                                  border: Border.all(
-                                    color: selected ? const Color(0xFF102A43) : Colors.black12,
-                                    width: selected ? 3 : 1,
-                                  ),
+                    ),
+                    const SizedBox(height: 14),
+                    TextField(
+                      controller: labelCtl,
+                      decoration: const InputDecoration(labelText: 'Automation name'),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      value: actionKind,
+                      decoration: const InputDecoration(labelText: 'Action'),
+                      items: [
+                        const DropdownMenuItem(value: 'toggle', child: Text('Toggle')),
+                        const DropdownMenuItem(value: 'on', child: Text('Turn on')),
+                        const DropdownMenuItem(value: 'off', child: Text('Turn off')),
+                        if (targetType == 'light') ...const [
+                          DropdownMenuItem(value: 'brightness', child: Text('Brightness')),
+                          DropdownMenuItem(value: 'colour', child: Text('Colour')),
+                          DropdownMenuItem(value: 'scene', child: Text('Scene')),
+                        ],
+                      ],
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setLocal(() {
+                          actionKind = value;
+                        });
+                      },
+                    ),
+                    if (actionKind == 'brightness') ...[
+                      const SizedBox(height: 12),
+                      Text('Brightness: ${brightnessValue.round()}'),
+                      Slider(
+                        value: brightnessValue,
+                        min: 1,
+                        max: 100,
+                        divisions: 99,
+                        label: '${brightnessValue.round()}',
+                        onChanged: (value) => setLocal(() => brightnessValue = value),
+                      ),
+                    ],
+                    if (actionKind == 'scene') ...[
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        value: selectedSceneId,
+                        decoration: const InputDecoration(labelText: 'Scene'),
+                        items: _lightScenes
+                            .map((scene) => DropdownMenuItem<String>(value: scene['id'], child: Text(scene['label'] ?? scene['id'] ?? 'Scene')))
+                            .toList(growable: false),
+                        onChanged: (value) {
+                          if (value == null) return;
+                          setLocal(() {
+                            selectedSceneId = value;
+                            selectedSceneLabel = _lightScenes.firstWhere(
+                              (scene) => scene['id'] == value,
+                              orElse: () => const {'label': 'Scene'},
+                            )['label']!;
+                          });
+                        },
+                      ),
+                    ],
+                    if (actionKind == 'colour') ...[
+                      const SizedBox(height: 12),
+                      const Text('Colour'),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          const Color(0xFFFF9800),
+                          const Color(0xFFF44336),
+                          const Color(0xFF2196F3),
+                          const Color(0xFF4CAF50),
+                          const Color(0xFFE91E63),
+                          const Color(0xFFFFFFFF),
+                        ].map((color) {
+                          final selected = color.value == selectedColor.value;
+                          return InkWell(
+                            onTap: () => setLocal(() {
+                              selectedColor = color;
+                            }),
+                            child: Container(
+                              width: 40,
+                              height: 40,
+                              decoration: BoxDecoration(
+                                color: color,
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                  color: selected ? const Color(0xFF102A43) : Colors.black12,
+                                  width: selected ? 3 : 1,
                                 ),
                               ),
-                            );
-                          }).toList(growable: false),
-                        ),
-                      ],
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: searchCtl,
-                        decoration: const InputDecoration(
-                          labelText: 'Search targets',
-                          prefixIcon: Icon(Icons.search),
-                        ),
-                        onChanged: (_) => setLocal(() {}),
+                            ),
+                          );
+                        }).toList(growable: false),
                       ),
-                      const SizedBox(height: 10),
-                      SizedBox(
-                        height: 280,
-                        child: options.isEmpty
-                            ? Center(
-                                child: Text(
-                                  targetScope == 'group'
-                                      ? 'No matching groups for this automation type.'
-                                      : 'No matching saved device controls found.',
-                                ),
-                              )
-                            : ListView(
-                                children: options.map((option) {
-                                  if (targetScope == 'group') {
-                                    return RadioListTile<String>(
-                                      value: option.groupId ?? option.id,
-                                      groupValue: selectedGroupId,
-                                      title: Text(option.label),
-                                      subtitle: Text(option.subtitle),
-                                      onChanged: (value) {
-                                        if (value == null) return;
-                                        setLocal(() {
-                                          selectedGroupId = value;
-                                        });
-                                      },
-                                    );
-                                  }
-                                  final checked = selectedTargetIds.contains(option.id);
-                                  return CheckboxListTile(
-                                    value: checked,
+                    ],
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: searchCtl,
+                      decoration: const InputDecoration(
+                        labelText: 'Search targets',
+                        prefixIcon: Icon(Icons.search),
+                      ),
+                      onChanged: (_) => setLocal(() {}),
+                    ),
+                    const SizedBox(height: 10),
+                    Expanded(
+                      child: options.isEmpty
+                          ? Center(
+                              child: Text(
+                                targetScope == 'group'
+                                    ? 'No matching groups for this automation type.'
+                                    : 'No matching saved device controls found.',
+                              ),
+                            )
+                          : ListView(
+                              children: options.map((option) {
+                                if (targetScope == 'group') {
+                                  return RadioListTile<String>(
+                                    value: option.groupId ?? option.id,
+                                    groupValue: selectedGroupId,
                                     title: Text(option.label),
                                     subtitle: Text(option.subtitle),
-                                    controlAffinity: ListTileControlAffinity.leading,
                                     onChanged: (value) {
+                                      if (value == null) return;
                                       setLocal(() {
-                                        if (value == true) {
-                                          selectedTargetIds.add(option.id);
-                                        } else {
-                                          selectedTargetIds.remove(option.id);
-                                        }
+                                        selectedGroupId = value;
                                       });
                                     },
                                   );
-                                }).toList(growable: false),
-                              ),
-                      ),
-                    ],
-                  ),
+                                }
+                                final checked = selectedTargetIds.contains(option.id);
+                                return CheckboxListTile(
+                                  value: checked,
+                                  title: Text(option.label),
+                                  subtitle: Text(option.subtitle),
+                                  controlAffinity: ListTileControlAffinity.leading,
+                                  onChanged: (value) {
+                                    setLocal(() {
+                                      if (value == true) {
+                                        selectedTargetIds.add(option.id);
+                                      } else {
+                                        selectedTargetIds.remove(option.id);
+                                      }
+                                    });
+                                  },
+                                );
+                              }).toList(growable: false),
+                            ),
+                    ),
+                  ],
                 ),
               ),
               actions: [
