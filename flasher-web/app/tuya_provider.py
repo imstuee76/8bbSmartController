@@ -212,6 +212,17 @@ def _channel_to_dp_hint(channel: str) -> int | None:
         return None
 
 
+def _is_explicit_switch_channel(channel: str) -> bool:
+    text = str(channel or "").strip().lower()
+    if not text:
+        return False
+    if text.startswith("dp_"):
+        return True
+    import re
+
+    return bool(re.search(r"(relay|switch|channel|out|gang)[_-]?\d+$", text))
+
+
 def _resolve_local_toggle_dp(channel: str, dps: dict[str, Any]) -> str | int:
     fallback = _onoff_dp_from_dps(dps)
     dp_hint = _channel_to_dp_hint(channel)
@@ -541,7 +552,14 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
     rgb = _rgb_payload(payload)
     requested_scene = payload.get("scene", payload.get("effect"))
     requested_mode = str(payload.get("mode", "")).strip().lower()
-    light_channel = channel in ("light", "rgb", "rgbw", "dimmer", "brightness", "scene", "effect") or _is_light_device(metadata)
+    explicit_switch_channel = _is_explicit_switch_channel(channel)
+    light_channel = (
+        not explicit_switch_channel
+        and (
+            channel in ("light", "rgb", "rgbw", "dimmer", "brightness", "scene", "effect")
+            or _is_light_device(metadata)
+        )
+    )
 
     # Local path first for local/dual devices.
     local_error = ""
