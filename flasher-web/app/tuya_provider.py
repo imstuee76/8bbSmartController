@@ -7,6 +7,12 @@ from .security import decrypt_secret
 from .storage import get_setting
 
 
+class TuyaCloudFallbackRequiredError(ValueError):
+    def __init__(self, message: str, *, detail: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.detail = detail or {}
+
+
 def _parse_version(value: Any, fallback: float = 3.3) -> float:
     try:
         return float(str(value).strip())
@@ -568,6 +574,7 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
     state = str(command.get("state", "")).strip().lower()
     channel = str(command.get("channel", "")).strip().lower()
     payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
+    allow_cloud_fallback = bool(payload.get("allow_cloud_fallback", True))
     value = command.get("value")
     brightness_value = value if value is not None else payload.get("brightness")
     rgb = _rgb_payload(payload)
@@ -699,6 +706,18 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
             raise ValueError(f"Tuya local command failed: {detail}") from last_exc
     elif provider == "tuya_local":
         local_error = "Tuya local control requires tuya_device_id + tuya_ip + tuya_local_key"
+
+    if provider == "tuya_local" and local_error and not allow_cloud_fallback and _local_error_allows_cloud_fallback(local_error):
+        raise TuyaCloudFallbackRequiredError(
+            "Local Tuya control failed, but cloud fallback is available",
+            detail={
+                "fallback_available": True,
+                "provider": provider,
+                "device_id": dev_id,
+                "local_error": local_error,
+                "mode": "local_lan",
+            },
+        )
 
     # Cloud command path.
     if not dev_id:

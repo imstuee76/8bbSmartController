@@ -81,7 +81,7 @@ from .schemas import (
 )
 from .security import decrypt_secret, encrypt_secret, hash_passcode
 from .storage import DATA_DIR, append_event, ensure_data_layout, get_connection, get_setting, init_db, set_setting, utc_now
-from .tuya_provider import get_tuya_device_status, send_tuya_device_command
+from .tuya_provider import TuyaCloudFallbackRequiredError, get_tuya_device_status, send_tuya_device_command
 from .versioning import flasher_display_version, load_version_manifest
 
 app = FastAPI(title="8bb Smart Controller Flasher", version=flasher_display_version())
@@ -1195,6 +1195,20 @@ def _execute_group_members_action(
             _apply_dashboard_command_cache(device_id, row, command_payload)
             ok_count += 1
             results.append({"device_id": device_id, "channel": channel, "label": label, "ok": True, "result": result})
+        except TuyaCloudFallbackRequiredError as exc:
+            error_count += 1
+            detail = dict(exc.detail or {})
+            results.append(
+                {
+                    "device_id": device_id,
+                    "channel": channel,
+                    "label": label,
+                    "ok": False,
+                    "error": str(exc),
+                    "fallback_available": True,
+                    "fallback_detail": detail,
+                }
+            )
         except Exception as exc:
             error_count += 1
             results.append({"device_id": device_id, "channel": channel, "label": label, "ok": False, "error": str(exc)})
@@ -2936,7 +2950,23 @@ def post_run_tile(tile_id: str, payload: dict[str, Any] | None = None) -> dict[s
     if not isinstance(requested_payload, dict):
         conn.close()
         raise HTTPException(status_code=400, detail="payload must be an object")
+    requested_payload = dict(requested_payload)
+    if "allow_cloud_fallback" in (payload or {}):
+        requested_payload["allow_cloud_fallback"] = bool((payload or {}).get("allow_cloud_fallback"))
     requested_channel = str((payload or {}).get("channel", tile_payload.get("channel", ""))).strip() or None
+    member_filter_raw = (payload or {}).get("member_filter", [])
+    member_filter: set[tuple[str, str]] = set()
+    if member_filter_raw:
+        if not isinstance(member_filter_raw, list):
+            conn.close()
+            raise HTTPException(status_code=400, detail="member_filter must be a list")
+        for item in member_filter_raw:
+            if not isinstance(item, dict):
+                continue
+            member_device_id = str(item.get("device_id", "")).strip()
+            member_channel = str(item.get("channel", "")).strip()
+            if member_device_id and member_channel:
+                member_filter.add((member_device_id, member_channel))
 
     if action == "device":
         device_id = str(tile_payload.get("device_id", "")).strip()
@@ -2955,6 +2985,22 @@ def post_run_tile(tile_id: str, payload: dict[str, Any] | None = None) -> dict[s
         }
         try:
             result = _execute_device_command_by_row(device_id, row, command_payload)
+        except TuyaCloudFallbackRequiredError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": str(exc),
+                    "fallback_available": True,
+                    "target_scope": "device",
+                    "tile_id": tile_id,
+                    "device_id": device_id,
+                    "channel": command_payload["channel"],
+                    "requested_state": requested_state,
+                    "requested_value": requested_value,
+                    "requested_payload": requested_payload,
+                    **dict(exc.detail or {}),
+                },
+            ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except httpx.HTTPError as exc:
@@ -3004,6 +3050,15 @@ def post_run_tile(tile_id: str, payload: dict[str, Any] | None = None) -> dict[s
     if not members:
         conn.close()
         raise HTTPException(status_code=400, detail="Automation target group has no members")
+    if member_filter:
+        members = [
+            item
+            for item in members
+            if (str(item.get("device_id", "")).strip(), _automation_channel_for_member(item, requested_channel)) in member_filter
+        ]
+    if not members:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Automation target group member filter matched no members")
 
     device_ids = [str(item.get("device_id", "")).strip() for item in members if str(item.get("device_id", "")).strip()]
     placeholders = ",".join("?" for _ in device_ids) or "''"
@@ -3036,6 +3091,36 @@ def post_run_tile(tile_id: str, payload: dict[str, Any] | None = None) -> dict[s
             "error_count": error_count,
         },
     )
+    fallback_members = [
+        {
+            "device_id": str(item.get("device_id", "")).strip(),
+            "channel": str(item.get("channel", "")).strip(),
+            "label": str(item.get("label", "")).strip(),
+            "detail": dict(item.get("fallback_detail") or {}),
+        }
+        for item in results
+        if bool(item.get("fallback_available"))
+    ]
+    if fallback_members and not bool(requested_payload.get("allow_cloud_fallback", True)):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Local control failed for some group members, but cloud fallback is available",
+                "fallback_available": True,
+                "target_scope": "group",
+                "tile_id": tile_id,
+                "group_name": group_name,
+                "group_kind": group_kind,
+                "requested_state": requested_state,
+                "requested_value": requested_value,
+                "requested_payload": requested_payload,
+                "member_count": len(members),
+                "ok_count": ok_count,
+                "error_count": error_count,
+                "fallback_members": fallback_members,
+                "results": results,
+            },
+        )
     return {
         "ok": error_count == 0,
         "tile_id": tile_id,

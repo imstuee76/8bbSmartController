@@ -7,6 +7,27 @@ import '../models/config_models.dart';
 import '../models/device_models.dart';
 import 'session_logger.dart';
 
+class ApiResponseException implements Exception {
+  ApiResponseException(this.message, {this.statusCode, this.body = '', this.detail});
+
+  final String message;
+  final int? statusCode;
+  final String body;
+  final Map<String, dynamic>? detail;
+
+  @override
+  String toString() => message;
+}
+
+class AutomationFallbackException extends ApiResponseException {
+  AutomationFallbackException({
+    required super.message,
+    super.statusCode,
+    super.body,
+    super.detail,
+  });
+}
+
 class ApiService {
   ApiService(this.baseUrl) : _client = _LoggingClient(http.Client(), SessionLogger.instance);
 
@@ -296,10 +317,16 @@ class ApiService {
   Future<Map<String, dynamic>> runAutomationTile({
     required String tileId,
     String? state,
+    bool allowCloudFallback = true,
+    List<Map<String, String>> memberFilter = const <Map<String, String>>[],
   }) async {
     final body = <String, dynamic>{};
     if (state != null && state.trim().isNotEmpty) {
       body['state'] = state.trim();
+    }
+    body['allow_cloud_fallback'] = allowCloudFallback;
+    if (memberFilter.isNotEmpty) {
+      body['member_filter'] = memberFilter;
     }
     final res = await _client.post(
       _uri('/api/main/tiles/$tileId/run'),
@@ -307,7 +334,31 @@ class ApiService {
       body: jsonEncode(body),
     );
     if (res.statusCode != 200) {
-      throw Exception('Run tile failed: ${res.body}');
+      Map<String, dynamic>? detail;
+      try {
+        final parsed = jsonDecode(res.body);
+        if (parsed is Map<String, dynamic>) {
+          final rawDetail = parsed['detail'];
+          if (rawDetail is Map<String, dynamic>) {
+            detail = rawDetail;
+          }
+        }
+      } catch (_) {}
+      final message = detail?['message']?.toString().trim();
+      if (res.statusCode == 409 && detail?['fallback_available'] == true) {
+        throw AutomationFallbackException(
+          message: message?.isNotEmpty == true ? message! : 'Cloud fallback is available',
+          statusCode: res.statusCode,
+          body: res.body,
+          detail: detail,
+        );
+      }
+      throw ApiResponseException(
+        message?.isNotEmpty == true ? message! : 'Run tile failed: ${res.body}',
+        statusCode: res.statusCode,
+        body: res.body,
+        detail: detail,
+      );
     }
     return jsonDecode(res.body) as Map<String, dynamic>;
   }

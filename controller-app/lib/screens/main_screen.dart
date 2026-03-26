@@ -85,6 +85,12 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   ];
 
   String _friendlyError(Object error) {
+    if (error is ApiResponseException) {
+      final message = error.message.trim();
+      if (message.isNotEmpty) {
+        return message;
+      }
+    }
     final text = error.toString();
     final lower = text.toLowerCase();
     if (lower.contains('connection refused') || lower.contains('socketexception')) {
@@ -92,6 +98,69 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           'Check: backend is running on Windows/Linux server, URL/port are correct, and firewall allows TCP 1111.';
     }
     return text;
+  }
+
+  Future<bool> _confirmCloudFallback({
+    required String label,
+    required AutomationFallbackException error,
+  }) async {
+    final detail = error.detail ?? const <String, dynamic>{};
+    final scope = (detail['target_scope'] ?? '').toString().trim();
+    final members = (detail['fallback_members'] as List<dynamic>? ?? const <dynamic>[])
+        .whereType<Map<String, dynamic>>()
+        .toList();
+    final lines = <String>[
+      'Local control failed for "$label".',
+      if (scope == 'group' && members.isNotEmpty) '${members.length} group item(s) need cloud fallback.',
+      'Would you like to try cloud?',
+    ];
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Cloud Fallback'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(lines.join('\n')),
+              if (members.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 12),
+                const Text('Affected items:'),
+                const SizedBox(height: 8),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 220),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: members
+                          .map(
+                            (item) => Padding(
+                              padding: const EdgeInsets.only(bottom: 6),
+                              child: Text('• ${(item['label'] ?? item['channel'] ?? item['device_id'] ?? '').toString()}'),
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Try Cloud'),
+            ),
+          ],
+        );
+      },
+    );
+    return confirmed == true;
   }
 
   bool _isLightKind(String kind) {
@@ -810,17 +879,118 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     if (tileId.isEmpty || _tileActionBusy.contains(tileId)) return;
     final payload = (tile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
     final requestedState = (payload['state'] ?? 'toggle').toString().trim();
+    final label = (tile['label'] ?? 'Automation').toString();
     setState(() {
       _tileActionBusy.add(tileId);
     });
     try {
-      await widget.api.runAutomationTile(tileId: tileId, state: requestedState);
+      await SessionLogger.instance.logActivity('automation_tile_run_started', <String, dynamic>{
+        'tile_id': tileId,
+        'label': label,
+        'state': requestedState,
+      });
+      final result = await widget.api.runAutomationTile(
+        tileId: tileId,
+        state: requestedState,
+        allowCloudFallback: false,
+      );
+      if ((result['ok'] ?? true) != true) {
+        throw ApiResponseException(
+          'Automation failed',
+          detail: result,
+          body: result.toString(),
+        );
+      }
+      await SessionLogger.instance.logActivity('automation_tile_run_finished', <String, dynamic>{
+        'tile_id': tileId,
+        'label': label,
+        'state': requestedState,
+        'result': result,
+      });
       if (!mounted) return;
       unawaited(_load());
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Automation "${tile['label']}" ran')),
+        SnackBar(content: Text('Automation "$label" ran')),
       );
-    } catch (e) {
+    } on AutomationFallbackException catch (fallbackError) {
+      await SessionLogger.instance.logActivity('automation_tile_run_fallback_needed', <String, dynamic>{
+        'tile_id': tileId,
+        'label': label,
+        'state': requestedState,
+        'detail': fallbackError.detail ?? <String, dynamic>{},
+      });
+      if (!mounted) return;
+      final confirmed = await _confirmCloudFallback(label: label, error: fallbackError);
+      if (!confirmed) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Automation stopped after local control failed')),
+        );
+        return;
+      }
+      final detail = fallbackError.detail ?? const <String, dynamic>{};
+      final members = (detail['fallback_members'] as List<dynamic>? ?? const <dynamic>[])
+          .whereType<Map<String, dynamic>>()
+          .map<Map<String, String>>(
+            (item) => <String, String>{
+              'device_id': (item['device_id'] ?? '').toString(),
+              'channel': (item['channel'] ?? '').toString(),
+            },
+          )
+          .where((item) => item['device_id']!.isNotEmpty && item['channel']!.isNotEmpty)
+          .toList();
+      try {
+        final result = await widget.api.runAutomationTile(
+          tileId: tileId,
+          state: requestedState,
+          allowCloudFallback: true,
+          memberFilter: members,
+        );
+        if ((result['ok'] ?? true) != true) {
+          throw ApiResponseException(
+            'Automation cloud retry failed',
+            detail: result,
+            body: result.toString(),
+          );
+        }
+        await SessionLogger.instance.logActivity('automation_tile_run_cloud_retry_finished', <String, dynamic>{
+          'tile_id': tileId,
+          'label': label,
+          'state': requestedState,
+          'member_filter_count': members.length,
+          'result': result,
+        });
+        if (!mounted) return;
+        unawaited(_load());
+        final fallbackCount = members.isEmpty ? 1 : members.length;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Automation "$label" ran. Cloud used for $fallbackCount item(s).')),
+        );
+      } catch (retryError, retryStackTrace) {
+        await SessionLogger.instance.logError(
+          'automation_tile_run_cloud_retry_failed',
+          retryError,
+          stackTrace: retryStackTrace,
+          payload: <String, dynamic>{
+            'tile_id': tileId,
+            'label': label,
+            'state': requestedState,
+            'member_filter_count': members.length,
+          },
+        );
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(retryError))));
+      }
+    } catch (e, stackTrace) {
+      await SessionLogger.instance.logError(
+        'automation_tile_run_failed',
+        e,
+        stackTrace: stackTrace,
+        payload: <String, dynamic>{
+          'tile_id': tileId,
+          'label': label,
+          'state': requestedState,
+        },
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyError(e))));
     } finally {
