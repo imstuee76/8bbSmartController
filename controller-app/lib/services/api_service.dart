@@ -21,11 +21,11 @@ class ApiResponseException implements Exception {
 
 class AutomationFallbackException extends ApiResponseException {
   AutomationFallbackException({
-    required super.message,
-    super.statusCode,
-    super.body,
-    super.detail,
-  });
+    required String message,
+    int? statusCode,
+    String body = '',
+    Map<String, dynamic>? detail,
+  }) : super(message, statusCode: statusCode, body: body, detail: detail);
 }
 
 class ApiService {
