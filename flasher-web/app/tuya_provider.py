@@ -36,6 +36,27 @@ def _tuya_raw_error(raw: Any) -> str:
     return ""
 
 
+def _local_error_allows_cloud_fallback(error_text: str) -> bool:
+    text = str(error_text or "").strip().lower()
+    if not text:
+        return False
+    return any(
+        token in text
+        for token in (
+            "device unreachable",
+            "network error",
+            "timed out",
+            "timeout",
+            "connection reset",
+            "connection refused",
+            "connection aborted",
+            "connection closed",
+            "no route to host",
+            "host unreachable",
+        )
+    )
+
+
 def _is_light_device(metadata: dict[str, Any]) -> bool:
     device_type = str(metadata.get("device_type", "")).strip().lower()
     blob = " ".join(
@@ -673,7 +694,7 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
             except Exception as exc:
                 last_exc = exc
                 local_error = str(exc)
-        if provider == "tuya_local":
+        if provider == "tuya_local" and not _local_error_allows_cloud_fallback(local_error):
             detail = local_error or "Local Tuya command failed"
             raise ValueError(f"Tuya local command failed: {detail}") from last_exc
     elif provider == "tuya_local":
