@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import colorsys
+import time
+import uuid
 from typing import Any
 
 from .security import decrypt_secret
-from .storage import get_setting
+from .storage import append_event, get_setting
 
 
 class TuyaCloudFallbackRequiredError(ValueError):
@@ -568,6 +570,7 @@ def get_tuya_device_status(metadata: dict[str, Any], quick: bool = False) -> dic
 
 
 def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) -> dict[str, Any]:
+    started_at = time.perf_counter()
     metadata = _enrich_local_metadata(metadata)
     provider = str(metadata.get("provider", "tuya_local")).strip().lower()
     dev_id = str(metadata.get("tuya_device_id", "")).strip() or str(metadata.get("id", "")).strip()
@@ -575,6 +578,7 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
     channel = str(command.get("channel", "")).strip().lower()
     payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
     allow_cloud_fallback = bool(payload.get("allow_cloud_fallback", True))
+    trace_id = str(payload.get("trace_id", "")).strip() or f"tuya-{uuid.uuid4().hex[:12]}"
     value = command.get("value")
     brightness_value = value if value is not None else payload.get("brightness")
     rgb = _rgb_payload(payload)
@@ -588,16 +592,38 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
             or _is_light_device(metadata)
         )
     )
+    trace: dict[str, Any] = {
+        "trace_id": trace_id,
+        "provider": provider,
+        "device_name": str(metadata.get("device_name", metadata.get("name", ""))).strip(),
+        "tuya_device_id": dev_id,
+        "state": state,
+        "channel": channel,
+        "allow_cloud_fallback": allow_cloud_fallback,
+        "light_channel": light_channel,
+        "explicit_switch_channel": explicit_switch_channel,
+        "local_ready": False,
+        "local_attempts": [],
+        "cloud_attempted": False,
+    }
 
     # Local path first for local/dual devices.
     local_error = ""
     local_ready = _has_complete_local_metadata(metadata)
+    trace["local_ready"] = local_ready
+    trace["local_ip"] = str(metadata.get("tuya_ip", metadata.get("ip", metadata.get("host", "")))).strip()
     if provider in ("tuya_local", "tuya") and local_ready:
         raw_version = str(metadata.get("tuya_version", metadata.get("version", ""))).strip()
         last_exc: Exception | None = None
         for version_candidate in _version_candidates(metadata):
+            attempt_started = time.perf_counter()
+            attempt_info: dict[str, Any] = {
+                "version_candidate": str(version_candidate),
+                "used_status_lookup": False,
+            }
             try:
                 use_bulb = _is_light_device(metadata) and state in ("on", "off")
+                attempt_info["path"] = "local_bulb" if use_bulb else "local_device"
                 if use_bulb:
                     dev, local_id, ip, version = _local_bulb_device(
                         metadata,
@@ -621,6 +647,7 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
                     elif state in ("on", "off") and _is_light_device(metadata):
                         onoff_dp = _default_onoff_dp(metadata)
                     else:
+                        attempt_info["used_status_lookup"] = True
                         status = dev.status()
                         dps = _extract_dps(status)
                         onoff_dp = _resolve_local_toggle_dp(channel, dps)
@@ -666,6 +693,7 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
                         target = state == "on"
                         if state == "toggle":
                             target = not bool(dps.get(str(onoff_dp)))
+                        attempt_info["resolved_dp"] = onoff_dp
                         raw = dev.set_status(target, switch=onoff_dp)
                     elif state == "set" and isinstance(payload.get("dps"), dict):
                         raw = dev.set_multiple_values(payload.get("dps", {}))
@@ -683,9 +711,21 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
                 raw_error = _tuya_raw_error(raw)
                 if raw_error and not raw_version:
                     local_error = raw_error
+                    attempt_info["error"] = raw_error
+                    attempt_info["elapsed_ms"] = round((time.perf_counter() - attempt_started) * 1000, 1)
+                    trace["local_attempts"].append(attempt_info)
                     continue
                 if raw_error:
                     raise ValueError(raw_error)
+                attempt_info["elapsed_ms"] = round((time.perf_counter() - attempt_started) * 1000, 1)
+                attempt_info["ok"] = True
+                attempt_info["device_id"] = local_id
+                attempt_info["ip"] = ip
+                trace["local_attempts"].append(attempt_info)
+                trace["result_provider"] = "tuya_local"
+                trace["result_mode"] = "local_lan"
+                trace["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+                append_event("tuya_command_trace", trace)
                 response: dict[str, Any] = {
                     "ok": True,
                     "provider": "tuya_local",
@@ -694,6 +734,8 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
                     "ip": ip,
                     "version": str(version),
                     "result": raw,
+                    "trace_id": trace_id,
+                    "trace_total_ms": trace["total_ms"],
                 }
                 if not raw_version:
                     response["metadata_patch"] = {"tuya_version": str(version), "version": str(version)}
@@ -701,13 +743,27 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
             except Exception as exc:
                 last_exc = exc
                 local_error = str(exc)
+                attempt_info["error"] = local_error
+                attempt_info["elapsed_ms"] = round((time.perf_counter() - attempt_started) * 1000, 1)
+                trace["local_attempts"].append(attempt_info)
         if provider == "tuya_local" and not _local_error_allows_cloud_fallback(local_error):
             detail = local_error or "Local Tuya command failed"
+            trace["result_provider"] = "tuya_local"
+            trace["result_mode"] = "local_lan"
+            trace["error"] = detail
+            trace["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+            append_event("tuya_command_trace", trace)
             raise ValueError(f"Tuya local command failed: {detail}") from last_exc
     elif provider == "tuya_local":
         local_error = "Tuya local control requires tuya_device_id + tuya_ip + tuya_local_key"
 
     if provider == "tuya_local" and local_error and not allow_cloud_fallback and _local_error_allows_cloud_fallback(local_error):
+        trace["result_provider"] = "tuya_local"
+        trace["result_mode"] = "local_lan"
+        trace["error"] = local_error
+        trace["fallback_available"] = True
+        trace["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+        append_event("tuya_command_trace", trace)
         raise TuyaCloudFallbackRequiredError(
             "Local Tuya control failed, but cloud fallback is available",
             detail={
@@ -722,19 +778,36 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
     # Cloud command path.
     if not dev_id:
         if local_error:
+            trace["error"] = local_error
+            trace["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+            append_event("tuya_command_trace", trace)
             raise ValueError(f"Tuya local command failed: {local_error}")
+        trace["error"] = "Tuya metadata missing tuya_device_id"
+        trace["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+        append_event("tuya_command_trace", trace)
         raise ValueError("Tuya metadata missing tuya_device_id")
 
     try:
+        trace["cloud_attempted"] = True
+        cloud_started = time.perf_counter()
         cloud = _cloud_client()
     except Exception as exc:
         if local_error:
+            trace["error"] = f"{local_error}; cloud unavailable: {exc}"
+            trace["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+            append_event("tuya_command_trace", trace)
             raise ValueError(f"Tuya local failed: {local_error}; cloud unavailable: {exc}") from exc
+        trace["error"] = str(exc)
+        trace["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+        append_event("tuya_command_trace", trace)
         raise
     status_res = cloud.getstatus(dev_id)
+    trace["cloud_status_ms"] = round((time.perf_counter() - cloud_started) * 1000, 1)
     status_items = status_res.get("result", []) if isinstance(status_res, dict) else []
     status_values = _cloud_status_values(status_items if isinstance(status_items, list) else [])
+    fn_started = time.perf_counter()
     fn_res = cloud.getfunctions(dev_id)
+    trace["cloud_functions_ms"] = round((time.perf_counter() - fn_started) * 1000, 1)
     fn_items = fn_res.get("result", []) if isinstance(fn_res, dict) else []
     if isinstance(fn_items, list):
         functions = fn_items
@@ -799,14 +872,29 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
         raise ValueError(f"Could not build Tuya cloud command ({detail})")
 
     body = {"commands": commands}
+    send_started = time.perf_counter()
     result = cloud.sendcommand(dev_id, body)
+    trace["cloud_send_ms"] = round((time.perf_counter() - send_started) * 1000, 1)
     if not isinstance(result, dict):
+        trace["error"] = "Unexpected Tuya cloud command response"
+        trace["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+        append_event("tuya_command_trace", trace)
         raise ValueError("Unexpected Tuya cloud command response")
     if not result.get("success", False):
         detail = result.get("msg") or result.get("code") or result
         if local_error:
+            trace["error"] = f"{local_error}; cloud command failed: {detail}"
+            trace["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+            append_event("tuya_command_trace", trace)
             raise ValueError(f"Tuya local failed: {local_error}; cloud command failed: {detail}")
+        trace["error"] = str(detail)
+        trace["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+        append_event("tuya_command_trace", trace)
         raise ValueError(f"Tuya cloud command failed: {detail}")
+    trace["result_provider"] = "tuya_cloud"
+    trace["result_mode"] = "cloud"
+    trace["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+    append_event("tuya_command_trace", trace)
     return {
         "ok": True,
         "provider": "tuya_cloud",
@@ -815,4 +903,6 @@ def send_tuya_device_command(metadata: dict[str, Any], command: dict[str, Any]) 
         "commands": commands,
         "result": result,
         "local_error": local_error,
+        "trace_id": trace_id,
+        "trace_total_ms": trace["total_ms"],
     }

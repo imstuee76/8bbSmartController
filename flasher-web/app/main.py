@@ -1444,6 +1444,7 @@ def _execute_device_command_by_row(
     *,
     _visited_channels: set[str] | None = None,
 ) -> dict[str, Any]:
+    started_at = time.perf_counter()
     channel = str(payload.get("channel", "")).strip()
     state = str(payload.get("state", "")).strip() or None
     value = payload.get("value")
@@ -1464,6 +1465,8 @@ def _execute_device_command_by_row(
         "value": value,
         "payload": dict(payload_obj),
     }
+    trace_id = str(cmd["payload"].get("trace_id", "")).strip() or f"cmd-{uuid.uuid4().hex[:12]}"
+    cmd["payload"]["trace_id"] = trace_id
     if channel_row:
         try:
             channel_payload = json.loads(channel_row["payload_json"])
@@ -1535,11 +1538,44 @@ def _execute_device_command_by_row(
         metadata.setdefault("name", device_name)
         metadata.setdefault("device_name", device_name)
     provider = str(metadata.get("provider", "")).strip().lower()
+    trace_payload: dict[str, Any] = {
+        "trace_id": trace_id,
+        "device_id": device_id,
+        "device_name": device_name,
+        "provider": provider or "esp_firmware",
+        "channel": channel,
+        "state": state,
+        "host": host,
+        "mac": device_mac,
+    }
 
     if provider == "moes_bhubw":
-        return send_bhubw_light_command(metadata=metadata, command=cmd)
+        try:
+            result = send_bhubw_light_command(metadata=metadata, command=cmd)
+            trace_payload["result_provider"] = str(result.get("provider", provider)).strip()
+            trace_payload["result_mode"] = str(result.get("mode", "")).strip()
+            trace_payload["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+            append_event("device_command_trace", trace_payload)
+            return result
+        except Exception as exc:
+            trace_payload["error"] = str(exc)
+            trace_payload["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+            append_event("device_command_trace", trace_payload)
+            raise
     if provider in ("tuya_local", "tuya_cloud", "tuya"):
-        return send_tuya_device_command(metadata=metadata, command=cmd)
+        try:
+            result = send_tuya_device_command(metadata=metadata, command=cmd)
+            trace_payload["result_provider"] = str(result.get("provider", provider)).strip()
+            trace_payload["result_mode"] = str(result.get("mode", "")).strip()
+            trace_payload["trace_total_ms_inner"] = result.get("trace_total_ms")
+            trace_payload["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+            append_event("device_command_trace", trace_payload)
+            return result
+        except Exception as exc:
+            trace_payload["error"] = str(exc)
+            trace_payload["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+            append_event("device_command_trace", trace_payload)
+            raise
 
     if not host:
         raise ValueError("Device host is not set")
@@ -1549,12 +1585,26 @@ def _execute_device_command_by_row(
     merged_cmd = dict(cmd)
     merged_cmd.update(cmd["payload"])
     try:
-        return send_device_command(host, passcode, merged_cmd)
+        result = send_device_command(host, passcode, merged_cmd)
+        trace_payload["result_provider"] = "esp_firmware"
+        trace_payload["result_mode"] = "local_lan"
+        trace_payload["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+        append_event("device_command_trace", trace_payload)
+        return result
     except httpx.HTTPError as exc:
         refresh_result = _refresh_single_device_ip_by_mac(device_id, device_mac, old_host=host) if device_mac else {"ok": False}
         retry_host = str(refresh_result.get("new_host", "")).strip()
         if refresh_result.get("ok") and retry_host and retry_host != host:
-            return send_device_command(retry_host, passcode, merged_cmd)
+            result = send_device_command(retry_host, passcode, merged_cmd)
+            trace_payload["retried_host"] = retry_host
+            trace_payload["result_provider"] = "esp_firmware"
+            trace_payload["result_mode"] = "local_lan"
+            trace_payload["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+            append_event("device_command_trace", trace_payload)
+            return result
+        trace_payload["error"] = str(exc)
+        trace_payload["total_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+        append_event("device_command_trace", trace_payload)
         raise exc
 
 
@@ -2612,6 +2662,7 @@ def get_device_status(device_id: str) -> dict[str, Any]:
 
 @app.post("/api/devices/{device_id}/command", dependencies=[Depends(require_auth_if_configured)])
 def post_device_command(device_id: str, payload: DeviceCommandRequest) -> dict[str, Any]:
+    started_at = time.perf_counter()
     conn, row = _require_device(device_id)
     conn.close()
     command = payload.model_dump()
@@ -2628,7 +2679,19 @@ def post_device_command(device_id: str, payload: DeviceCommandRequest) -> dict[s
         raise HTTPException(status_code=502, detail=f"{detail_prefix}: {exc}") from exc
     _persist_device_metadata_patch(device_id, row, result.get("metadata_patch") if isinstance(result, dict) else None)
     _apply_dashboard_command_cache(device_id, row, command)
-    append_event("device_command", {"device_id": device_id, "channel": payload.channel, "state": payload.state, "provider": str(_parse_metadata(row).get('provider', '')).strip().lower()})
+    append_event(
+        "device_command",
+        {
+            "device_id": device_id,
+            "channel": payload.channel,
+            "state": payload.state,
+            "provider": str(_parse_metadata(row).get('provider', '')).strip().lower(),
+            "trace_id": str((result.get("trace_id") if isinstance(result, dict) else "") or ""),
+            "duration_ms": round((time.perf_counter() - started_at) * 1000, 1),
+            "result_provider": str((result.get("provider") if isinstance(result, dict) else "") or ""),
+            "result_mode": str((result.get("mode") if isinstance(result, dict) else "") or ""),
+        },
+    )
     return result
 
 
