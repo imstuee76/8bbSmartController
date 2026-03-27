@@ -326,7 +326,7 @@ def _local_device(
             dev.set_socketTimeout(float(socket_timeout))
         except Exception:
             pass
-    if hasattr(dev, "set_socketRetryLimit"):
+    if retry_limit > 0 and hasattr(dev, "set_socketRetryLimit"):
         try:
             dev.set_socketRetryLimit(int(retry_limit))
         except Exception:
@@ -362,7 +362,7 @@ def _local_bulb_device(
             dev.set_socketTimeout(float(socket_timeout))
         except Exception:
             pass
-    if hasattr(dev, "set_socketRetryLimit"):
+    if retry_limit > 0 and hasattr(dev, "set_socketRetryLimit"):
         try:
             dev.set_socketRetryLimit(int(retry_limit))
         except Exception:
