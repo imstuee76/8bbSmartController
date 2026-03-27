@@ -318,13 +318,7 @@ def _local_device(
     except Exception as exc:
         raise ValueError(f"tinytuya not installed: {exc}") from exc
 
-    dev = tinytuya.Device(  # type: ignore[attr-defined]
-        dev_id=dev_id,
-        address=ip,
-        local_key=local_key,
-        version=version,
-        persist=False,
-    )
+    dev = tinytuya.Device(dev_id, ip, local_key)  # type: ignore[attr-defined]
     dev.set_version(version)
     dev.set_socketPersistent(False)
     if hasattr(dev, "set_socketTimeout"):
