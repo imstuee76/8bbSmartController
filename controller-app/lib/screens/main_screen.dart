@@ -464,14 +464,30 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       final ok = await _confirmCloudWarning(label);
       if (!ok) return;
     }
-    await widget.api.sendDeviceCommand(
-      deviceId: refId,
-      channel: channel,
-      state: state,
-      value: value,
-      payload: payload,
-    );
-    await _load();
+    try {
+      await widget.api.sendDeviceCommand(
+        deviceId: refId,
+        channel: channel,
+        state: state,
+        value: value,
+        payload: payload,
+        allowCloudFallback: false,
+      );
+      await _load();
+    } on DeviceCommandFallbackException catch (fallbackError) {
+      if (!mounted) return;
+      final ok = await _confirmCloudFallbackForDevice(label: label, error: fallbackError);
+      if (!ok) return;
+      await widget.api.sendDeviceCommand(
+        deviceId: refId,
+        channel: channel,
+        state: state,
+        value: value,
+        payload: payload,
+        allowCloudFallback: true,
+      );
+      await _load();
+    }
   }
 
   Future<void> _showLightDesigner({
@@ -621,6 +637,29 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     return result ?? false;
   }
 
+  Future<bool> _confirmCloudFallbackForDevice({
+    required String label,
+    required DeviceCommandFallbackException error,
+  }) async {
+    final detail = error.detail ?? const <String, dynamic>{};
+    final localError = (detail['local_error'] ?? '').toString().trim();
+    final message = localError.isNotEmpty
+        ? 'Local control failed for "$label".\n\n$localError\n\nWould you like to try cloud?'
+        : 'Local control failed for "$label".\n\nWould you like to try cloud?';
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Cloud Fallback'),
+        content: Text(message),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Try Cloud')),
+        ],
+      ),
+    );
+    return result ?? false;
+  }
+
   bool? _asBoolState(dynamic value) {
     if (value == null) return null;
     if (value is bool) return value;
@@ -740,6 +779,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         deviceId: refId,
         channel: channel,
         state: state,
+        allowCloudFallback: false,
       );
       unawaited(
         SessionLogger.instance.logActivity('main_tile_command_finished', <String, dynamic>{
@@ -747,6 +787,42 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           'tile_id': tileId ?? '',
           'channel': channel,
           'state': state,
+        }),
+      );
+      unawaited(_load());
+    } on DeviceCommandFallbackException catch (fallbackError) {
+      unawaited(
+        SessionLogger.instance.logActivity('main_tile_command_fallback_needed', <String, dynamic>{
+          'device_id': refId,
+          'tile_id': tileId ?? '',
+          'channel': channel,
+          'state': state,
+          'label': label,
+          'detail': fallbackError.detail ?? <String, dynamic>{},
+        }),
+      );
+      if (!mounted) return;
+      final ok = await _confirmCloudFallbackForDevice(label: label, error: fallbackError);
+      if (!ok) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Action stopped after local control failed')),
+        );
+        unawaited(_load());
+        return;
+      }
+      await widget.api.sendDeviceCommand(
+        deviceId: refId,
+        channel: channel,
+        state: state,
+        allowCloudFallback: true,
+      );
+      unawaited(
+        SessionLogger.instance.logActivity('main_tile_command_cloud_retry_finished', <String, dynamic>{
+          'device_id': refId,
+          'tile_id': tileId ?? '',
+          'channel': channel,
+          'state': state,
+          'label': label,
         }),
       );
       unawaited(_load());

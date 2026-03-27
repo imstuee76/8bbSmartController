@@ -2668,6 +2668,22 @@ def post_device_command(device_id: str, payload: DeviceCommandRequest) -> dict[s
     command = payload.model_dump()
     try:
         result = _execute_device_command_by_row(device_id, row, command)
+    except TuyaCloudFallbackRequiredError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": str(exc),
+                "fallback_available": True,
+                "target_scope": "device",
+                "device_id": device_id,
+                "device_name": str(row["name"] or "").strip(),
+                "channel": payload.channel,
+                "state": payload.state,
+                "value": payload.value,
+                "payload": payload.payload if isinstance(payload.payload, dict) else {},
+                **dict(exc.detail or {}),
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except httpx.HTTPError as exc:

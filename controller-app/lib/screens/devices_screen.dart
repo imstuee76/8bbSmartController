@@ -70,6 +70,12 @@ class _DevicesScreenState extends State<DevicesScreen> {
   String _statusOutput = '';
 
   String _friendlyError(Object error) {
+    if (error is ApiResponseException) {
+      final message = error.message.trim();
+      if (message.isNotEmpty) {
+        return message;
+      }
+    }
     final text = error.toString();
     final lower = text.toLowerCase();
     if (lower.contains('connection refused') || lower.contains('socketexception')) {
@@ -77,6 +83,30 @@ class _DevicesScreenState extends State<DevicesScreen> {
           'Check: backend is running on Windows/Linux server, URL/port are correct, and firewall allows TCP 1111.';
     }
     return text;
+  }
+
+  Future<bool> _confirmCloudFallbackForDevice({
+    required String action,
+    required SmartDevice device,
+    required DeviceCommandFallbackException error,
+  }) async {
+    final detail = error.detail ?? const <String, dynamic>{};
+    final localError = (detail['local_error'] ?? '').toString().trim();
+    final message = localError.isNotEmpty
+        ? '"${device.name}" failed local control.\n\n$localError\n\nTry cloud for $action?'
+        : '"${device.name}" failed local control.\n\nTry cloud for $action?';
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Cloud Fallback'),
+        content: Text(message),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Try Cloud')),
+        ],
+      ),
+    );
+    return result ?? false;
   }
 
   @override
@@ -1122,6 +1152,23 @@ class _DevicesScreenState extends State<DevicesScreen> {
         deviceId: device.id,
         channel: channel.key,
         state: channel.state == true ? 'off' : channel.state == false ? 'on' : 'toggle',
+        allowCloudFallback: false,
+      );
+      if (!mounted) return;
+      await _loadDeviceStatus(device, showOutput: false);
+    } on DeviceCommandFallbackException catch (fallbackError) {
+      if (!mounted) return;
+      final ok = await _confirmCloudFallbackForDevice(
+        action: 'this channel',
+        device: device,
+        error: fallbackError,
+      );
+      if (!ok) return;
+      await widget.api.sendDeviceCommand(
+        deviceId: device.id,
+        channel: channel.key,
+        state: channel.state == true ? 'off' : channel.state == false ? 'on' : 'toggle',
+        allowCloudFallback: true,
       );
       if (!mounted) return;
       await _loadDeviceStatus(device, showOutput: false);
@@ -1160,6 +1207,25 @@ class _DevicesScreenState extends State<DevicesScreen> {
         state: state,
         value: value,
         payload: payload,
+        allowCloudFallback: false,
+      );
+      if (!mounted) return;
+      await _loadDeviceStatus(device, showOutput: false);
+    } on DeviceCommandFallbackException catch (fallbackError) {
+      if (!mounted) return;
+      final ok = await _confirmCloudFallbackForDevice(
+        action: 'this light',
+        device: device,
+        error: fallbackError,
+      );
+      if (!ok) return;
+      await widget.api.sendDeviceCommand(
+        deviceId: device.id,
+        channel: channel,
+        state: state,
+        value: value,
+        payload: payload,
+        allowCloudFallback: true,
       );
       if (!mounted) return;
       await _loadDeviceStatus(device, showOutput: false);
@@ -2203,12 +2269,30 @@ class _DevicesScreenState extends State<DevicesScreen> {
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
           FilledButton(
             onPressed: () async {
-              await widget.api.sendDeviceCommand(
-                deviceId: device.id,
-                channel: channelCtl.text.trim(),
-                state: state,
-                value: int.tryParse(valueCtl.text.trim()),
-              );
+              try {
+                await widget.api.sendDeviceCommand(
+                  deviceId: device.id,
+                  channel: channelCtl.text.trim(),
+                  state: state,
+                  value: int.tryParse(valueCtl.text.trim()),
+                  allowCloudFallback: false,
+                );
+              } on DeviceCommandFallbackException catch (fallbackError) {
+                if (!context.mounted) return;
+                final ok = await _confirmCloudFallbackForDevice(
+                  action: 'advanced control',
+                  device: device,
+                  error: fallbackError,
+                );
+                if (!ok) return;
+                await widget.api.sendDeviceCommand(
+                  deviceId: device.id,
+                  channel: channelCtl.text.trim(),
+                  state: state,
+                  value: int.tryParse(valueCtl.text.trim()),
+                  allowCloudFallback: true,
+                );
+              }
               if (!mounted) return;
               Navigator.pop(context);
               await _runStatus(device);

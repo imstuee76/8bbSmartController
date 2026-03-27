@@ -28,6 +28,15 @@ class AutomationFallbackException extends ApiResponseException {
   }) : super(message, statusCode: statusCode, body: body, detail: detail);
 }
 
+class DeviceCommandFallbackException extends ApiResponseException {
+  DeviceCommandFallbackException({
+    required String message,
+    int? statusCode,
+    String body = '',
+    Map<String, dynamic>? detail,
+  }) : super(message, statusCode: statusCode, body: body, detail: detail);
+}
+
 class ApiService {
   ApiService(this.baseUrl) : _client = _LoggingClient(http.Client(), SessionLogger.instance);
 
@@ -482,7 +491,12 @@ class ApiService {
     String? state,
     int? value,
     Map<String, dynamic>? payload,
+    bool allowCloudFallback = true,
   }) async {
+    final reqPayload = <String, dynamic>{
+      ...(payload ?? <String, dynamic>{}),
+      'allow_cloud_fallback': allowCloudFallback,
+    };
     final res = await _client.post(
       _uri('/api/devices/$deviceId/command'),
       headers: _jsonHeaders(),
@@ -490,11 +504,35 @@ class ApiService {
         'channel': channel,
         'state': state,
         'value': value,
-        'payload': payload ?? <String, dynamic>{},
+        'payload': reqPayload,
       }),
     );
     if (res.statusCode != 200) {
-      throw Exception('Device command failed: ${res.body}');
+      Map<String, dynamic>? detail;
+      try {
+        final parsed = jsonDecode(res.body);
+        if (parsed is Map<String, dynamic>) {
+          final rawDetail = parsed['detail'];
+          if (rawDetail is Map<String, dynamic>) {
+            detail = rawDetail;
+          }
+        }
+      } catch (_) {}
+      final message = detail?['message']?.toString().trim();
+      if (res.statusCode == 409 && detail?['fallback_available'] == true) {
+        throw DeviceCommandFallbackException(
+          message: message?.isNotEmpty == true ? message! : 'Cloud fallback is available',
+          statusCode: res.statusCode,
+          body: res.body,
+          detail: detail,
+        );
+      }
+      throw ApiResponseException(
+        message?.isNotEmpty == true ? message! : 'Device command failed: ${res.body}',
+        statusCode: res.statusCode,
+        body: res.body,
+        detail: detail,
+      );
     }
     return jsonDecode(res.body) as Map<String, dynamic>;
   }
