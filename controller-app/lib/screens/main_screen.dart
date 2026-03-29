@@ -84,6 +84,74 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     {'id': '4', 'label': 'Night'},
   ];
 
+  Color _memberDotColor(dynamic value) {
+    final state = _asBoolState(value);
+    if (state == true) return Colors.green;
+    if (state == false) return Colors.red;
+    return Colors.blueGrey;
+  }
+
+  Widget _automationMemberDots(Map<String, dynamic> tileData, {int maxItems = 3}) {
+    final members = (tileData['members'] as List<dynamic>? ?? const <dynamic>[])
+        .whereType<Map<String, dynamic>>()
+        .toList(growable: false);
+    if (members.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final visible = members.take(maxItems).toList(growable: false);
+    final remaining = members.length - visible.length;
+    return Wrap(
+      spacing: 6,
+      runSpacing: 4,
+      children: <Widget>[
+        for (final member in visible)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF4F7F8),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: const Color(0xFFD6E2E6)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Container(
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(
+                    color: _memberDotColor(member['value'] ?? member['state']),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 5),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 110),
+                  child: Text(
+                    ((member['name'] ?? member['device_name'] ?? member['channel'] ?? '').toString()).trim(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (remaining > 0)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+            decoration: BoxDecoration(
+              color: const Color(0xFFE8EEF0),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              '+$remaining',
+              style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700),
+            ),
+          ),
+      ],
+    );
+  }
+
   String _friendlyError(Object error) {
     if (error is ApiResponseException) {
       final message = error.message.trim();
@@ -1711,39 +1779,54 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                     final tileData = (tile['data'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
                     final automationTarget = (tileData['target_name'] ?? payload['target_name'] ?? payload['group_name'] ?? '').toString().trim();
                     final actionLabel = _automationActionSummary(payload, tileData);
-                    final automation = (payload['automation_note'] ?? '').toString().trim();
-                    final timer = (payload['timer_note'] ?? '').toString().trim();
-                    return ListTile(
-                      title: Text((tile['label'] ?? 'Tile').toString()),
-                      onTap: () {
-                        Navigator.pop(context);
-                        unawaited(_openAutomationBuilder(existingTile: tile));
-                      },
-                      subtitle: Text(
-                        tileType == 'automation'
-                            ? 'Target: ${automationTarget.isEmpty ? '(not set)' : automationTarget}\n'
-                                'Action: $actionLabel'
-                            : 'Automation: ${automation.isEmpty ? '(not set)' : automation}\n'
-                                'Timers: ${timer.isEmpty ? '(not set)' : timer}',
-                      ),
-                      trailing: tileType == 'automation'
-                          ? Wrap(
-                              spacing: 8,
-                              children: [
-                                FilledButton.tonal(
-                                  onPressed: () => _runAutomationTile(tile),
-                                  child: const Text('Run'),
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            Text(
+                              (tile['label'] ?? 'Tile').toString(),
+                              style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Target: ${automationTarget.isEmpty ? '(not set)' : automationTarget}\nAction: $actionLabel',
+                              style: const TextStyle(fontSize: 12.5, color: Color(0xFF546E7A)),
+                            ),
+                            const SizedBox(height: 8),
+                            _automationMemberDots(tileData, maxItems: 6),
+                            const SizedBox(height: 10),
+                            Row(
+                              children: <Widget>[
+                                Expanded(
+                                  child: SizedBox(
+                                    height: 40,
+                                    child: FilledButton.tonal(
+                                      onPressed: tileType == 'automation' ? () => _runAutomationTile(tile) : null,
+                                      child: const Text('Run'),
+                                    ),
+                                  ),
                                 ),
-                                OutlinedButton(
-                                  onPressed: () {
-                                    Navigator.pop(context);
-                                    unawaited(_openAutomationBuilder(existingTile: tile));
-                                  },
-                                  child: const Text('Edit'),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: SizedBox(
+                                    height: 40,
+                                    child: OutlinedButton(
+                                      onPressed: () {
+                                        Navigator.pop(context);
+                                        unawaited(_openAutomationBuilder(existingTile: tile));
+                                      },
+                                      child: const Text('Edit'),
+                                    ),
+                                  ),
                                 ),
                               ],
-                            )
-                          : null,
+                            ),
+                          ],
+                        ),
+                      ),
                     );
                   }).toList(growable: false),
                 ),
@@ -2713,6 +2796,8 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             '$requestedState  |  $memberCount item${memberCount == 1 ? '' : 's'}',
             style: const TextStyle(fontSize: 11, color: Color(0xFF607D8B)),
           ),
+          const SizedBox(height: 6),
+          _automationMemberDots(data),
           const Spacer(),
           const SizedBox(height: 8),
           SizedBox(
