@@ -485,8 +485,8 @@ def get_tuya_device_status(metadata: dict[str, Any], quick: bool = False) -> dic
                 dev, local_id, ip, version = _local_device(
                     metadata,
                     version_override=version_candidate,
-                    socket_timeout=1.0 if quick else 3.0,
-                    retry_limit=0 if quick else 1,
+                    socket_timeout=0.9 if quick else 3.0,
+                    retry_limit=1,
                 )
                 raw = dev.status()
                 dps = _extract_dps(raw)
