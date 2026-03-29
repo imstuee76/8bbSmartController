@@ -55,6 +55,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   final Set<String> _groupActionBusy = <String>{};
   final Set<String> _tileActionBusy = <String>{};
   DateTime? _lastLoadedAt;
+  int _loadGeneration = 0;
   static const Map<String, IconData> _iconOptions = <String, IconData>{
     'auto': Icons.auto_awesome,
     'power': Icons.power_settings_new,
@@ -362,52 +363,60 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
   Future<void> _load({bool initial = false}) async {
     if (!mounted) return;
+    final loadId = ++_loadGeneration;
     final showInitialLoader = initial && _tiles.isEmpty;
-    setState(() {
-      if (showInitialLoader) {
-        _loading = true;
-      } else {
-        _refreshing = true;
-      }
-      _error = null;
-    });
 
-    final tileDataFuture = widget.api.fetchTileData();
     if (showInitialLoader) {
-      unawaited(() async {
-        try {
-          final shellTiles = await widget.api.fetchTiles();
-          if (!mounted) return;
-          if (_tiles.isNotEmpty && !_loading) return;
-          setState(() {
-            _tiles = shellTiles.map(_shellTileToDisplayTile).toList(growable: false);
-            _loading = false;
-            _refreshing = true;
-            _lastLoadedAt = DateTime.now();
-          });
-        } catch (_) {
-          // Keep the loader visible and let the full tile-data request report the error.
-        }
-      }());
+      setState(() {
+        _loading = true;
+        _refreshing = false;
+        _error = null;
+      });
+      try {
+        final shellTiles = await widget.api.fetchTiles();
+        if (!mounted || loadId != _loadGeneration) return;
+        setState(() {
+          _tiles = shellTiles.map(_shellTileToDisplayTile).toList(growable: false);
+          _loading = false;
+          _refreshing = false;
+          _lastLoadedAt = DateTime.now();
+        });
+        unawaited(_hydrateLiveTileData(loadId: loadId, showRefreshing: false));
+        return;
+      } catch (_) {
+        if (!mounted || loadId != _loadGeneration) return;
+        // Fall through to full live load if the lightweight shell request fails.
+      }
     }
 
+    setState(() {
+      _loading = showInitialLoader && _tiles.isEmpty;
+      _refreshing = !showInitialLoader;
+      _error = null;
+    });
+    await _hydrateLiveTileData(loadId: loadId, showRefreshing: !showInitialLoader);
+  }
+
+  Future<void> _hydrateLiveTileData({required int loadId, required bool showRefreshing}) async {
     try {
-      final tiles = await tileDataFuture;
-      if (!mounted) return;
+      final tiles = await widget.api.fetchTileData();
+      if (!mounted || loadId != _loadGeneration) return;
       setState(() {
         _tiles = tiles;
         _lastLoadedAt = DateTime.now();
       });
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || loadId != _loadGeneration) return;
       setState(() {
         _error = _friendlyError(e);
       });
     } finally {
-      if (!mounted) return;
+      if (!mounted || loadId != _loadGeneration) return;
       setState(() {
         _loading = false;
-        _refreshing = false;
+        if (showRefreshing) {
+          _refreshing = false;
+        }
       });
     }
   }
