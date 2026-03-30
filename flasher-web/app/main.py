@@ -99,6 +99,9 @@ _DASHBOARD_DEVICE_CACHE_TTL_SECONDS = float(os.environ.get("DASHBOARD_DEVICE_CAC
 _DASHBOARD_TASK_TIMEOUT_SECONDS = float(os.environ.get("DASHBOARD_TASK_TIMEOUT_SECONDS", "2.5"))
 _DASHBOARD_TOTAL_TIMEOUT_SECONDS = float(os.environ.get("DASHBOARD_TOTAL_TIMEOUT_SECONDS", "6.0"))
 _dashboard_device_cache: dict[str, dict[str, Any]] = {}
+_dashboard_status_refresh_executor = ThreadPoolExecutor(max_workers=max(2, min(6, int(os.environ.get("DASHBOARD_STATUS_REFRESH_WORKERS", "3")))))
+_dashboard_status_refresh_lock = threading.Lock()
+_dashboard_status_refresh_inflight: set[str] = set()
 _PROFILE_PUSH_JOB_WORKERS = max(1, min(6, int(os.environ.get("PROFILE_PUSH_JOB_WORKERS", "3"))))
 _profile_push_executor = ThreadPoolExecutor(max_workers=_PROFILE_PUSH_JOB_WORKERS)
 _profile_push_jobs_lock = threading.Lock()
@@ -937,6 +940,73 @@ def _resolve_device_status(row: Any, *, quick: bool = False) -> dict[str, Any]:
     return status
 
 
+def _status_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    snapshot = dict(payload or {})
+    snapshot.pop("raw", None)
+    snapshot.pop("cloud_values", None)
+    return snapshot
+
+
+def _metadata_last_status_snapshot(row: Any) -> dict[str, Any] | None:
+    metadata = _parse_metadata(row)
+    last_status = metadata.get("last_status")
+    if not isinstance(last_status, dict) or not last_status:
+        return None
+    snapshot = _status_snapshot(last_status)
+    snapshot.setdefault("device_type", str(row["type"] or "").strip())
+    snapshot.setdefault("provider", str(metadata.get("provider", "unknown")).strip().lower() or "unknown")
+    snapshot.setdefault("mode", "local_lan")
+    snapshot.setdefault("source_name", metadata.get("source_name", "8bb"))
+    snapshot.setdefault("capabilities", _device_capabilities(row, snapshot))
+    return snapshot
+
+
+def _persist_last_status_snapshot(device_id: str, row: Any, payload: dict[str, Any]) -> None:
+    snapshot = _status_snapshot(payload)
+    metadata = _parse_metadata(row)
+    metadata["last_status"] = snapshot
+    now = utc_now()
+    conn = get_connection()
+    conn.execute(
+        "UPDATE devices SET metadata_json=?, last_seen_at=?, updated_at=? WHERE id=?",
+        (json.dumps(metadata), now, now, device_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _refresh_dashboard_device_status_background(device_id: str, row: Any) -> None:
+    try:
+        try:
+            payload = _resolve_device_status(row, quick=True)
+        except Exception:
+            payload = _resolve_device_status(row, quick=False)
+        now = time.time()
+        _dashboard_device_cache[device_id] = {"ts": now, "data": dict(payload)}
+        _persist_last_status_snapshot(device_id, row, payload)
+    except Exception as exc:
+        append_event(
+            "dashboard_status_background_refresh_failed",
+            {
+                "device_id": device_id,
+                "device_name": str(row["name"] or ""),
+                "provider": str(_parse_metadata(row).get("provider", "")).strip().lower(),
+                "error": str(exc),
+            },
+        )
+    finally:
+        with _dashboard_status_refresh_lock:
+            _dashboard_status_refresh_inflight.discard(device_id)
+
+
+def _queue_dashboard_status_refresh(device_id: str, row: Any) -> None:
+    with _dashboard_status_refresh_lock:
+        if device_id in _dashboard_status_refresh_inflight:
+            return
+        _dashboard_status_refresh_inflight.add(device_id)
+    _dashboard_status_refresh_executor.submit(_refresh_dashboard_device_status_background, device_id, row)
+
+
 def _dashboard_cached_device_status(row: Any, *, quick: bool = True) -> dict[str, Any]:
     device_id = str(row["id"])
     now = time.time()
@@ -949,9 +1019,20 @@ def _dashboard_cached_device_status(row: Any, *, quick: bool = True) -> dict[str
             payload["cache_age_s"] = round(age, 2)
             return payload
 
+    if quick:
+        last_status = _metadata_last_status_snapshot(row)
+        if last_status:
+            _queue_dashboard_status_refresh(device_id, row)
+            payload = dict(last_status)
+            payload["cached"] = True
+            payload["stale"] = True
+            payload["cache_source"] = "last_status"
+            return payload
+
     try:
         payload = _resolve_device_status(row, quick=quick)
         _dashboard_device_cache[device_id] = {"ts": now, "data": dict(payload)}
+        _persist_last_status_snapshot(device_id, row, payload)
         return payload
     except Exception as exc:
         if quick:
@@ -960,6 +1041,7 @@ def _dashboard_cached_device_status(row: Any, *, quick: bool = True) -> dict[str
                 payload["quick_fallback"] = True
                 payload["quick_error"] = str(exc)
                 _dashboard_device_cache[device_id] = {"ts": now, "data": dict(payload)}
+                _persist_last_status_snapshot(device_id, row, payload)
                 append_event(
                     "dashboard_status_quick_retry",
                     {
