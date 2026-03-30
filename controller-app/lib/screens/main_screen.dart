@@ -747,11 +747,27 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     return null;
   }
 
+  bool? _aggregateMemberState(Map<String, dynamic> outputs, List<dynamic> memberChannels) {
+    final states = memberChannels
+        .map((item) => item.toString().trim())
+        .where((key) => key.isNotEmpty)
+        .map((key) => _asBoolState(outputs[key]))
+        .whereType<bool>()
+        .toList(growable: false);
+    if (states.isEmpty) return null;
+    final allOn = states.every((state) => state);
+    final allOff = states.every((state) => !state);
+    if (allOn) return true;
+    if (allOff) return false;
+    return null;
+  }
+
   void _applyOptimisticDeviceTileState({
     required String refId,
     required String channel,
     required String state,
     bool? previousState,
+    List<dynamic> memberChannels = const <dynamic>[],
   }) {
     if (!mounted) return;
     setState(() {
@@ -760,7 +776,11 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         if ((tile['ref_id'] ?? '').toString().trim() != refId) return tile;
         final payload = Map<String, dynamic>.from((tile['payload'] as Map<String, dynamic>?) ?? const <String, dynamic>{});
         final tileChannel = (payload['channel'] ?? 'relay1').toString().trim();
-        if (tileChannel != channel) return tile;
+        final payloadMembers = (payload['member_channels'] as List<dynamic>? ?? const <dynamic>[]);
+        final sameWholeDevice = payloadMembers.isNotEmpty &&
+            memberChannels.isNotEmpty &&
+            payloadMembers.map((item) => item.toString().trim()).join('|') == memberChannels.map((item) => item.toString().trim()).join('|');
+        if (!sameWholeDevice && tileChannel != channel) return tile;
         final data = Map<String, dynamic>.from((tile['data'] as Map<String, dynamic>?) ?? const <String, dynamic>{});
         final outputs = Map<String, dynamic>.from((data['outputs'] as Map<String, dynamic>?) ?? const <String, dynamic>{});
         bool? nextState;
@@ -768,8 +788,13 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         if (state == 'off') nextState = false;
         if (state == 'toggle') nextState = previousState == null ? null : !previousState;
         if (nextState != null) {
-          outputs[channel] = nextState;
-          if (channel == 'power' || channel == 'light') {
+          final targetChannels = sameWholeDevice
+              ? payloadMembers.map((item) => item.toString().trim()).where((item) => item.isNotEmpty).toList(growable: false)
+              : <String>[channel];
+          for (final targetChannel in targetChannels) {
+            outputs[targetChannel] = nextState;
+          }
+          if (!sameWholeDevice && (channel == 'power' || channel == 'light')) {
             outputs['power'] = nextState;
             outputs['light'] = nextState;
           }
@@ -829,6 +854,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     required String label,
     required String channel,
     required String state,
+    Map<String, dynamic> payload = const <String, dynamic>{},
   }) async {
     final busyKey = '${tileId ?? refId}::$channel';
     if (_tileActionBusy.contains(busyKey)) return;
@@ -840,7 +866,13 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     setState(() {
       _tileActionBusy.add(busyKey);
     });
-    _applyOptimisticDeviceTileState(refId: refId, channel: channel, state: state, previousState: currentState);
+    _applyOptimisticDeviceTileState(
+      refId: refId,
+      channel: channel,
+      state: state,
+      previousState: currentState,
+      memberChannels: (payload['member_channels'] as List<dynamic>? ?? const <dynamic>[]),
+    );
     unawaited(
       SessionLogger.instance.logActivity('main_tile_command_started', <String, dynamic>{
         'device_id': refId,
@@ -856,6 +888,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         deviceId: refId,
         channel: channel,
         state: state,
+        payload: payload,
         allowCloudFallback: false,
       );
       unawaited(
@@ -891,6 +924,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         deviceId: refId,
         channel: channel,
         state: state,
+        payload: payload,
         allowCloudFallback: true,
       );
       unawaited(
@@ -2500,8 +2534,12 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       final outputs = (data['outputs'] as Map<String, dynamic>?) ?? <String, dynamic>{};
       final provider = (data['provider'] ?? '').toString();
       final mode = (data['mode'] ?? 'local_lan').toString();
-      final channelKey = (payload['channel'] ?? 'relay1').toString();
-      final channelValue = outputs[channelKey] ?? outputs['relay1'] ?? outputs['light'] ?? outputs['power'] ?? '--';
+      final memberChannels = (payload['member_channels'] as List<dynamic>? ?? const <dynamic>[]);
+      final isWholeDeviceTile = memberChannels.isNotEmpty;
+      final channelKey = (payload['channel'] ?? (isWholeDeviceTile ? '__device_all__' : 'relay1')).toString();
+      final channelValue = isWholeDeviceTile
+          ? _aggregateMemberState(outputs, memberChannels)
+          : (outputs[channelKey] ?? outputs['relay1'] ?? outputs['light'] ?? outputs['power'] ?? '--');
       final cloudMode = mode.toLowerCase().contains('cloud') || provider == 'tuya_cloud';
       final actionMode = (payload['action_mode'] ?? 'toggle').toString() == 'on_off' ? 'on_off' : 'toggle';
       final showIp = (payload['show_ip'] as bool?) ?? false;
@@ -2509,7 +2547,13 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       final statusColor = stateBool == null ? Colors.blueGrey : (stateBool ? Colors.green : Colors.red);
       final automated = _isAutomated(tile);
       final tileId = (tile['id'] ?? '').toString().trim();
-      final statusText = stateBool == true ? 'On' : stateBool == false ? 'Off' : channelValue.toString();
+      final statusText = isWholeDeviceTile
+          ? (stateBool == true
+              ? 'All On'
+              : stateBool == false
+                  ? 'All Off'
+                  : 'Mixed')
+          : (stateBool == true ? 'On' : stateBool == false ? 'Off' : channelValue.toString());
       final busy = _tileActionBusy.contains('$tileId::$channelKey');
       final supportsLight = _tileSupportsLight(tile);
       final supportsFan = _tileSupportsFan(tile);
@@ -2581,6 +2625,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                     cloudMode: cloudMode,
                                     label: titleText,
                                     channel: channelKey,
+                                    payload: isWholeDeviceTile ? <String, dynamic>{'member_channels': memberChannels} : const <String, dynamic>{},
                                     state: stateBool == true ? 'off' : stateBool == false ? 'on' : 'toggle',
                                   ),
                           style: FilledButton.styleFrom(
@@ -2606,6 +2651,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                           cloudMode: cloudMode,
                                           label: titleText,
                                           channel: channelKey,
+                                          payload: isWholeDeviceTile ? <String, dynamic>{'member_channels': memberChannels} : const <String, dynamic>{},
                                           state: 'on',
                                         ),
                                 style: FilledButton.styleFrom(
@@ -2628,6 +2674,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                           cloudMode: cloudMode,
                                           label: titleText,
                                           channel: channelKey,
+                                          payload: isWholeDeviceTile ? <String, dynamic>{'member_channels': memberChannels} : const <String, dynamic>{},
                                           state: 'off',
                                         ),
                                 style: FilledButton.styleFrom(

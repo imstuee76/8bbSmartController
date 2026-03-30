@@ -1600,6 +1600,22 @@ class _DevicesScreenState extends State<DevicesScreen> {
     }
   }
 
+  Map<String, dynamic> _fullDeviceTilePayload(SmartDevice device) {
+    final quickChannels = _inferQuickChannels(device)
+        .where((channel) => channel.kind.toLowerCase().trim() != 'group')
+        .toList(growable: false);
+    if (quickChannels.length <= 1) {
+      return <String, dynamic>{};
+    }
+    return <String, dynamic>{
+      'control_scope': 'device_all',
+      'member_channels': quickChannels.map((channel) => channel.key).toList(growable: false),
+      'member_channel_names': <String, String>{
+        for (final channel in quickChannels) channel.key: channel.name,
+      },
+    };
+  }
+
   DeviceChannel? _findDeviceChannel(SmartDevice device, String key) {
     for (final ch in device.channels) {
       if (ch.channelKey == key) return ch;
@@ -3195,7 +3211,12 @@ class _DevicesScreenState extends State<DevicesScreen> {
                                                           final ok = await _confirmCloudUse('Adding this to Main', d);
                                                           if (!ok) return;
                                                         }
-                                                        await widget.api.addTile(tileType: 'device', refId: d.id, label: d.name);
+                                                        await widget.api.addTile(
+                                                          tileType: 'device',
+                                                          refId: d.id,
+                                                          label: d.name,
+                                                          payload: _fullDeviceTilePayload(d),
+                                                        );
                                                         if (!context.mounted) return;
                                                         ScaffoldMessenger.of(context)
                                                             .showSnackBar(const SnackBar(content: Text('Added full device tile to Main')));
