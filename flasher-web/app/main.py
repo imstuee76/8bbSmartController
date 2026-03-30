@@ -1087,37 +1087,62 @@ def _apply_dashboard_command_cache(device_id: str, row: Any, command: dict[str, 
     state = str(command.get("state", "")).strip().lower()
     channel = str(command.get("channel", "")).strip() or "power"
     target = _coerce_bool_state(state)
+    payload_obj = command.get("payload", {})
+    if not isinstance(payload_obj, dict):
+        payload_obj = {}
+    member_channels = [
+        str(item or "").strip()
+        for item in (payload_obj.get("member_channels", []) if isinstance(payload_obj.get("member_channels", []), list) else [])
+        if str(item or "").strip()
+    ]
 
     cached = _dashboard_device_cache.get(device_id)
-    payload = dict(cached.get("data") or {}) if cached else {}
+    if cached:
+        payload = dict(cached.get("data") or {})
+    else:
+        payload = _metadata_last_status_snapshot(row) or {}
     outputs = dict(payload.get("outputs") or {})
 
     if state == "toggle":
-        current = _guess_output_bool(outputs, channel)
-        if current is not None:
-            target = not current
+        if member_channels:
+            member_states = [_guess_output_bool(outputs, member_channel) for member_channel in member_channels]
+            known_states = [item for item in member_states if item is not None]
+            if known_states:
+                target = not all(known_states)
+        else:
+            current = _guess_output_bool(outputs, channel)
+            if current is not None:
+                target = not current
 
     if target is None:
         _dashboard_device_cache.pop(device_id, None)
         return
 
-    outputs[channel] = target
-    channel_lower = channel.lower()
-    if channel_lower in {"power", "light"}:
-        outputs["power"] = target
-        outputs["light"] = target
-    elif (
-        channel_lower.startswith("relay")
-        or channel_lower.startswith("switch")
-        or channel_lower.startswith("dp_")
-        or channel_lower.startswith("channel")
-        or channel_lower.startswith("out")
-        or channel_lower.startswith("gang")
-    ):
-        if "power" in outputs:
+    if member_channels:
+        for member_channel in member_channels:
+            outputs[member_channel] = target
+        outputs[channel] = target
+    else:
+        outputs[channel] = target
+
+    affected_channels = member_channels or [channel]
+    for affected_channel in affected_channels:
+        channel_lower = affected_channel.lower()
+        if channel_lower in {"power", "light"}:
             outputs["power"] = target
-        if "light" in outputs:
             outputs["light"] = target
+        elif (
+            channel_lower.startswith("relay")
+            or channel_lower.startswith("switch")
+            or channel_lower.startswith("dp_")
+            or channel_lower.startswith("channel")
+            or channel_lower.startswith("out")
+            or channel_lower.startswith("gang")
+        ):
+            if "power" in outputs:
+                outputs["power"] = target
+            if "light" in outputs:
+                outputs["light"] = target
 
     payload["ok"] = True
     payload["outputs"] = outputs
@@ -1125,9 +1150,12 @@ def _apply_dashboard_command_cache(device_id: str, row: Any, command: dict[str, 
     payload["cache_age_s"] = 0.0
     payload["last_command_state"] = state
     payload["last_command_channel"] = channel
+    if member_channels:
+        payload["last_command_member_channels"] = member_channels
     payload.setdefault("provider", str(_parse_metadata(row).get("provider", "")).strip().lower())
     payload.setdefault("device_type", row["type"])
     _dashboard_device_cache[device_id] = {"ts": time.time(), "data": payload}
+    _persist_last_status_snapshot(device_id, row, payload)
 
 
 def _coerce_bool_state(value: Any) -> bool | None:
