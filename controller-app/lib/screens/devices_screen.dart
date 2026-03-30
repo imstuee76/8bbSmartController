@@ -873,6 +873,34 @@ class _DevicesScreenState extends State<DevicesScreen> {
     return key;
   }
 
+  String _canonicalSwitchChannelKey(String key) {
+    final raw = key.trim().toLowerCase();
+    final suffix = _suffixNumber(raw);
+    if (suffix > 0) {
+      if (raw.startsWith('dp_') ||
+          raw.startsWith('switch_') ||
+          raw.startsWith('relay') ||
+          raw.startsWith('channel') ||
+          raw.startsWith('out') ||
+          raw.startsWith('gang')) {
+        return 'switch_$suffix';
+      }
+    }
+    return raw;
+  }
+
+  int _switchAliasPriority(String key, {required bool hasSavedChannel}) {
+    final raw = key.trim().toLowerCase();
+    if (hasSavedChannel) return 0;
+    if (raw.startsWith('switch_')) return 1;
+    if (raw.startsWith('relay')) return 2;
+    if (raw.startsWith('dp_')) return 3;
+    if (raw.startsWith('channel')) return 4;
+    if (raw.startsWith('out')) return 5;
+    if (raw.startsWith('gang')) return 6;
+    return 50;
+  }
+
   int _relayCountFromDevice(SmartDevice device, Map<String, dynamic>? status) {
     final rawCandidates = <dynamic>[
       status?['relay_count'],
@@ -981,7 +1009,28 @@ class _DevicesScreenState extends State<DevicesScreen> {
       }
     }
 
-    final sorted = discoveredKeys.toList(growable: false)
+    final canonicalBest = <String, String>{};
+    for (final key in discoveredKeys) {
+      final canonical = _canonicalSwitchChannelKey(key);
+      final existing = canonicalBest[canonical];
+      if (existing == null) {
+        canonicalBest[canonical] = key;
+        continue;
+      }
+      final currentPriority = _switchAliasPriority(
+        key,
+        hasSavedChannel: channelNameByKey.containsKey(key),
+      );
+      final existingPriority = _switchAliasPriority(
+        existing,
+        hasSavedChannel: channelNameByKey.containsKey(existing),
+      );
+      if (currentPriority < existingPriority) {
+        canonicalBest[canonical] = key;
+      }
+    }
+
+    final sorted = canonicalBest.values.toList(growable: false)
       ..sort((a, b) {
         final an = _suffixNumber(a);
         final bn = _suffixNumber(b);
@@ -2669,9 +2718,10 @@ class _DevicesScreenState extends State<DevicesScreen> {
         final key = entry.key.toString().trim();
         if (key.isEmpty) continue;
         if (!_isExplicitSwitchChannelKey(key, entry.value)) continue;
-        if (!seen.add(key)) continue;
+        final canonical = _canonicalSwitchChannelKey(key);
+        if (!seen.add(canonical)) continue;
         channelSpecs.add({
-          'channel_key': key,
+          'channel_key': canonical,
           'channel_name': _scanChannelName(item, key),
           'channel_kind': 'relay',
         });
